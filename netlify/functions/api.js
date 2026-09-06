@@ -29,6 +29,7 @@ import {
   discountCodes,
   deriveAddress,
   nextWalletIndex,
+  listAll,
 } from "./lib/util.js";
 
 // ---------- small data-access helpers ----------
@@ -139,17 +140,18 @@ function linkShape(l) {
 
 async function listLinksOfSession(s, sid) {
   const found = [];
-  let cursor;
-  do {
-    const page = await s.list({ prefix: "link/", cursor });
-    for (const b of page.blobs || []) {
-      const l = await s.get(b.key, { type: "json" });
-      if (l && l.sessionId === sid) found.push(l);
-    }
-    cursor = page.nextCursor;
-  } while (cursor);
+  for (const b of await listAll(s, "link/")) {
+    const l = await s.get(b.key, { type: "json" });
+    if (l && l.sessionId === sid) found.push(l);
+  }
   found.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   return found;
+}
+
+async function deleteClickKeys(s, code) {
+  for (const b of await listAll(s, `clicks/${code}/`)) {
+    await s.delete(b.key);
+  }
 }
 
 // ---------- actions ----------
@@ -289,12 +291,7 @@ const actions = {
     const link = await needLink(s, p.shortCode);
     needToken(link, p.deleteToken);
     await s.delete(`link/${link.code}`);
-    let cursor;
-    do {
-      const page = await s.list({ prefix: `clicks/${link.code}/`, cursor });
-      for (const b of page.blobs || []) await s.delete(b.key);
-      cursor = page.nextCursor;
-    } while (cursor);
+    await deleteClickKeys(s, link.code);
     return ok({});
   },
 
@@ -312,15 +309,10 @@ const actions = {
     const link = await needLink(s, p.shortCode);
     needToken(link, p.deleteToken);
     const clicks = [];
-    let cursor;
-    do {
-      const page = await s.list({ prefix: `clicks/${link.code}/`, cursor });
-      for (const b of page.blobs || []) {
-        const c = await s.get(b.key, { type: "json" });
-        if (c) clicks.push(c);
-      }
-      cursor = page.nextCursor;
-    } while (cursor);
+    for (const b of await listAll(s, `clicks/${link.code}/`)) {
+      const c = await s.get(b.key, { type: "json" });
+      if (c) clicks.push(c);
+    }
     clicks.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     return ok({ clickCount: link.clickCount || 0, clicks });
   },
@@ -328,12 +320,7 @@ const actions = {
   async deleteAllClicks(s, p) {
     const link = await needLink(s, p.shortCode);
     needToken(link, p.deleteToken);
-    let cursor;
-    do {
-      const page = await s.list({ prefix: `clicks/${link.code}/`, cursor });
-      for (const b of page.blobs || []) await s.delete(b.key);
-      cursor = page.nextCursor;
-    } while (cursor);
+    await deleteClickKeys(s, link.code);
     link.clickCount = 0;
     await s.setJSON(`link/${link.code}`, link);
     return ok({});
@@ -375,15 +362,10 @@ const actions = {
   async getUserDomains(s, p) {
     await needSession(s, p.sessionId);
     const out = [];
-    let cursor;
-    do {
-      const page = await s.list({ prefix: "domain/", cursor });
-      for (const b of page.blobs || []) {
-        const d = await s.get(b.key, { type: "json" });
-        if (d && d.sessionId === p.sessionId) out.push(domainInfo(d));
-      }
-      cursor = page.nextCursor;
-    } while (cursor);
+    for (const b of await listAll(s, "domain/")) {
+      const d = await s.get(b.key, { type: "json" });
+      if (d && d.sessionId === p.sessionId) out.push(domainInfo(d));
+    }
     return ok({ domains: out });
   },
 
@@ -453,22 +435,17 @@ const actions = {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
     await s.delete(`domain/${doc.domain}`);
     let deletedUrls = 0;
-    let cursor;
-    do {
-      const page = await s.list({ prefix: "link/", cursor });
-      for (const b of page.blobs || []) {
-        const l = await s.get(b.key, { type: "json" });
-        if (l) {
-          try {
-            if (new URL(l.short).hostname === doc.domain) {
-              await s.delete(b.key);
-              deletedUrls++;
-            }
-          } catch { /* ignore malformed */ }
-        }
+    for (const b of await listAll(s, "link/")) {
+      const l = await s.get(b.key, { type: "json" });
+      if (l) {
+        try {
+          if (new URL(l.short).hostname === doc.domain) {
+            await s.delete(b.key);
+            deletedUrls++;
+          }
+        } catch { /* ignore malformed */ }
       }
-      cursor = page.nextCursor;
-    } while (cursor);
+    }
     return ok({ deletedUrls });
   },
 

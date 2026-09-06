@@ -21,6 +21,31 @@ export function store() {
   return getStore("tunnel");
 }
 
+/**
+ * List all blob entries under a prefix. The client auto-paginates by
+ * default; `paginate: true` yields an AsyncIterator on newer versions.
+ * This helper works with either behavior.
+ */
+export async function listAll(s, prefix) {
+  try {
+    const res = await s.list({ prefix });
+    if (res && Array.isArray(res.blobs)) return res.blobs;
+  } catch (e) {
+    console.error(`listAll(${prefix}) failed:`, e?.message || e);
+    return [];
+  }
+  // Fallback: manual pagination iterator.
+  const all = [];
+  try {
+    for await (const entry of s.list({ prefix, paginate: true })) {
+      if (entry && Array.isArray(entry.blobs)) all.push(...entry.blobs);
+    }
+  } catch (e) {
+    console.error(`listAll(${prefix}) paginated failed:`, e?.message || e);
+  }
+  return all;
+}
+
 // ---------- HTTP ----------
 
 export function json(statusCode, obj) {
