@@ -1,0 +1,19 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# Netlify
+.netlify/
+
+# Node (only needed if you add a build step later)
+node_modules/
+
+# Secrets — never commit these (backend keys live in Netlify env settings,
+# not in this repo). The frontend needs no credentials at all.
+.env
+.env.*
+*.pem
+*service-account*.json

@@ -10,18 +10,28 @@
   <!-- Favicon -->
   <link rel="icon" type="image/x-icon" href="/visuals/favicon.ico" />
   
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-6XQPYNCYNJ"></script>
+  <!-- Analytics (consent-gated, GDPR): the gtag loader is injected by
+       assets/common.js ONLY after the visitor accepts the banner.
+       Default-deny here so nothing fires beforehand. -->
   <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
+    gtag('consent', 'default', { ad_storage: 'denied', analytics_storage: 'denied', wait_for_update: 500 });
     gtag('js', new Date());
-
-    gtag('config', 'G-6XQPYNCYNJ');
+    try {
+      if (localStorage.getItem('tunnel_consent') === 'granted') {
+        var __ga = document.createElement('script');
+        __ga.async = true;
+        __ga.src = 'https://www.googletagmanager.com/gtag/js?id=G-6XQPYNCYNJ';
+        document.head.appendChild(__ga);
+        gtag('config', 'G-6XQPYNCYNJ');
+      }
+    } catch (e) {}
   </script>
 
-  <link rel="icon" type="image/png" sizes="32x32" href="/visuals/favicon.ico" />
-  <link rel="apple-touch-icon" href="/visuals/Logo - No Background.png" />
+  <link rel="apple-touch-icon" href="/visuals/logo-no-background.png" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self';" />
   
   <title>Link Not Available - FRONTFACER Tunnel</title>
   <style>
@@ -171,7 +181,7 @@
 
 <body>
   <div class="container">
-    <img src="/visuals/Logo - No Background.png" alt="FRONTFACER" class="logo" />
+    <img src="/visuals/logo-no-background.png" alt="FRONTFACER" class="logo" />
     <h1>Link Expired<br>or not available</h1>
     <div id="linkBox" class="failed-link-box">s.frontfacer.com/...</div>
     <p>This shortcut might have been deleted or the address is incorrect. Please check the link and try again.</p>

@@ -1,0 +1,69 @@
+# FRONTFACER Tunnel — Netlify configuration (frontend + backend, no Firebase).
+# - Static site served from repo root.
+# - Backend: Netlify Functions in netlify/functions/ with Netlify Blobs
+#   storage (see package.json). No firebase.json/.firebaserc needed or present.
+# - Required env vars (Site settings → Environment variables):
+#     SITE_URL=e.g. s.frontfacer.com            (short-link host for new links)
+#     ROUTING_TARGET=e.g. <site>.netlify.app    (expected CNAME value for custom domains)
+#     DOMAIN_PRICE_USD=10  QUOTE_TTL_DAYS=7     (billing defaults)
+#     DISCOUNT_CODES={"WELCOME10":10}            (optional promo codes)
+#     BTC_USD_FALLBACK=65000                     (used if CoinGecko is unreachable)
+#     BTC_XPUB=xpub…  (+ npm i bitcoinjs-lib bip32 tiny-secp256k1)
+#        enables real payment addresses; without it generatePaymentAddress
+#        returns a clear "not configured" error. MANUAL_BTC_ADDRESS is for
+#        local testing only (single reused address — never production).
+#     HOME_URL=https://tunnel.frontfacer.com/   (resolver fallback/404 base)
+#     AUTO_SSL=1 (default) — routing validity implies host-managed SSL.
+#       Set SSL_DELEGATION_TARGET to require an explicit
+#       _acme-challenge CNAME instead.
+
+[build]
+  publish = "."
+  # No build step: plain HTML/CSS/JS. `npm run build` intentionally absent.
+
+# Clean URLs: /about serves about.html etc. (Netlify Pretty URLs also do
+# this by default; explicit rules keep it working if that setting changes).
+[[redirects]]
+  from = "/about"
+  to = "/about.html"
+  status = 200
+
+[[redirects]]
+  from = "/pricing"
+  to = "/pricing.html"
+  status = 200
+
+[[redirects]]
+  from = "/terms"
+  to = "/terms.html"
+  status = 200
+
+# Everything else that isn't a file → branded 404 page.
+[[redirects]]
+  from = "/*"
+  to = "/404.html"
+  status = 404
+
+# Security + caching headers. CSP mirrors the <meta> tags in the HTML
+# (headers win where both exist; keep them in sync when editing).
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "SAMEORIGIN"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self';"
+    # HSTS: enable ONLY once serving exclusively over HTTPS with no
+    # HTTP-only subdomains. Uncomment after verifying:
+    # Strict-Transport-Security = "max-age=31536000; includeSubDomains; preload"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=604800, immutable"
+
+[[headers]]
+  for = "/visuals/*"
+  [headers.values]
+    Cache-Control = "public, max-age=604800, immutable"

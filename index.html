@@ -9,14 +9,23 @@
     }
   </script>
 
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-6XQPYNCYNJ"></script>
+  <!-- Analytics (consent-gated, GDPR): the gtag loader is injected by
+       assets/common.js ONLY after the visitor accepts the banner.
+       Default-deny here so nothing fires beforehand. -->
   <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
+    gtag('consent', 'default', { ad_storage: 'denied', analytics_storage: 'denied', wait_for_update: 500 });
     gtag('js', new Date());
-
-    gtag('config', 'G-6XQPYNCYNJ');
+    try {
+      if (localStorage.getItem('tunnel_consent') === 'granted') {
+        var __ga = document.createElement('script');
+        __ga.async = true;
+        __ga.src = 'https://www.googletagmanager.com/gtag/js?id=G-6XQPYNCYNJ';
+        document.head.appendChild(__ga);
+        gtag('config', 'G-6XQPYNCYNJ');
+      }
+    } catch (e) {}
   </script>
 
   <meta charset="UTF-8" />
@@ -39,7 +48,7 @@
   <meta property="og:title" content="FRONTFACER Tunnel | Premium URL Shortener & Deep Link Generator" />
   <meta property="og:description"
     content="The most powerful way to share links. Custom domains, deep link support for social apps, and real-time analytics." />
-  <meta property="og:image" content="https://tunnel.frontfacer.com/visuals/Logo - No Background.png" />
+  <meta property="og:image" content="https://tunnel.frontfacer.com/visuals/logo-no-background.png" />
   <meta property="og:site_name" content="FRONTFACER Tunnel" />
 
   <!-- Twitter -->
@@ -48,7 +57,7 @@
   <meta name="twitter:title" content="FRONTFACER Tunnel | Premium URL Shortener" />
   <meta name="twitter:description"
     content="Create powerful deep links and custom branded URLs with FRONTFACER Tunnel." />
-  <meta name="twitter:image" content="https://tunnel.frontfacer.com/visuals/Logo - No Background.png" />
+  <meta name="twitter:image" content="https://tunnel.frontfacer.com/visuals/logo-no-background.png" />
 
   <!-- Canonical URL -->
   <link rel="canonical" href="https://tunnel.frontfacer.com/" />
@@ -77,11 +86,10 @@
 
   <!-- Favicon -->
   <link rel="icon" type="image/x-icon" href="/visuals/favicon.ico" />
-  <link rel="icon" type="image/png" sizes="32x32" href="/visuals/favicon.ico" />
-  <link rel="apple-touch-icon" href="/visuals/Logo - No Background.png" />
+  <link rel="apple-touch-icon" href="/visuals/logo-no-background.png" />
 
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://*.googleapis.com https://*.firebaseio.com https://*.cloudfunctions.net; img-src 'self' data: https:; media-src https:;">
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self';">
   <title>FRONTFACER Tunnel | Premium URL Shortener & Deep Link Generator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2934,14 +2942,15 @@
     <div class="header-content">
       <div class="header-left">
         <a href="/" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
-          <img src="/visuals/Logo - No Background.png" alt="FRONTFACER" class="header-logo" />
+          <img src="/visuals/logo-no-background.png" alt="FRONTFACER" class="header-logo" />
           <span class="header-title">FRONTFACER Tunnel</span>
         </a>
+      </div>
+      <div class="header-right">
         <a href="/pricing.html" class="nav-btn">Pricing</a>
         <a href="/about.html" class="nav-btn">About</a>
         <a href="/terms.html" class="nav-btn">Terms</a>
       </div>
-      <div class="header-right"></div>
       <button class="mobile-menu-btn" onclick="toggleMobileMenu(true)">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -3479,9 +3488,6 @@
       </div>
     </div>
 
-    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-firestore.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-functions.js"></script>
     <script>
       // --- GLOBAL STATE ---
       var isSearchActive = false;
@@ -3506,31 +3512,87 @@
         }, 3000);
       }
 
-      // 🔑 Your real Firebase config - NOTE: Ensure App Check is configured for production
-      // to protect your Cloud Functions and Firestore from unauthorized clients.
-      const firebaseConfig = {
-        apiKey: "AIzaSyBHT4PCjVJD4T7foAF9uggUy_kNTK2Gb3g",
-        authDomain: "frontfacer-core.firebaseapp.com",
-        projectId: "frontfacer-core",
-        storageBucket: "frontfacer-core.firebasestorage.app",
-        messagingSenderId: "784418313787",
-        appId: "1:784418313787:web:a8623eb29e2d18bbaaae1e",
-        measurementId: "G-6XQPYNCYNJ"
-      };
+      // Backend client: same-origin Netlify Functions (/.netlify/functions/api).
+      // This replaces the old Firebase SDK. The `functions.httpsCallable`
+      // shape is kept as a thin shim so all existing call sites work unchanged.
+      // No API keys or credentials live in the frontend: authorization is
+      // enforced server-side (session IDs + per-link deleteTokens).
+      const API_URL = '/.netlify/functions/api';
 
-      // Initialize Firebase
-      const app = firebase.initializeApp(firebaseConfig);
-      // Use the named database 'frontfacer-tunnel'
-      const db = firebase.app().firestore('frontfacer-tunnel');
-      const functions = app.functions("europe-west1");
+      async function apiCall(action, data) {
+        let res;
+        try {
+          res = await fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action, ...(data || {}) })
+          });
+        } catch (networkErr) {
+          const err = new Error('Cannot reach the FRONTFACER backend. Check your connection and reload.');
+          err.code = 'unavailable';
+          throw err;
+        }
+        let body = null;
+        try { body = await res.json(); } catch (e) { /* non-JSON error page */ }
+        if (!res.ok) {
+          const info = (body && body.error) || {};
+          const err = new Error(info.message || `Request failed (${res.status}).`);
+          err.code = info.code || `http-${res.status}`;
+          throw err;
+        }
+        return { data: body };
+      }
+
+      // Shim with the same call signature the app was built against.
+      const functions = {
+        httpsCallable: (name) => (data) => apiCall(name, data)
+      };
+      // Same-origin backend: available unless the network itself fails
+      // (individual apiCall failures are caught by each caller).
+      let backendReady = true;
+
+      // Friendly guard for any backend call made while offline/uninitialized.
+      function requireBackend() {
+        if (!backendReady || !functions) {
+          showCustomModal({
+            title: "Backend Unavailable",
+            message: "Cannot reach the FRONTFACER backend. Check your connection (or ad-blocker) and reload."
+          });
+          return false;
+        }
+        return true;
+      }
 
       const SESSION_KEY = 'tunnel_session_id';
       const SESSION_ID_LENGTH = 10; // Authoritative length for all session ID validation
 
-      // Memory cache for links
+      // Memory cache for links. Parsed defensively: corrupt localStorage must
+      // never throw at top level (that would abort boot and strand the loader).
+      function loadLocalHistory() {
+        try {
+          const raw = localStorage.getItem('tunnel_history');
+          if (!raw) return [];
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+          console.warn('Corrupt tunnel_history, resetting:', e);
+          try { localStorage.removeItem('tunnel_history'); } catch (_) {}
+          return [];
+        }
+      }
       // Init with legacy data for migration check
-      let currentLinks = JSON.parse(localStorage.getItem('tunnel_history') || '[]');
-      let isDeleting = false; // Prevent multiple simultaneous delete operations
+      let currentLinks = loadLocalHistory();
+      // Per-operation locks (a shared flag blocked unrelated actions, e.g. a
+      // stats purge blocking link deletion). Keys: 'link', 'links', 'stats', 'entry'.
+      const opLocks = new Set();
+      function acquireOp(key) {
+        if (opLocks.has(key)) return false;
+        opLocks.add(key);
+        return true;
+      }
+      function releaseOp(key) {
+        opLocks.delete(key);
+      }
 
 
       // Track expanded mobile dropdowns (in-memory only, resets on page refresh)
@@ -3539,6 +3601,10 @@
       // Pagination state
       let currentPage = 1;
       const ITEMS_PER_PAGE = 5;
+
+      // The list currently rendered (after search/domain filter). Pagination
+      // operates on THIS array, not on currentLinks (which may be longer).
+      let lastRenderedLinks = [];
 
       // Visibility timers
       let resultTimeout = null;
@@ -3553,10 +3619,79 @@
 
       // Utility to escape HTML and prevent XSS
       function escapeHTML(str) {
-        if (!str) return '';
+        if (str === null || str === undefined) return '';
         const p = document.createElement('p');
-        p.textContent = str;
+        p.textContent = String(str);
         return p.innerHTML;
+      }
+
+      // Attribute-context escaping: escapeHTML does NOT escape quotes, so it
+      // is unsafe inside "..." attributes. Use this for title="..." etc.
+      function escapeAttr(str) {
+        return escapeHTML(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+
+      // Escape a string for use as a JS string literal inside an inline
+      // onclick="..." attribute. JSON.stringify handles backslashes/newlines;
+      // the replaces keep the HTML parser from terminating/decoding early.
+      function escapeJS(str) {
+        return JSON.stringify(String(str === null || str === undefined ? '' : str))
+          .replace(/&/g, '\\u0026')
+          .replace(/</g, '\\u003c')
+          .replace(/>/g, '\\u003e')
+          .replace(/\u2028/g, '\\u2028')
+          .replace(/\u2029/g, '\\u2029');
+      }
+
+      // Only allow http(s) URLs in generated links. Rejects javascript:, data:,
+      // etc. that would execute script on click even when HTML-escaped.
+      function safeHref(url, fallback) {
+        try {
+          const u = new URL(String(url), window.location.href);
+          if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
+        } catch (e) {}
+        return fallback || '#';
+      }
+
+      // Canonical lookup: links are identified by code, never by positional
+      // index (indexes shift under search/filter/pagination).
+      function findLinkIndex(code) {
+        if (!code) return -1;
+        return currentLinks.findIndex(l => l && l.code === code);
+      }
+
+      // Backend-provided money values must look like BTC amounts before they
+      // are rendered as HTML. Anything else falls back to plain text.
+      function isBtcAmount(v) {
+        return typeof v === 'string' && /^\d+(\.\d{1,8})?$/.test(v);
+      }
+      function setQuoteAmount(el, amount, originalAmount) {
+        if (!el) return;
+        const amt = String(amount);
+        if (!isBtcAmount(amt)) {
+          el.textContent = 'Invalid amount received';
+          return;
+        }
+        el.dataset.copyValue = amt;
+        if (originalAmount !== undefined && originalAmount !== null &&
+            isBtcAmount(String(originalAmount))) {
+          el.innerHTML = `<span style="text-decoration: line-through; color: var(--text-muted); font-size: 0.9rem;">${escapeHTML(String(originalAmount))} BTC</span> <span style="color: #10b981;">${escapeHTML(amt)} BTC</span>`;
+        } else {
+          el.textContent = `${amt} BTC`;
+        }
+      }
+      function setDiscountBanner(el, pct) {
+        if (!el) return;
+        const n = Number(pct);
+        if (!Number.isFinite(n) || n <= 0 || n >= 100) {
+          el.style.display = 'none';
+          return;
+        }
+        el.innerHTML = `🎉 Discount applied! You save ${n}%`;
+        el.style.display = 'block';
+        el.style.background = 'rgba(16,185,129,0.15)';
+        el.style.borderColor = '#10b981';
+        el.style.color = '#4ade80';
       }
 
       // --- SESSION MANAGEMENT ---
@@ -3584,25 +3719,37 @@
         }
       }
 
+      // Cryptographically strong random int in [0, max). Falls back to
+      // Math.random only where WebCrypto is unavailable (non-secure contexts).
+      function randInt(max) {
+        try {
+          if (window.crypto && window.crypto.getRandomValues) {
+            const buf = new Uint32Array(1);
+            window.crypto.getRandomValues(buf);
+            return buf[0] % max;
+          }
+        } catch (e) {}
+        return Math.floor(Math.random() * max);
+      }
+
       async function generateSessionId() {
         const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
         const specials = '-_!';
         let result = '';
-        let specialCount = 0;
         let attempts = 0;
-        const maxAttempts = 50; // Prevent infinite loops
+        const maxAttempts = 10; // Bounded: each attempt is a billed backend call
 
         while (attempts < maxAttempts) {
           result = '';
-          specialCount = 0;
+          let specialCount = 0;
 
           for (let i = 0; i < SESSION_ID_LENGTH; i++) {
             // 10% chance of special char if limit not reached
-            if (Math.random() < 0.1 && specialCount < 3) {
-              result += specials.charAt(Math.floor(Math.random() * specials.length));
+            if (randInt(10) === 0 && specialCount < 3) {
+              result += specials.charAt(randInt(specials.length));
               specialCount++;
             } else {
-              result += chars.charAt(Math.floor(Math.random() * chars.length));
+              result += chars.charAt(randInt(chars.length));
             }
           }
 
@@ -3617,17 +3764,28 @@
           attempts++;
         }
 
-        // Fallback: append timestamp to ensure uniqueness
+        // Fallback: MUST still satisfy the exact-10-char invariant (load/merge
+        // validation rejects anything else). Mix time entropy with fresh
+        // randomness so concurrent fallbacks don't collide.
+        const fallbackAlphabet = chars + '-_';
+        let suffix = Date.now().toString(36).replace(/[^a-z0-9]/gi, '');
+        let out = '';
+        for (let i = 0; i < SESSION_ID_LENGTH; i++) {
+          out += (i < suffix.length && randInt(2) === 0)
+            ? suffix[i]
+            : fallbackAlphabet.charAt(randInt(fallbackAlphabet.length));
+        }
         // Return WITHOUT creating in database - session will be created after successful shortening
-        return result + Date.now().toString(36);
+        return out;
       }
 
       function getSessionId() {
-        return localStorage.getItem(SESSION_KEY);
+        // Storage can throw when blocked (private mode, disabled cookies)
+        try { return localStorage.getItem(SESSION_KEY); } catch (e) { return null; }
       }
 
       function setSessionId(id) {
-        localStorage.setItem(SESSION_KEY, id);
+        try { localStorage.setItem(SESSION_KEY, id); } catch (e) {}
         updateSessionUI();
       }
 
@@ -3692,7 +3850,7 @@
       // --- CUSTOM DOMAIN MANAGEMENT ---
 
       let selectedDomain = "s.frontfacer.com/";
-      let userCustomDomains = []; // Will be populated from Firestore
+      let userCustomDomains = []; // Will be populated from the backend
 
       // Initial domain state
       const domainSelector = document.getElementById('domainSelector');
@@ -3778,9 +3936,8 @@
 
       let selectedHistoryDomain = 'all'; // Default filter for history
 
-      function filterHistoryByDomain() {
-        renderHistory(currentLinks);
-      }
+      // NOTE: filterHistoryByDomain is defined once near the payment polling
+      // section (resets pagination, then renders). Do not redefine here.
 
       function selectHistoryFilter(value, label) {
         const input = document.getElementById('historyDomainFilter');
@@ -3873,7 +4030,7 @@
           const filterOpt = document.createElement('div');
           filterOpt.className = `filter-option ${currentFilter === domainName ? 'selected' : ''}`;
           filterOpt.innerHTML = `
-            <span>${domainName}</span>
+            <span>${escapeHTML(domainName)}</span>
             ${currentFilter === domainName ? checkIcon : ''}
           `;
           filterOpt.onclick = () => selectHistoryFilter(domainName, domainName);
@@ -3887,14 +4044,14 @@
           opt.className = `domain-option ${selectedDomain === domainVal ? 'selected' : ''}`;
           opt.innerHTML = `
             <div class="domain-actions-group">
-              <button onclick="event.stopPropagation(); showDomainManager('${domainObj.domain}')" 
-                style="background: rgba(79, 70, 229, 0.1); border: 1px solid rgba(79, 70, 229, 0.2); 
+              <button onclick="event.stopPropagation(); showDomainManager(${escapeJS(domainObj.domain)})"
+                style="background: rgba(79, 70, 229, 0.1); border: 1px solid rgba(79, 70, 229, 0.2);
                        color: var(--primary); padding: 2px 6px; border-radius: 4px; font-size: 0.65rem; cursor: pointer;">
                 Manage
               </button>
               <span class="domain-status status-active">Active</span>
             </div>
-            <span style="flex: 1; white-space: nowrap;">${domainObj.domain}/</span>
+            <span style="flex: 1; white-space: nowrap;">${escapeHTML(domainObj.domain)}/</span>
           `;
           opt.onclick = () => selectDomain(domainVal);
           dropdown.insertBefore(opt, document.getElementById('dropdownAddNew'));
@@ -3917,14 +4074,14 @@
             opt.className = 'domain-option';
             opt.innerHTML = `
               <div class="domain-actions-group">
-                <button onclick="event.stopPropagation(); showDomainManager('${domainObj.domain}')" 
-                  style="background: rgba(79, 70, 229, 0.1); border: 1px solid rgba(79, 70, 229, 0.2); 
+                <button onclick="event.stopPropagation(); showDomainManager(${escapeJS(domainObj.domain)})"
+                  style="background: rgba(79, 70, 229, 0.1); border: 1px solid rgba(79, 70, 229, 0.2);
                          color: var(--primary); padding: 2px 6px; border-radius: 4px; font-size: 0.65rem; cursor: pointer;">
                   Manage
                 </button>
                 <span class="domain-status ${statusClass}">${statusText}</span>
               </div>
-              <span style="flex: 1; white-space: nowrap;">${domainObj.domain}/</span>
+              <span style="flex: 1; white-space: nowrap;">${escapeHTML(domainObj.domain)}/</span>
             `;
             opt.onclick = () => showDomainManager(domainObj.domain);
             dropdown.insertBefore(opt, document.getElementById('dropdownAddNew'));
@@ -3936,6 +4093,7 @@
       let pendingDomain = '';
 
       async function showDomainManager(targetDomain = '') {
+        if (!requireBackend()) return;
         // Auto-create session if none exists (same logic as URL creation)
         if (!getSessionId()) {
           const confirmed = await showCustomModal({
@@ -4166,19 +4324,12 @@
             }
 
             // Show discount applied banner
-            if (bannerEl) {
-              bannerEl.innerHTML = `🎉 Discount applied! You save ${res.data.discountPercent}%`;
-              bannerEl.style.display = 'block';
-              bannerEl.style.background = 'rgba(16,185,129,0.15)';
-              bannerEl.style.borderColor = '#10b981';
-              bannerEl.style.color = '#4ade80';
-            }
+            setDiscountBanner(bannerEl, res.data.discountPercent);
 
             // Update the displayed amount with strikethrough and discounted amount
             // Only if we have the amounts from the check
             if (quoteAmountEl && res.data.amount && res.data.originalAmount) {
-              quoteAmountEl.dataset.copyValue = res.data.amount;
-              quoteAmountEl.innerHTML = `<span style="text-decoration: line-through; color: var(--text-muted); font-size: 0.9rem;">${res.data.originalAmount} BTC</span> <span style="color: #10b981;">${res.data.amount} BTC</span>`;
+              setQuoteAmount(quoteAmountEl, res.data.amount, res.data.originalAmount);
             }
 
             return true;
@@ -4213,7 +4364,7 @@
           if (domainExists) {
             showCustomModal({
               title: "Domain Already Added",
-              message: `The domain <strong>${pendingDomain}</strong> is already in your account.`
+              message: `The domain <strong>${escapeHTML(pendingDomain)}</strong> is already in your account.`
             });
             btn.classList.remove('loading');
             btn.disabled = false;
@@ -4234,7 +4385,7 @@
           showStep(2);
         } catch (err) {
           console.error('Error in proceedToAddDomain:', err);
-          showCustomModal({ title: "Error", message: err.message });
+          showCustomModal({ title: "Error", message: escapeHTML(err.message || 'Something went wrong') });
         } finally {
           btn.classList.remove('loading');
           btn.disabled = false;
@@ -4270,7 +4421,7 @@
 
           showStep('verification');
         } catch (err) {
-          showCustomModal({ title: "Error", message: err.message });
+          showCustomModal({ title: "Error", message: escapeHTML(err.message || 'Something went wrong') });
         } finally {
           btn.classList.remove('loading');
           btn.disabled = false;
@@ -4278,62 +4429,10 @@
         }
       }
 
-      // Verify Domain DNS (Full Check)
-      async function verifyDomainDNS() {
-        const btn = document.getElementById('verifyDNSBtn');
-        if (!btn || btn.classList.contains('loading')) return;
-
-        try {
-          btn.classList.add('loading');
-          btn.disabled = true;
-          btn.textContent = 'Verifying...';
-
-          console.log('--- Full DNS Verification Start ---');
-          const verifyFn = functions.httpsCallable('verifyCustomDomainDns');
-          const result = await verifyFn({ domain: pendingDomain, sessionId: getSessionId(), force: true });
-          const data = result.data;
-          console.log('Full Verification Response:', data);
-
-          const statusDiv = document.getElementById('verificationStatus');
-          const statusContent = document.getElementById('verificationStatusContent');
-          statusDiv.style.display = 'block';
-
-          if (data.success && data.isVerified) {
-            statusContent.innerHTML = '<div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: #10b981;">✓ Domain Verified! Redirecting...</div>';
-            await loadUserDomains();
-            setTimeout(() => {
-              showAddDomainStep(3);
-            }, 1500);
-          } else {
-            let errorMsg = 'Verification incomplete. Please check your DNS settings.';
-            if (data.errors && data.errors.length > 0) {
-              errorMsg = data.errors.join('<br>');
-            }
-
-            const checks = data.checks || {};
-            const details = [];
-            details.push(checks.txt ? '✓ TXT record verified' : '✗ TXT record not found or incorrect');
-            details.push(checks.cname ? '✓ CNAME record verified' : '✗ CNAME record not found or incorrect');
-            details.push(checks.ssl ? '✓ SSL record verified' : '✗ SSL record not found or incorrect');
-
-            statusContent.innerHTML = `<div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #fca5a5;">${errorMsg}<br><br><strong>Status:</strong><br>${details.join('<br>')}</div>`;
-
-            // Sync the UI if we have data
-            updateAllChecksFromResponse(data);
-          }
-        } catch (err) {
-          console.error('Full Verification Error:', err);
-          const statusDiv = document.getElementById('verificationStatus');
-          const statusContent = document.getElementById('verificationStatusContent');
-          statusDiv.style.display = 'block';
-          statusContent.innerHTML = `<div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #fca5a5;">Error: ${err.message}</div>`;
-        } finally {
-          btn.classList.remove('loading');
-          btn.disabled = false;
-          btn.textContent = 'Verify DNS';
-          console.log('--- Full DNS Verification End ---');
-        }
-      }
+      // NOTE: verifyDomainDNS (full-check variant bound to #verifyDNSBtn) was
+      // removed: no such button exists in the markup (per-field Verify
+      // CNAME/TXT/SSL buttons below are the live path). Keeping dead code
+      // around only preserved unescaped error-message innerHTML paths.
 
       // Per-field verification functions
       let currentDomain = null;
@@ -4488,18 +4587,24 @@
 
         list.innerHTML = '';
         records.forEach((rec, index) => {
+          // Backend-provided strings: escape for both HTML text and the
+          // data-name="..." attribute (dataset decodes back to the raw value,
+          // which verifySingleAcme passes to the backend verbatim).
+          const recName = String(rec.txt_name || rec.name || '');
+          const recValue = String(rec.txt_value || rec.value || '');
+          const recType = String(rec.type || 'TXT');
           const div = document.createElement('div');
           div.className = 'acme-record';
-          div.dataset.name = rec.txt_name || rec.name;
+          div.dataset.name = recName;
           div.style.cssText = 'padding: 12px; background: rgba(15, 23, 42, 0.5); border-radius: 8px; display: flex; flex-direction: column; border: 1px solid rgba(255,255,255,0.05);';
-          
+
           const nameId = `acmeName_${index}`;
           const valueId = `acmeValue_${index}`;
 
           div.innerHTML = `
             <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-              <div id="${nameId}" style="font-family: monospace; font-size: 0.8rem; color: #818cf8; background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${rec.txt_name || rec.name}</div>
+              <div id="${nameId}" style="font-family: monospace; font-size: 0.8rem; color: #818cf8; background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${escapeHTML(recName)}</div>
               <button class="copy-btn" onclick="copyTextFromElement('${nameId}')" title="Copy Host"
                 style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
@@ -4511,7 +4616,7 @@
 
             <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Value:</div>
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-              <div id="${valueId}" style="font-family: monospace; font-size: 0.8rem; color: #c084fc; background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${rec.txt_value || rec.value}</div>
+              <div id="${valueId}" style="font-family: monospace; font-size: 0.8rem; color: #c084fc; background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${escapeHTML(recValue)}</div>
               <button class="copy-btn" onclick="copyTextFromElement('${valueId}')" title="Copy Value"
                 style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
@@ -4522,9 +4627,9 @@
             </div>
 
             <div style="display: flex; align-items: center; justify-content: space-between;">
-              <div style="font-size: 0.7rem; color: var(--text-muted);">Type: <span style="color: #c084fc; font-weight: 600;">${rec.type || 'TXT'}</span></div>
+              <div style="font-size: 0.7rem; color: var(--text-muted);">Type: <span style="color: #c084fc; font-weight: 600;">${escapeHTML(recType)}</span></div>
               <div style="display: flex; align-items: center; justify-content: flex-start; gap: 8px;">
-                <button class="btn-verify verify-acme-record" data-name="${rec.txt_name || rec.name}" onclick="verifySingleAcme(this)">Verify</button>
+                <button class="btn-verify verify-acme-record" data-name="${escapeAttr(recName)}" onclick="verifySingleAcme(this)">Verify</button>
                 <span class="acme-status domain-status status-pending" style="font-size: 0.7rem; font-weight: 600;">PENDING</span>
               </div>
             </div>
@@ -4816,8 +4921,9 @@
           return;
         }
 
-        // Find the button for this record
-        const btn = document.querySelector(`.verify-acme-record[data-name="${recordName}"]`);
+        // Find the button for this record (CSS.escape: record names land in
+        // a selector string and could otherwise break querySelector)
+        const btn = document.querySelector(`.verify-acme-record[data-name="${CSS.escape(recordName)}"]`);
         if (btn) {
           btn.disabled = true;
           btn.textContent = 'Verifying...';
@@ -4855,42 +4961,16 @@
         }
       }
 
-      // Legacy function - verify all ACME records at once
-      async function verifyAcmeOnly() {
-        if (!window.currentDomain || !getSessionId()) {
+      // Called from the per-record "Verify" buttons rendered by
+      // renderAcmeRecords (onclick="verifySingleAcme(this)"). Delegates to
+      // verifyAcmeRecord using the button's data-name.
+      function verifySingleAcme(btnEl) {
+        const name = btnEl && btnEl.dataset ? btnEl.dataset.name : null;
+        if (!name) {
           showToast('Selection error: please re-open the domain manager.', 'error');
-          console.warn('verifyAcmeOnly: missing context', { currentDomain: window.currentDomain, sessionId: getSessionId() });
           return;
         }
-        try {
-          const verifyFn = functions.httpsCallable('verifyCustomDomainDns');
-          const res = await verifyFn({ sessionId: getSessionId(), domain: currentDomain });
-          const data = res.data || {};
-          updateAllChecksFromResponse(data);
-
-          // Update all individual ACME records if returned
-          if (data.acmeVerificationResults && typeof data.acmeVerificationResults === 'object') {
-            for (const [name, ok] of Object.entries(data.acmeVerificationResults)) {
-              updateAcmeRecordStatus(name, ok);
-            }
-          } else if (data.acmeTxtVerified !== undefined) {
-            // Apply same result to all records
-            (sslRecords || []).forEach(rec => updateAcmeRecordStatus(rec.name, data.acmeTxtVerified));
-          }
-
-          if (data.acmeTxtVerified) {
-            showToast('All ACME records verified!', 'success');
-          }
-        } catch (e) {
-          console.error('verifyAcmeOnly error:', e);
-          showToast('Error verifying ACME records: ' + (e.message || 'Unknown error'), 'error');
-        } finally {
-          if (btn) {
-            btn.disabled = false;
-            // ACME only has one status flag in verificationState
-            btn.textContent = verificationState.acme_all ? 'Re-verify All' : 'Verify All';
-          }
-        }
+        verifyAcmeRecord(name);
       }
 
       async function continueToPaymentFromVerification() {
@@ -4943,44 +5023,19 @@
         }
       }
 
-      // Add domain and prepare verification UI
-      async function addDomainAndPrepare(domain) {
-        const addFn = functions.httpsCallable('addCustomDomain');
-        try {
-          const res = await addFn({ sessionId: getSessionId(), domain });
-          const data = res.data || {};
-          setVerificationUI({
-            domain: data.domain,
-            dnsVerificationToken: data.dnsVerificationToken,
-            sslVerification: data.sslVerification,
-            status: data.status,
-            isVerified: data.isVerified,
-            dnsVerification: data.dnsVerification
-          });
-        } catch (err) {
-          console.error('add domain error:', err);
-          showToast('Error adding domain: ' + (err.message || 'Unknown error'), 'error');
-        }
-      }
+      // NOTE: addDomainAndPrepare() was removed (dead code, no callers;
+      // manageDomain()/loadVerificationInfo() cover this path).
 
-      // Fetch BTC price for pricing display
-      async function fetchBTCPrice() {
-        try {
-          const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
-          const data = await response.json();
-          return data.bitcoin?.usd;
-        } catch (err) {
-          console.error('Failed to fetch BTC price:', err);
-          return null;
-        }
-      }
+      // NOTE: fetchBTCPrice() (direct CoinGecko call) was removed: dead code,
+      // and api.coingecko.com is not in connect-src. updatePricingScreenBTC()
+      // below uses the backend getBtcPrice function instead.
 
       async function updatePricingScreenBTC() {
         const btcEstimateEl = document.getElementById('btcPriceEstimate');
         if (!btcEstimateEl) return;
 
         try {
-          // Call the Cloud Function to get BTC price
+          // Call the backend to get BTC price
           const getBtcPriceFn = functions.httpsCallable('getBtcPrice');
           const result = await getBtcPriceFn({});
           const btcPrice = result.data.price;
@@ -4988,9 +5043,8 @@
           if (btcPrice) {
             const btcAmount = 10 / btcPrice;
 
-            // Format with 8 decimals to show exact value
-            const formatted = btcAmount.toFixed(8).replace(/\.?0+$/, '');
-            btcEstimateEl.innerHTML = `That is roughly ${btcAmount.toFixed(8)} BTC`;
+            // 8 decimals shows the exact value (banners use validated helpers)
+            btcEstimateEl.textContent = `That is roughly ${btcAmount.toFixed(8)} BTC`;
           } else {
             btcEstimateEl.innerHTML = 'BTC estimate could not be calculated.';
           }
@@ -5000,44 +5054,8 @@
         }
       }
 
-      async function selectSSLMode(mode, e) {
-        // Find the clicked button to show loading
-        const btn = e.currentTarget;
-        if (btn.classList.contains('loading')) return;
-
-        try {
-          btn.classList.add('loading');
-          btn.disabled = true;
-
-          // Reset instructions if switching mode
-          document.getElementById('paymentInstructions').style.display = 'none';
-
-          const addFn = functions.httpsCallable('addCustomDomain');
-          const result = await addFn({ domain: pendingDomain, type: mode, sessionId: getSessionId() });
-
-          // For managed mode, need to verify DNS first
-          if (mode === 'managed') {
-            const data = result.data || {};
-            // Set up verification UI with returned data so verify buttons work
-            setVerificationUI({
-              domain: data.domain || pendingDomain,
-              dnsVerificationToken: data.dnsVerificationToken || (data.instructions && data.instructions.txt) || '',
-              sslVerification: data.sslVerification || null,
-              status: data.status || 'pending_verification',
-              isVerified: data.isVerified,
-              dnsVerification: data.dnsVerification
-            });
-            showStep('verification');
-          } else {
-            showStep('payment');
-          }
-        } catch (err) {
-          showCustomModal({ title: "Error", message: err.message });
-        } finally {
-          btn.classList.remove('loading');
-          btn.disabled = false;
-        }
-      }
+      // NOTE: selectSSLMode() was removed (dead code, no callers; the live
+      // flow is proceedToAddDomain -> confirmPricingAndProceed).
 
       function copyTextFromElement(id) {
         const el = document.getElementById(id);
@@ -5053,7 +5071,7 @@
           cleanText = text.includes(' ') ? text.split(' ')[0] : text;
         }
 
-        if (!navigator.clipboard) {
+        if (!navigator.clipboard || !navigator.clipboard.writeText) {
           // Fallback for non-HTTPS or older browsers
           const textarea = document.createElement("textarea");
           textarea.value = cleanText;
@@ -5064,6 +5082,7 @@
             animateSuccess(el);
           } catch (err) {
             console.error("Fallback copy failed", err);
+            showToast('Copy failed — select the text manually.', 'error');
           }
           document.body.removeChild(textarea);
           return;
@@ -5071,7 +5090,10 @@
 
         navigator.clipboard.writeText(cleanText).then(() => {
           animateSuccess(el);
-        }).catch(err => console.error("Clipboard copy failed", err));
+        }).catch(err => {
+          console.error("Clipboard copy failed", err);
+          showToast('Copy failed — select the text manually.', 'error');
+        });
       }
 
       function animateSuccess(el) {
@@ -5165,7 +5187,7 @@
             // Show confirmation dialog with warning
             const confirmed = await showCustomModal({
               title: "Delete Domain?",
-              message: `Are you sure you want to delete <strong>${domainToDelete}</strong>?` +
+              message: `Are you sure you want to delete <strong>${escapeHTML(domainToDelete)}</strong>?` +
                 `<div style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; padding: 12px; margin: 8px 0; color: #fca5a9;">` +
                 `⚠️ <strong>Warning:</strong> This domain is ${isPaid ? 'paid and active' : 'verified'}. All links using this domain will be permanently deleted.</div>` +
                 `<div>If you want to use this domain again later, you'll need to pay again.</div>`,
@@ -5202,7 +5224,7 @@
           showToast(message, "success");
 
         } catch (err) {
-          showCustomModal({ title: "Error", message: err.message });
+          showCustomModal({ title: "Error", message: escapeHTML(err.message || 'Something went wrong') });
         } finally {
           if (btn) {
             btn.disabled = false;
@@ -5261,11 +5283,9 @@
           // Check if there's a discount and display accordingly
           if (res.data.discountPercent && res.data.originalAmount) {
             // Show strikethrough original price and discounted price in green
-            quoteAmountEl.dataset.copyValue = res.data.amount;
-            quoteAmountEl.innerHTML = `<span style="text-decoration: line-through; color: var(--text-muted); font-size: 0.9rem;">${res.data.originalAmount} BTC</span> <span style="color: #10b981;">${res.data.amount} BTC</span>`;
+            setQuoteAmount(quoteAmountEl, res.data.amount, res.data.originalAmount);
           } else {
-            quoteAmountEl.textContent = `${res.data.amount} BTC`;
-            quoteAmountEl.dataset.copyValue = res.data.amount;
+            setQuoteAmount(quoteAmountEl, res.data.amount);
           }
           quoteAddressEl.textContent = res.data.address;
 
@@ -5274,7 +5294,7 @@
             quoteExpiryEl.innerHTML = `⚠️ This quote expires on <strong>${expiryDate.toLocaleDateString()} ${expiryDate.toLocaleTimeString()}</strong> (1 week from generation).`;
           }
 
-          // Start polling Firestore for domain activation
+          // Start polling the backend for domain activation
           startPaymentPolling(pendingDomain);
         } catch (err) {
           console.error(err);
@@ -5283,15 +5303,14 @@
           if (err.code === 'failed-precondition' && err.message && err.message.includes('DNS verification')) {
             loadingState.innerHTML = '<span style="color: #f59e0b;">DNS verification required before payment.</span>';
 
-            // Show verification step
+            // Show verification step (showCustomModal resolves true on OK)
             showCustomModal({
               title: "Verification Required",
               message: "Please verify your domain ownership and DNS configuration before proceeding to payment.",
-              buttons: [
-                { text: "Go to Verification", action: () => { showStep('verification'); } },
-                { text: "Cancel", action: () => { } }
-              ]
-            });
+              confirmText: "Go to Verification",
+              showCancel: true,
+              cancelText: "Cancel"
+            }).then((ok) => { if (ok) showStep('verification'); });
           } else {
             loadingState.innerHTML = '<span style="color: #ef4444;">Failed to generate payment address. Please close and try again.</span>';
             showCustomModal({ title: "Error", message: "Failed to generate payment address. Please try again." });
@@ -5353,7 +5372,7 @@
             applyBtn.textContent = 'Activating...';
             applyBtn.style.background = 'rgba(16, 185, 129, 0.3)';
 
-            bannerEl.innerHTML = `🎉 ${res.data.message}`;
+            bannerEl.innerHTML = `🎉 ${escapeHTML(res.data.message || 'Discount applied')}`;
             bannerEl.style.display = 'block';
             bannerEl.style.background = 'rgba(16,185,129,0.15)';
             bannerEl.style.borderColor = '#10b981';
@@ -5365,7 +5384,7 @@
               closeDomainManager();
               showCustomModal({
                 title: '🎉 Domain Activated!',
-                message: `Your domain <strong>${pendingDomain}</strong> has been added for free! You can now create short links using this domain.`
+                message: `Your domain <strong>${escapeHTML(pendingDomain)}</strong> has been added for free! You can now create short links using this domain.`
               });
             }, 1500);
             return;
@@ -5373,11 +5392,7 @@
 
           if (res.data.discounted) {
             // Show discounted amount
-            bannerEl.innerHTML = `🎉 Discount applied! You save ${res.data.discountPercent}%`;
-            bannerEl.style.display = 'block';
-            bannerEl.style.background = 'rgba(16,185,129,0.15)';
-            bannerEl.style.borderColor = '#10b981';
-            bannerEl.style.color = '#4ade80';
+            setDiscountBanner(bannerEl, res.data.discountPercent);
 
             // Update the displayed amount directly from the response
             const quoteAmountEl = document.getElementById('quoteAmount');
@@ -5386,8 +5401,7 @@
 
             if (quoteAmountEl) {
               // Store the discounted amount in a data attribute for the copy function
-              quoteAmountEl.dataset.copyValue = res.data.amount;
-              quoteAmountEl.innerHTML = `<span style="text-decoration: line-through; color: var(--text-muted); font-size: 0.9rem;">${res.data.originalAmount} BTC</span> <span style="color: #10b981;">${res.data.amount} BTC</span>`;
+              setQuoteAmount(quoteAmountEl, res.data.amount, res.data.originalAmount);
             }
 
             if (quoteAddressEl && res.data.address) {
@@ -5492,7 +5506,7 @@
       }
 
       // --- Payment Status Polling ---
-      // Polls Firestore every 10s while payment step is open.
+      // Polls the Netlify backend every 10s while payment step is open.
       // Auto-activates UI when payment is detected.
       let _paymentPollInterval = null;
       const PAYMENT_POLL_INTERVAL_MS = 10000; // 10 seconds
@@ -5538,12 +5552,12 @@
           }
 
           try {
-            const snap = await firebase.firestore()
-              .collection('customDomains')
-              .doc(domain)
-              .get();
+            // Same-origin backend check (replaces the old direct-Firestore
+            // read): ask getDomainVerificationInfo for the live status.
+            const infoFn = functions.httpsCallable('getDomainVerificationInfo');
+            const info = await infoFn({ domain, sessionId: getSessionId() });
 
-            if (snap.exists && snap.data().status === 'active') {
+            if (info.data && info.data.status === 'active') {
               stopPaymentPolling();
               // Show success banner
               if (banner) {
@@ -5577,6 +5591,17 @@
       if (addNewBtn) addNewBtn.onclick = () => showDomainManager();
 
       async function promptSessionLoad() {
+        // Frontend rate limit: SESSION_RATE_LIMIT_MS between manual attempts
+        const nowAttempt = Date.now();
+        if (nowAttempt - lastManualSessionAttempt < SESSION_RATE_LIMIT_MS) {
+          showCustomModal({
+            title: "Please Wait",
+            message: "You're trying too fast. Please wait a moment before retrying."
+          });
+          return;
+        }
+        lastManualSessionAttempt = nowAttempt;
+        if (!requireBackend()) return;
         const sid = await showCustomModal({
           title: "Load Session ID",
           message: "Enter your 10-character Session ID to synchronize your history.",
@@ -5666,6 +5691,16 @@
         
         try {
           updateSessionUI();
+
+          // Offline/degraded boot: backend calls below would all fail, so
+          // render what we can (empty state) instead of erroring per call.
+          if (!backendReady) {
+            console.warn('Booting without backend (offline?).');
+            renderEmptyState();
+            showToast('Backend unreachable — showing cached state. Reload when online.', 'error');
+            return;
+          }
+
           let sid = getSessionId();
 
           // --- MIGRATION LOGIC ---
@@ -5700,6 +5735,7 @@
           console.error("Critical error during initApp:", err);
         } finally {
           // Hide the initial loading screen smoothly
+          window.__tunnelBooted = true;
           const initialLoader = document.getElementById('initialLoadingScreen');
           if (initialLoader) {
             initialLoader.style.opacity = '0';
@@ -5911,6 +5947,12 @@
           return;
         }
 
+        if (!requireBackend()) {
+          button.disabled = false;
+          button.textContent = 'Shorten URL';
+          return;
+        }
+
         try {
           resultDiv.style.display = 'none';
           document.getElementById('errorBox').style.display = 'none';
@@ -5935,7 +5977,7 @@
           }
 
 
-          // Call the Cloud Function
+          // Call the backend API
           const shorten = functions.httpsCallable('shortenUrl');
           const response = await shorten({
             originalUrl: urlInput,
@@ -5947,7 +5989,13 @@
           const shortenedUrl = response.data.shortenedUrl;
           const deleteToken = response.data.deleteToken;
           const platform = response.data.platform;
-          const shortCode = shortenedUrl.split('/').pop();
+          // Validate backend output: must be an http(s) URL with a usable code.
+          // (Defense in depth: never assign unvalidated schemes to href.)
+          const safeShort = safeHref(shortenedUrl, null);
+          const shortCode = safeShort ? safeShort.split('/').filter(Boolean).pop() : null;
+          if (!safeShort || !shortCode || !deleteToken) {
+            throw new Error('Backend returned an invalid short URL. Please try again.');
+          }
 
           // Only create session in database AFTER successful URL shortening
           await createSessionInDb(sid);
@@ -5955,7 +6003,7 @@
           // Add to local state immediately (optimistic update)
           const newItem = {
             original: urlInput,
-            short: shortenedUrl,
+            short: safeShort,
             code: shortCode,
             deleteToken: deleteToken,
             timestamp: Date.now(),
@@ -5975,9 +6023,9 @@
           // Persist session ID to localStorage only after successful link creation
           setSessionId(sid);
 
-          // Show result
-          document.getElementById('shortenedUrlLink').textContent = shortenedUrl;
-          document.getElementById('shortenedUrlLink').href = shortenedUrl;
+          // Show result (safeShort already validated as http(s) above)
+          document.getElementById('shortenedUrlLink').textContent = safeShort;
+          document.getElementById('shortenedUrlLink').href = safeShort;
           resultDiv.style.display = 'flex';
 
           // Reset any existing result timer
@@ -6024,18 +6072,20 @@
           } else if (error.message && error.message.includes('429')) {
             message = "You've made too many attempts. Please wait a moment before trying again, or try disconnecting from your VPN or proxy if you're using one.";
           } else if (errorCode === 'permission-denied' || error.message === 'permission-denied') {
-            // Domain is not active - show a clear modal with instructions
+            // Domain is not active - show a clear modal with instructions.
+            // showCustomModal resolves true on confirm: open the manager then.
             message = "Domain not active. Complete verification and payment first.";
             showCustomModal({
               title: "Domain Not Active",
-              message: "The custom domain you selected is not fully verified or paid. Please complete the following steps:\n\n1. Set up CNAME and TXT DNS records\n2. Complete ACME TXT verification (if required)\n3. Complete payment\n\nClick 'Manage' on your domain in the dropdown to continue verification.",
+              message: "The custom domain you selected is not fully verified or paid. Please complete the following steps:<br><br>1. Set up CNAME and TXT DNS records<br>2. Complete SSL verification<br>3. Complete payment<br><br>Choose Manage Domain to continue verification.",
               confirmText: "Manage Domain",
-              onConfirm: () => {
-                closeCustomModal();
+              showCancel: true,
+              cancelText: "Close"
+            }).then((ok) => {
+              if (ok) {
                 const domain = selectedDomain.replace(/\/$/, '');
                 showDomainManager(domain);
-              },
-              cancelText: "Close"
+              }
             });
           }
 
@@ -6264,9 +6314,13 @@
         // Update search visibility based on links count
         updateSearchVisibility();
 
-        // Pagination calculations
+        // Pagination calculations (over the FILTERED list, so page counts and
+        // slices stay consistent with what is actually rendered)
+        lastRenderedLinks = links;
         const totalItems = links.length;
         const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE);
+        // Clamp: a narrower filter/search can leave currentPage past the end
+        if (currentPage > totalPages) currentPage = Math.max(1, totalPages);
         const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
         const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, totalItems);
         const paginatedLinks = links.slice(startIndex, endIndex);
@@ -6288,35 +6342,42 @@
         // Mobile dropdown HTML (added outside table)
         let mobileHtml = '';
 
-        paginatedLinks.forEach((item, paginatedIndex) => {
-          const actualIndex = startIndex + paginatedIndex; // Map to original array index
-          // Re-escape for attribute safety
-          const escapedOriginal = item.original.replace(/'/g, "&apos;").replace(/"/g, "&quot;");
-          const escapedShort = item.short.replace(/'/g, "&apos;").replace(/"/g, "&quot;");
+        paginatedLinks.forEach((item) => {
+          // SECURITY: never interpolate user-controlled strings into inline
+          // handlers raw. escapeJS() produces a safe JS string literal
+          // (prevents ');...// breakout even after HTML-entity decoding),
+          // escapeAttr() is for "..." attributes, safeHref() blocks
+          // javascript:/data: schemes in generated links.
+          const jsOriginal = escapeJS(item.original);
+          const jsShort = escapeJS(item.short);
+          const codeJs = escapeJS(item.code);
+          const codeAttr = escapeAttr(item.code);
+          const safeShortHref = escapeAttr(safeHref(item.short));
           const itemLabel = item.label || '';
           const hasLabel = itemLabel.length > 0;
           const labelDisplay = hasLabel
-            ? `<span id="label-${item.code}" class="link-label">${escapeHTML(itemLabel)}</span>`
-            : `<span id="label-${item.code}" class="label-placeholder">Add label...</span>`;
+            ? `<span id="label-${codeAttr}" class="link-label">${escapeHTML(itemLabel)}</span>`
+            : `<span id="label-${codeAttr}" class="label-placeholder">Add label...</span>`;
           const mobileLabelDisplay = hasLabel
-            ? `<span id="mobile-label-${item.code}" class="link-label">${escapeHTML(itemLabel)}</span>`
-            : `<span id="mobile-label-${item.code}" class="label-placeholder">Add label...</span>`;
-          const editButton = `<button class="label-edit-btn" onclick="editLabel('${item.code}', ${actualIndex})" title="Edit Label">
+            ? `<span id="mobile-label-${codeAttr}" class="link-label">${escapeHTML(itemLabel)}</span>`
+            : `<span id="mobile-label-${codeAttr}" class="label-placeholder">Add label...</span>`;
+          const editButton = `<button class="label-edit-btn" onclick="event.stopPropagation(); editLabel(${codeJs}, false)" title="Edit Label">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
               </svg>
             </button>`;
-          const mobileEditButton = `<button class="label-edit-btn" onclick="editLabel('${item.code}', ${actualIndex}, true)" title="Edit Label">
+          const mobileEditButton = `<button class="label-edit-btn" onclick="event.stopPropagation(); editLabel(${codeJs}, true)" title="Edit Label">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
               </svg>
             </button>`;
 
-          // Desktop table row structure
+          // Desktop table row structure (lookups are by code, never by index:
+          // indexes shift under search/filter/pagination)
           html += `
-            <tr id="row-${item.code}" class="link-item-row">
+            <tr id="row-${codeAttr}" class="link-item-row">
               <td data-label="Label" colspan="4">
                 <div class="label-cell">
                   ${editButton}
@@ -6324,20 +6385,20 @@
                 </div>
               </td>
             </tr>
-            <tr id="row-${item.code}-data" class="link-data-row">
-              <td data-label="Original Link"><div class="history-original" title="${escapeHTML(item.original)}">${escapeHTML(item.original)}</div></td>
-              <td data-label="Short Link"><a href="${escapeHTML(item.short)}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a></td>
+            <tr id="row-${codeAttr}-data" class="link-data-row">
+              <td data-label="Original Link"><div class="history-original" title="${escapeAttr(item.original)}">${escapeHTML(item.original)}</div></td>
+              <td data-label="Short Link"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a></td>
               <td data-label="Clicks">
                 <div class="click-count-wrapper">
-                  <span id="clicks-${item.code}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
-                  <button class="btn-small btn-copy-small" onclick="viewStats('${actualIndex}')">Full Stats</button>
+                  <span id="clicks-${codeAttr}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
+                  <button class="btn-small btn-copy-small" onclick="viewStats(${codeJs})">Full Stats</button>
                 </div>
               </td>
               <td data-label="Actions">
                 <div class="action-btns">
-                  <button class="btn-small btn-copy-small" onclick="copyText('${escapedShort}', this)" title="Copy Short Link">📋 Short</button>
-                  <button class="btn-small btn-copy-original" onclick="copyText('${escapedOriginal}', this)" title="Copy Original Link">🔗 Original</button>
-                  <button class="btn-small btn-delete-small" onclick="deleteLink(${actualIndex})" title="Delete for everyone">🔥 Delete</button>
+                  <button class="btn-small btn-copy-small" onclick="copyText(${jsShort}, this)" title="Copy Short Link">📋 Short</button>
+                  <button class="btn-small btn-copy-original" onclick="copyText(${jsOriginal}, this)" title="Copy Original Link">🔗 Original</button>
+                  <button class="btn-small btn-delete-small" onclick="deleteLink(${codeJs})" title="Delete for everyone">🔥 Delete</button>
                 </div>
               </td>
             </tr>
@@ -6346,8 +6407,8 @@
           // Mobile dropdown structure
           const isExpanded = expandedLinks.has(item.code);
           mobileHtml += `
-            <div id="mobile-link-${item.code}" class="link-item-container${isExpanded ? ' expanded' : ''}">
-              <div class="link-item-header" onclick="toggleMobileLink('${item.code}')">
+            <div id="mobile-link-${codeAttr}" class="link-item-container${isExpanded ? ' expanded' : ''}">
+              <div class="link-item-header" onclick="toggleMobileLink(${codeJs})">
                 <div class="label-cell">
                   ${mobileEditButton}
                   ${mobileLabelDisplay}
@@ -6365,21 +6426,21 @@
                 </div>
                 <div class="data-row">
                   <span class="data-label">Short Link</span>
-                  <span class="data-value"><a href="${escapeHTML(item.short)}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a></span>
+                  <span class="data-value"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a></span>
                 </div>
                 <div class="data-row">
                   <span class="data-label">Clicks</span>
                   <div class="click-count-wrapper" style="margin-top: 8px;">
-                    <span id="clicks-${item.code}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
-                    <button class="btn-small btn-copy-small" onclick="viewStats('${actualIndex}')">Full Stats</button>
+                    <span id="m-clicks-${codeAttr}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
+                    <button class="btn-small btn-copy-small" onclick="viewStats(${codeJs})">Full Stats</button>
                   </div>
                 </div>
                 <div class="data-row">
                   <span class="data-label">Actions</span>
                   <div class="action-btns">
-                    <button class="btn-small btn-copy-small" onclick="copyText('${escapedShort}', this)" title="Copy Short Link">📋 Short</button>
-                    <button class="btn-small btn-copy-original" onclick="copyText('${escapedOriginal}', this)" title="Copy Original Link">🔗 Original</button>
-                    <button class="btn-small btn-delete-small" onclick="deleteLink(${actualIndex})" title="Delete for everyone">🔥 Delete</button>
+                    <button class="btn-small btn-copy-small" onclick="copyText(${jsShort}, this)" title="Copy Short Link">📋 Short</button>
+                    <button class="btn-small btn-copy-original" onclick="copyText(${jsOriginal}, this)" title="Copy Original Link">🔗 Original</button>
+                    <button class="btn-small btn-delete-small" onclick="deleteLink(${codeJs})" title="Delete for everyone">🔥 Delete</button>
                   </div>
                 </div>
               </div>
@@ -6423,7 +6484,7 @@
       }
 
       function changePage(newPage) {
-        const totalPages = Math.ceil(currentLinks.length / ITEMS_PER_PAGE);
+        const totalPages = Math.max(1, Math.ceil(lastRenderedLinks.length / ITEMS_PER_PAGE));
         if (newPage < 1 || newPage > totalPages) return;
 
         // Store the current Y position of the history container before changing pages
@@ -6448,10 +6509,14 @@
 
       // --- STATS & ACTIONS ---
 
-      async function viewStats(index) {
+      async function viewStats(code) {
+        const index = findLinkIndex(code);
+        if (index === -1) {
+          showCustomModal({ title: "Not Found", message: "That link is no longer in your history. Refresh the list and try again." });
+          return;
+        }
         const item = currentLinks[index];
-        window.currentStatsItem = item;
-        window.currentStatsIndex = index;
+        window.currentStatsCode = code;
 
         const overlay = document.getElementById('statsOverlay');
         overlay.style.display = 'flex';
@@ -6462,12 +6527,25 @@
       }
 
       async function refreshStatsView() {
-        const item = window.currentStatsItem;
+        // Re-resolve by code every time: indexes shift under search/filter/
+        // pagination and currentLinks can be replaced by a re-sync.
+        const item = currentLinks[findLinkIndex(window.currentStatsCode)];
         const list = document.getElementById('clicksList');
         const totalCount = document.getElementById('totalClicksCount');
         const statsUrl = document.getElementById('statsUrl');
         const tz = document.getElementById('timezoneSelect').value;
         const purgeBtn = document.getElementById('purgeAllClicksBtn');
+
+        if (!item) {
+          list.innerHTML = '<div style="padding:40px; text-align:center; color:var(--text-muted);">This link is no longer in your history.</div>';
+          totalCount.textContent = '0';
+          if (purgeBtn) purgeBtn.style.display = 'none';
+          return;
+        }
+        if (!requireBackend()) {
+          list.innerHTML = '<div style="padding:40px; text-align:center; color:var(--text-muted);">Backend unavailable.</div>';
+          return;
+        }
 
         statsUrl.textContent = item.short;
         list.innerHTML = '<div style="padding:40px; text-align:center;">Loading analytics...</div>';
@@ -6482,10 +6560,14 @@
 
           totalCount.textContent = res.data.clickCount;
 
-          // Update local memory count as well
+          // Update local memory count as well (desktop + mobile badges).
+          // NOTE: getElementById takes the literal DOM id, so use the raw
+          // code here (rendering used escapeAttr, which decodes back to this).
           item.clickCount = res.data.clickCount;
-          const listEl = document.getElementById(`clicks-${item.code}`);
+          const listEl = document.getElementById('clicks-' + item.code);
           if (listEl) listEl.textContent = res.data.clickCount;
+          const mobileListEl = document.getElementById('m-clicks-' + item.code);
+          if (mobileListEl) mobileListEl.textContent = res.data.clickCount;
 
           if (res.data.clicks.length === 0) {
             list.innerHTML = '<div style="padding:40px; text-align:center; color:var(--text-muted);">No clicks recorded yet.</div>';
@@ -6516,7 +6598,7 @@
                 <div class="click-time font-bold">${escapeHTML(dateStr)}</div>
                 <div class="click-ip">${escapeHTML(click.ip)}</div>
               </div>
-              <button class="click-delete" onclick="removeClickEntry('${item.code}', '${click.id}', ${window.currentStatsIndex})" title="Delete entry">🗑️</button>
+              <button class="click-delete" onclick="removeClickEntry(${escapeJS(item.code)}, ${escapeJS(click.id)})" title="Delete entry">🗑️</button>
             </div>
           `;
           });
@@ -6538,7 +6620,8 @@
         document.getElementById('statsOverlay').style.display = 'none';
 
         // Only remove scroll lock if no other modals are open
-        const domainManager = document.getElementById('domainManagerModal');
+        // NOTE: the overlay id is domainManagerOverlay (not domainManagerModal)
+        const domainManager = document.getElementById('domainManagerOverlay');
         const modalOverlay = document.getElementById('modalOverlay');
 
         const isAnyOtherModalOpen = (domainManager && domainManager.style.display === 'flex') ||
@@ -6549,21 +6632,32 @@
         }
 
         window.removeEventListener('keydown', handleStatsEsc);
-        // Reset delete flag in case user closed during operation
-        isDeleting = false;
+        // Release the stats lock in case the user closed during an operation
+        releaseOp('stats');
+        releaseOp('entry');
       }
 
       async function clearAllClicks() {
-        // Prevent multiple simultaneous delete operations
-        if (isDeleting) return;
-        isDeleting = true;
+        // Per-operation lock: purging stats must not block link deletion etc.
+        if (!acquireOp('stats')) return;
 
-        const item = window.currentStatsItem;
-        const totalCount = document.getElementById('totalClicksCount').textContent;
+        const item = currentLinks[findLinkIndex(window.currentStatsCode)];
         const purgeBtn = document.getElementById('purgeAllClicksBtn');
 
-        if (totalCount === '0' || totalCount === '...') {
-          isDeleting = false;
+        if (!item) {
+          releaseOp('stats');
+          showCustomModal({
+            title: "Not Found",
+            message: "That link is no longer in your history.",
+            showCancel: false
+          });
+          return;
+        }
+        // Track the authoritative count in JS, not by reading label text
+        const clickCount = Number(item.clickCount) || 0;
+
+        if (clickCount === 0) {
+          releaseOp('stats');
           showCustomModal({
             title: "Nothing to delete",
             message: "There are no recorded clicks for this link.",
@@ -6628,17 +6722,21 @@
           }
         } finally {
           if (!retryOperation) {
-            isDeleting = false;
+            releaseOp('stats');
           }
         }
       }
 
-      async function removeClickEntry(shortCode, clickId, historyIndex) {
-        // Prevent multiple simultaneous delete operations
-        if (isDeleting) return;
-        isDeleting = true;
+      async function removeClickEntry(shortCode, clickId) {
+        // Per-operation lock (see opLocks)
+        if (!acquireOp('entry')) return;
 
-        const item = currentLinks[historyIndex];
+        const item = currentLinks[findLinkIndex(shortCode)];
+        if (!item) {
+          releaseOp('entry');
+          showCustomModal({ title: "Not Found", message: "That link is no longer in your history." });
+          return;
+        }
         let retryOperation = false;
 
         try {
@@ -6670,7 +6768,7 @@
                 message: "Click record has been deleted successfully.",
                 showCancel: false
               });
-              viewStats(historyIndex);
+              viewStats(shortCode);
             } catch (e) {
               // Close loading modal first
               closeLoadingModal();
@@ -6683,13 +6781,13 @@
               });
               if (retryResult) {
                 retryOperation = true;
-                removeClickEntry(shortCode, clickId, historyIndex); // Retry the operation
+                removeClickEntry(shortCode, clickId); // Retry the operation
               }
             }
           }
         } finally {
           if (!retryOperation) {
-            isDeleting = false;
+            releaseOp('entry');
           }
         }
       }
@@ -6710,9 +6808,15 @@
       }
 
       // --- LABEL EDIT ---
-      function editLabel(code, index, isMobile = false) {
+      function editLabel(code, isMobile = false) {
         try {
+          const index = findLinkIndex(code);
+          if (index === -1) {
+            showCustomModal({ title: "Not Found", message: "That link is no longer in your history." });
+            return;
+          }
           // Get the appropriate label span ID based on whether it's mobile or desktop
+          // (getElementById takes the literal id; selectors below use CSS.escape)
           const labelId = isMobile ? `mobile-label-${code}` : `label-${code}`;
           const labelSpan = document.getElementById(labelId);
           if (!labelSpan) {
@@ -6720,9 +6824,11 @@
             return;
           }
           const currentLabel = currentLinks[index]?.label || '';
+          const rowSel = '#row-' + CSS.escape(code);
+          const mobileSel = '#mobile-link-' + CSS.escape(code);
 
           // Replace pen icon with checkmark button in desktop table
-          const editBtn = document.querySelector(`#row-${code} .label-edit-btn`);
+          const editBtn = document.querySelector(`${rowSel} .label-edit-btn`);
           if (editBtn) {
             editBtn.classList.add('save-mode');
             editBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -6730,15 +6836,15 @@
               </svg>`;
             editBtn.title = 'Save label';
             editBtn.onclick = async function () {
-              const input = document.querySelector(`#row-${code} .label-input`);
+              const input = document.querySelector(`${rowSel} .label-input`);
               if (input) {
-                await saveLabel(code, index, input.value);
+                await saveLabel(code, input.value);
               }
             };
           }
 
           // Also update mobile dropdown edit button if exists
-          const mobileEditBtn = document.querySelector(`#mobile-link-${code} .label-edit-btn`);
+          const mobileEditBtn = document.querySelector(`${mobileSel} .label-edit-btn`);
           if (mobileEditBtn) {
             mobileEditBtn.classList.add('save-mode');
             mobileEditBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -6748,9 +6854,9 @@
             // Stop propagation to prevent mobile dropdown toggle when clicking save
             mobileEditBtn.onclick = async function (e) {
               e.stopPropagation();
-              const input = document.querySelector(`#mobile-link-${code} .label-input`);
+              const input = document.querySelector(`${mobileSel} .label-input`);
               if (input) {
-                await saveLabel(code, index, input.value);
+                await saveLabel(code, input.value);
               }
             };
           }
@@ -6790,7 +6896,7 @@
           // Handle enter key and blur to save
           input.addEventListener('keydown', async function (e) {
             if (e.key === 'Enter') {
-              await saveLabel(code, index, input.value);
+              await saveLabel(code, input.value);
             } else if (e.key === 'Escape') {
               isCancelled = true;
               renderHistory(currentLinks); // Cancel and re-render
@@ -6798,7 +6904,7 @@
           });
 
           input.addEventListener('blur', async function () {
-            if (!isCancelled) await saveLabel(code, index, input.value);
+            if (!isCancelled) await saveLabel(code, input.value);
           });
 
           // Replace the label span with input
@@ -6810,25 +6916,35 @@
         }
       }
 
-      async function saveLabel(code, index, newLabel) {
-        const trimmedLabel = newLabel.trim();
-        const item = currentLinks[index];
+      async function saveLabel(code, newLabel) {
+        const trimmedLabel = String(newLabel).trim();
+        const index = findLinkIndex(code);
+        const item = index === -1 ? null : currentLinks[index];
 
-        if (!item) return;
+        if (!item) {
+          renderHistory(currentLinks);
+          return;
+        }
 
         // Don't update if unchanged
         if ((trimmedLabel || '') === (item.label || '')) {
           renderHistory(currentLinks);
           return;
         }
+        if (!requireBackend()) {
+          renderHistory(currentLinks);
+          return;
+        }
 
         // Show loading state - replace the label cell content with spinner (Desktop)
-        const labelCell = document.querySelector(`#row-${code} .label-cell`);
-        const editBtn = document.querySelector(`#row-${code} .label-edit-btn`);
+        const rowSel = '#row-' + CSS.escape(code);
+        const mobileSel = '#mobile-link-' + CSS.escape(code);
+        const labelCell = document.querySelector(`${rowSel} .label-cell`);
+        const editBtn = document.querySelector(`${rowSel} .label-edit-btn`);
 
         // Show loading state for mobile dropdown
-        const mobileLabelCell = document.querySelector(`#mobile-link-${code} .label-cell`);
-        const mobileEditBtn = document.querySelector(`#mobile-link-${code} .label-edit-btn`);
+        const mobileLabelCell = document.querySelector(`${mobileSel} .label-cell`);
+        const mobileEditBtn = document.querySelector(`${mobileSel} .label-edit-btn`);
 
         // Disable the edit buttons
         if (editBtn) {
@@ -6877,8 +6993,8 @@
           // Update local state
           item.label = trimmedLabel;
 
-          // Save to localStorage for offline resilience
-          localStorage.setItem('tunnel_history', JSON.stringify(currentLinks));
+          // Save to localStorage for offline resilience (best effort)
+          try { localStorage.setItem('tunnel_history', JSON.stringify(currentLinks)); } catch (e) {}
 
           renderHistory(currentLinks);
         } catch (e) {
@@ -6889,12 +7005,17 @@
       }
 
       // --- GLOBAL DELETE --- (No more local purge)
-      async function deleteLink(index) {
-        // Prevent multiple simultaneous delete operations
-        if (isDeleting) return;
-        isDeleting = true;
+      async function deleteLink(code) {
+        // Per-operation lock (see opLocks)
+        if (!acquireOp('link')) return;
 
-        const item = currentLinks[index];
+        const index = findLinkIndex(code);
+        const item = index === -1 ? null : currentLinks[index];
+        if (!item) {
+          releaseOp('link');
+          showCustomModal({ title: "Not Found", message: "That link is no longer in your history." });
+          return;
+        }
 
         const confirmed = await showCustomModal({
           title: "Delete link?",
@@ -6919,29 +7040,30 @@
 
             closeLoadingModal();
 
-            // Remove from local list
-            currentLinks.splice(index, 1);
+            // Remove from local list (re-resolve: list may have shifted)
+            const freshIndex = findLinkIndex(code);
+            if (freshIndex !== -1) currentLinks.splice(freshIndex, 1);
+            expandedLinks.delete(code);
             renderHistory(currentLinks);
           } catch (e) {
             closeLoadingModal();
             showCustomModal({ title: "Error", message: `Error deleting link: ${escapeHTML(e.message)}` });
           } finally {
-            isDeleting = false;
+            releaseOp('link');
           }
-          return; // isDeleting already reset in finally
+          return; // lock already released in finally
         }
 
-        isDeleting = false;
+        releaseOp('link');
       }
 
       // --- DELETE ALL LINKS ---
       async function deleteAllLinks() {
-        // Prevent multiple simultaneous delete operations
-        if (isDeleting) return;
-        isDeleting = true;
+        // Per-operation lock (see opLocks)
+        if (!acquireOp('links')) return;
 
         if (!currentLinks || currentLinks.length === 0) {
-          isDeleting = false;
+          releaseOp('links');
           showCustomModal({
             title: "No Links to Delete",
             message: "There are no links to delete in your session.",
@@ -7035,7 +7157,7 @@
           console.error("Critical error in deleteAllLinks:", e);
           showCustomModal({ title: "Error", message: "A critical error occurred while deleting links." });
         } finally {
-          isDeleting = false;
+          releaseOp('links');
         }
       }
 
@@ -7069,7 +7191,7 @@
             return;
           }
 
-          if (otherSid.length < 5) return;
+          if (!requireBackend()) return;
 
           try {
             const mergeFn = functions.httpsCallable('mergeSessions');
@@ -7077,10 +7199,11 @@
 
             if (res.data.success) {
               await fetchAndRenderSession(currentSid);
-              showCustomModal({ title: "Success", message: `Merged ${res.data.count} links into this session.` });
+              const mergedCount = Number(res.data.count);
+              showCustomModal({ title: "Success", message: `Merged ${Number.isFinite(mergedCount) ? mergedCount : 0} links into this session.` });
             }
           } catch (e) {
-            showCustomModal({ title: "Merge Error", message: e.message });
+            showCustomModal({ title: "Merge Error", message: escapeHTML(e.message || 'Merge failed') });
           }
         }
       }
@@ -7102,25 +7225,55 @@
       }
 
       // --- UTILS ---
+      // Clipboard with fallback: navigator.clipboard is undefined on
+      // non-secure contexts (plain http:// LAN, file://) and older browsers.
+      function writeClipboardText(text) {
+        const value = String(text === null || text === undefined ? '' : text);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          return navigator.clipboard.writeText(value);
+        }
+        return new Promise((resolve, reject) => {
+          try {
+            const textarea = document.createElement('textarea');
+            textarea.value = value;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            const ok = document.execCommand('copy');
+            document.body.removeChild(textarea);
+            if (ok) resolve();
+            else reject(new Error('execCommand copy failed'));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }
+      function flashCopied(btnElement, fallbackMessage) {
+        if (btnElement) {
+          if (!btnElement.dataset.originalText) {
+            btnElement.dataset.originalText = btnElement.textContent;
+          }
+          btnElement.textContent = 'Copied!';
+          setTimeout(() => {
+            btnElement.textContent = btnElement.dataset.originalText || 'Copy';
+          }, 2000);
+        } else if (fallbackMessage) {
+          showCustomModal({ title: "Success", message: fallbackMessage });
+        }
+      }
       function copyText(text, btnElement) {
         // Prevent spam - if already showing "Copied!", don't process again
         if (btnElement && btnElement.textContent === 'Copied!') {
           return;
         }
 
-        navigator.clipboard.writeText(text).then(() => {
-          if (btnElement) {
-            // Store original text in data attribute to prevent spam issues
-            if (!btnElement.dataset.originalText) {
-              btnElement.dataset.originalText = btnElement.textContent;
-            }
-            btnElement.textContent = 'Copied!';
-            setTimeout(() => {
-              btnElement.textContent = btnElement.dataset.originalText || 'Copy';
-            }, 2000);
-          } else {
-            showCustomModal({ title: "Success", message: "Copied to clipboard!" });
-          }
+        writeClipboardText(text).then(() => {
+          flashCopied(btnElement, "Copied to clipboard!");
+        }).catch((err) => {
+          console.error('Copy failed:', err);
+          showToast('Copy failed — long-press / right-click to copy manually.', 'error');
         });
       }
 
@@ -7135,16 +7288,11 @@
         }
 
         if (url) {
-          navigator.clipboard.writeText(url).then(() => {
-            if (btn) {
-              if (!btn.dataset.originalText) {
-                btn.dataset.originalText = btn.textContent;
-              }
-              btn.textContent = 'Copied!';
-              setTimeout(() => {
-                btn.textContent = btn.dataset.originalText || 'Copy';
-              }, 2000);
-            }
+          writeClipboardText(url).then(() => {
+            flashCopied(btn, null);
+          }).catch((err) => {
+            console.error('Copy failed:', err);
+            showToast('Copy failed — long-press / right-click to copy manually.', 'error');
           });
         }
       }
@@ -7361,6 +7509,23 @@
           resolve(true);
         }
       }
+    </script>
+    <script>
+      // Last-resort watchdog: if the main script above threw before boot
+      // (e.g. storage blocked, unexpected error), never strand the user on
+      // the loading screen. Runs independently of the main script block.
+      setTimeout(function () {
+        if (window.__tunnelBooted) return;
+        var loader = document.getElementById('initialLoadingScreen');
+        if (loader) {
+          loader.style.opacity = '0';
+          loader.style.visibility = 'hidden';
+          setTimeout(function () { loader.remove(); }, 500);
+        }
+        document.body.classList.remove('initial-loading');
+        var sync = document.getElementById('syncingSessionText');
+        if (sync) sync.textContent = 'Something went wrong during startup. Please reload.';
+      }, 8000);
     </script>
     <script src="/assets/common.js"></script>
 

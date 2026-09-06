@@ -6,20 +6,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="About FRONTFACER Tunnel - Learn how we provide the world's most powerful URL shortening and deep linking services." />
   <meta name="theme-color" content="#4f46e5" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self';" />
   <title>About | FRONTFACER Tunnel</title>
   
   <!-- Favicon -->
   <link rel="icon" type="image/x-icon" href="/visuals/favicon.ico" />
-  <link rel="icon" type="image/png" sizes="32x32" href="/visuals/favicon.ico" />
   
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-6XQPYNCYNJ"></script>
+  <!-- Analytics (consent-gated, GDPR): the gtag loader is injected by
+       assets/common.js ONLY after the visitor accepts the banner.
+       Default-deny here so nothing fires beforehand. -->
   <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
+    gtag('consent', 'default', { ad_storage: 'denied', analytics_storage: 'denied', wait_for_update: 500 });
     gtag('js', new Date());
-
-    gtag('config', 'G-6XQPYNCYNJ');
+    try {
+      if (localStorage.getItem('tunnel_consent') === 'granted') {
+        var __ga = document.createElement('script');
+        __ga.async = true;
+        __ga.src = 'https://www.googletagmanager.com/gtag/js?id=G-6XQPYNCYNJ';
+        document.head.appendChild(__ga);
+        gtag('config', 'G-6XQPYNCYNJ');
+      }
+    } catch (e) {}
   </script>
 
   
@@ -197,14 +207,15 @@
     <div class="header-content">
       <div class="header-left">
         <a href="/" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
-          <img src="/visuals/Logo - No Background.png" alt="Logo" class="header-logo">
+          <img src="/visuals/logo-no-background.png" alt="Logo" class="header-logo">
           <span class="header-title">FRONTFACER Tunnel</span>
         </a>
+      </div>
+      <div class="header-right">
         <a href="/pricing.html" class="nav-btn">Pricing</a>
         <a href="/about.html" class="nav-btn active">About</a>
         <a href="/terms.html" class="nav-btn">Terms</a>
       </div>
-      <div class="header-right"></div>
       <button class="mobile-menu-btn" onclick="toggleMobileMenu(true)">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="3" y1="12" x2="21" y2="12"></line>
