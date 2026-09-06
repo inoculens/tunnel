@@ -1,5 +1,5 @@
 /**
- * FRONTFACER Tunnel API — single Netlify Function routing all backend actions.
+ * INOCULENS Tunnel API — single Netlify Function routing all backend actions.
  * Replaces the Firebase `functions.httpsCallable(...)` surface 1:1 so the
  * existing frontend keeps working unchanged (see frontend api shim).
  *
@@ -180,7 +180,7 @@ const actions = {
       e.code = "invalid-argument";
       throw e;
     }
-    const host = cleanDomain(domain) || cleanDomain(process.env.SITE_URL || "") || "s.frontfacer.com";
+    const host = cleanDomain(domain) || cleanDomain(process.env.SITE_URL || "") || "s.inoculens.com";
 
     let code;
     if (customSlug) {
@@ -212,7 +212,7 @@ const actions = {
     }
 
     // Custom domains must be active before they can mint links.
-    if (host !== "s.frontfacer.com") {
+    if (host !== "s.inoculens.com") {
       const doc = await s.get(`domain/${host}`, { type: "json" });
       const usable =
         doc && doc.sessionId === sessionId && doc.status === "active";

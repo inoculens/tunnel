@@ -1,8 +1,8 @@
 {
-  "name": "frontfacer-tunnel-backend",
+  "name": "inoculens-tunnel-backend",
   "private": true,
   "type": "module",
-  "description": "Netlify Functions backend for FRONTFACER Tunnel (replaces Firebase Cloud Functions + Firestore).",
+  "description": "Netlify Functions backend for INOCULENS Tunnel (replaces Firebase Cloud Functions + Firestore).",
   "engines": {
     "node": ">=22"
   },

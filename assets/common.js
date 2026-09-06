@@ -1,5 +1,5 @@
 /**
- * FRONTFACER Tunnel - Common JavaScript logic
+ * INOCULENS Tunnel - Common JavaScript logic
  * Unified navigation and utility functions
  */
 

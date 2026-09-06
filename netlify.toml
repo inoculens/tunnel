@@ -1,9 +1,17 @@
-# FRONTFACER Tunnel — Netlify configuration (frontend + backend, no Firebase).
+# INOCULENS Tunnel — Netlify configuration (frontend + backend, no Firebase).
 # - Static site served from repo root.
 # - Backend: Netlify Functions in netlify/functions/ with Netlify Blobs
 #   storage (see package.json). No firebase.json/.firebaserc needed or present.
+#
+# DOMAINS (both on this ONE site — they share code, functions, and Blobs):
+#   App:         tunnel.inoculens.com   (assign in Site settings → Domains)
+#   Short links: s.inoculens.com        (assign on the SAME site)
+#   DNS: CNAME both hostnames to this site (or use Netlify DNS).
+#   Routing is handled by netlify/edge-functions/short-domain.js:
+#     s.inoculens.com/       → 301 to https://tunnel.inoculens.com/
+#     s.inoculens.com/<code> → resolve function (redirect + click logging)
 # - Required env vars (Site settings → Environment variables):
-#     SITE_URL=e.g. s.frontfacer.com            (short-link host for new links)
+#     SITE_URL=e.g. s.inoculens.com            (short-link host for new links)
 #     ROUTING_TARGET=e.g. <site>.netlify.app    (expected CNAME value for custom domains)
 #     DOMAIN_PRICE_USD=10  QUOTE_TTL_DAYS=7     (billing defaults)
 #     DISCOUNT_CODES={"WELCOME10":10}            (optional promo codes)
@@ -12,7 +20,7 @@
 #        enables real payment addresses; without it generatePaymentAddress
 #        returns a clear "not configured" error. MANUAL_BTC_ADDRESS is for
 #        local testing only (single reused address — never production).
-#     HOME_URL=https://tunnel.frontfacer.com/   (resolver fallback/404 base)
+#     HOME_URL=https://tunnel.inoculens.com/   (resolver fallback/404 base)
 #     AUTO_SSL=1 (default) — routing validity implies host-managed SSL.
 #       Set SSL_DELEGATION_TARGET to require an explicit
 #       _acme-challenge CNAME instead.

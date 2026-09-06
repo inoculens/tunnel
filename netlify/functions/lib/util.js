@@ -1,5 +1,5 @@
 /**
- * Shared helpers for the FRONTFACER Tunnel Netlify backend.
+ * Shared helpers for the INOCULENS Tunnel Netlify backend.
  * Storage: Netlify Blobs (store name "tunnel"). No external DB account needed.
  *
  * Key layout:
@@ -178,7 +178,7 @@ async function doh(name, type) {
 
 export function routingTarget() {
   // Where customer domains must point their CNAME. Override per deploy.
-  return process.env.ROUTING_TARGET || "s.frontfacer.com";
+  return process.env.ROUTING_TARGET || "s.inoculens.com";
 }
 
 export function sslDelegationTarget() {
