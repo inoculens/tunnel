@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, follow" />
+  <meta name="description" content="This shortened link is no longer available. Create your own short links with FRONTFACER Tunnel - Free URL shortener with custom domain support." />
+  
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="/visuals/favicon.ico" />
+  
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-6XQPYNCYNJ"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'G-6XQPYNCYNJ');
+  </script>
+
+  <link rel="icon" type="image/png" sizes="32x32" href="/visuals/favicon.ico" />
+  <link rel="apple-touch-icon" href="/visuals/Logo - No Background.png" />
+  
+  <title>Link Not Available - FRONTFACER Tunnel</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap');
+  </style>
+  <style>
+    :root {
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --link-bg: rgba(79, 70, 229, 0.1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'DM Sans', 'Mulish', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      margin: 0;
+      min-height: 100vh;
+      text-align: center;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 600px;
+      background: var(--card-bg);
+      padding: 3rem 2rem;
+      border-radius: 1.5rem;
+      border: 1px solid var(--border);
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(10px);
+    }
+
+    .icon {
+      font-size: 4rem;
+      margin-bottom: 1.5rem;
+      display: inline-block;
+      animation: pulse 2s infinite;
+    }
+
+    .logo {
+      width: 120px;
+      height: auto;
+      margin-bottom: 1.5rem;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% {
+        transform: scale(1);
+      }
+
+      50% {
+        transform: scale(1.1);
+      }
+
+      100% {
+        transform: scale(1);
+      }
+    }
+
+    h1 {
+      font-family: 'Lexend Giga', sans-serif;
+      font-size: 2.25rem;
+      font-weight: 800;
+      background: linear-gradient(to right, #818cf8, #c084fc);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      margin: 0 0 1rem 0;
+      line-height: 1.2;
+    }
+
+    p {
+      font-family: 'Mulish', sans-serif;
+      color: var(--text-muted);
+      font-size: 1.1rem;
+      line-height: 1.6;
+      margin-bottom: 2.5rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--primary);
+      color: white;
+      padding: 0.75rem 2rem;
+      border-radius: 0.75rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    }
+
+    .btn:hover {
+      background: var(--primary-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .failed-link-box {
+      background: var(--link-bg);
+      border: 1px solid rgba(79, 70, 229, 0.3);
+      color: #818cf8;
+      padding: 8px 16px;
+      border-radius: 0.75rem;
+      font-family: 'DM Sans', 'Mulish', sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+      margin: 1.5rem 0;
+      display: inline-block;
+      word-break: break-all;
+      box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    @media (max-width: 480px) {
+      .container {
+        padding: 2rem 1.5rem;
+      }
+
+      h1 {
+        font-size: 1.75rem;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <img src="/visuals/Logo - No Background.png" alt="FRONTFACER" class="logo" />
+    <h1>Link Expired<br>or not available</h1>
+    <div id="linkBox" class="failed-link-box">s.frontfacer.com/...</div>
+    <p>This shortcut might have been deleted or the address is incorrect. Please check the link and try again.</p>
+    <a href="/" class="btn">Return to FRONTFACER Tunnel</a>
+  </div>
+
+  <script>
+    // Extract the short code from query param or path and display it
+    window.addEventListener('DOMContentLoaded', () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      let code = urlParams.get('c');
+      
+      if (!code) {
+        const path = window.location.pathname;
+        const parts = path.split('/');
+        // Get the last non-empty part
+        code = parts[parts.length - 1] || parts[parts.length - 2] || 'unknown';
+      }
+
+      const host = window.location.host || 's.frontfacer.com';
+
+      if (code && code !== '404' && code !== '404.html' && code !== 'index.html' && code !== 'unknown') {
+        document.getElementById('linkBox').textContent = host + '/' + code;
+      } else {
+        document.getElementById('linkBox').style.display = 'none';
+      }
+    });
+  </script>
+</body>
+
+</html>

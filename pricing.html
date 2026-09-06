@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Pricing for FRONTFACER Tunnel. Choose between our free link shortener or premium custom domains for $10/year in Bitcoin." />
+  <meta name="theme-color" content="#4f46e5" />
+  <title>Pricing | FRONTFACER Tunnel</title>
+  
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="/visuals/favicon.ico" />
+  
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-6XQPYNCYNJ"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'G-6XQPYNCYNJ');
+  </script>
+
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="/assets/common.css">
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap">
+  
+  <style>
+
+    /* Content Styling */
+    .hero {
+      text-align: center;
+      margin-bottom: 4rem;
+    }
+
+    h1 {
+      font-family: 'Lexend Giga', sans-serif;
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      background: linear-gradient(to right, #818cf8, #c084fc);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.25rem;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 2rem;
+      margin-top: 2rem;
+    }
+
+    .pricing-card {
+      background: var(--card-bg);
+      padding: 3rem;
+      border-radius: 2rem;
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+      transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    .pricing-card.premium {
+      border-color: var(--primary);
+      box-shadow: 0 20px 40px -10px rgba(79, 70, 229, 0.3);
+    }
+
+    .pricing-card:hover {
+      transform: translateY(-10px);
+    }
+
+    .badge {
+      position: absolute;
+      top: 1.5rem;
+      right: 1.5rem;
+      background: rgba(79, 70, 229, 0.2);
+      color: var(--accent);
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .tier-name {
+      font-family: 'Lexend Giga', sans-serif;
+      font-size: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .price {
+      font-family: 'Lexend Giga', sans-serif;
+      font-size: 3rem;
+      margin-bottom: 2rem;
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+    }
+
+    .price .unit {
+      font-size: 1rem;
+      color: var(--text-muted);
+    }
+
+    .features {
+      list-style: none;
+      margin-bottom: 2.5rem;
+      flex: 1;
+    }
+
+    .features li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 1rem;
+      color: var(--text-muted);
+    }
+
+    .features li svg {
+      color: var(--success);
+      flex-shrink: 0;
+    }
+
+    .cta-btn {
+      display: inline-block;
+      text-align: center;
+      background: var(--primary);
+      color: white;
+      padding: 16px;
+      border-radius: 12px;
+      text-decoration: none;
+      font-family: 'Lexend Giga', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 700;
+      transition: all 0.2s;
+    }
+
+    .cta-btn.secondary {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+    }
+
+    .cta-btn:hover {
+      filter: brightness(1.1);
+      transform: scale(1.02);
+    }
+
+    .bitcoin-note {
+      margin-top: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .bitcoin-note svg {
+      width: 20px;
+      height: 20px;
+      filter: drop-shadow(0 0 8px rgba(247, 147, 26, 0.4));
+    }
+
+
+    @media (max-width: 768px) {
+      .pricing-card { padding: 2rem; }
+    }
+
+    .footer {
+      text-align: center;
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+      width: 100%;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      margin-top: 4rem;
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(30px);
+      transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+
+<body>
+  <header class="glass-header">
+    <div class="header-content">
+      <div class="header-left">
+        <a href="/" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
+          <img src="/visuals/Logo - No Background.png" alt="Logo" class="header-logo">
+          <span class="header-title">FRONTFACER Tunnel</span>
+        </a>
+        <a href="/pricing.html" class="nav-btn active">Pricing</a>
+        <a href="/about.html" class="nav-btn">About</a>
+        <a href="/terms.html" class="nav-btn">Terms</a>
+      </div>
+      <div class="header-right"></div>
+      <button class="mobile-menu-btn" onclick="toggleMobileMenu(true)">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero reveal">
+      <h1>Simple Pricing</h1>
+      <p class="subtitle">Shorten for free, brand for a few satoshis. No subscriptions, no hidden fees.</p>
+    </section>
+
+    <div class="pricing-grid">
+      <!-- Shortener Tier -->
+      <div class="pricing-card reveal">
+        <div class="tier-name">Free Shortener</div>
+        <div class="price">$0 <span class="unit">Forever</span></div>
+        <ul class="features">
+          <li>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            Unlimited URL Shortening
+          </li>
+          <li>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            YouTube & Instagram Deep Links
+          </li>
+          <li>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            Real-time Click Analytics
+          </li>
+          <li>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            No Registration Required
+          </li>
+        </ul>
+        <a href="/" class="cta-btn">Start Shortening</a>
+      </div>
+
+      <!-- Custom Domain Tier -->
+      <div class="pricing-card premium reveal">
+        <div class="badge">Popular</div>
+        <div class="tier-name">Custom Domains</div>
+        <div class="price">$10 <span class="unit">Per Year</span></div>
+        <ul class="features">
+          <li>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            Use Your Own Personal Domain
+          </li>
+          <li>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            Fully Managed SSL Certificate
+          </li>
+          <li>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            Branded Routing & Analytics
+          </li>
+          <li>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            Priority Email Support
+          </li>
+        </ul>
+        <a href="/" class="cta-btn">Register Domain</a>
+        <div class="bitcoin-note">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" fill="#F7931A"/>
+            <path d="M15.1111 8.88889C15.5238 8.88889 15.8571 8.55556 15.8571 8.14286C15.8571 7.73016 15.5238 7.39683 15.1111 7.39683H13.619V6.20635C13.619 5.79365 13.2857 5.46032 12.873 5.46032C12.4603 5.46032 12.127 5.79365 12.127 6.20635V7.39683H10.6349V6.20635C10.6349 5.79365 10.3016 5.46032 9.88889 5.46032C9.47619 5.46032 9.14286 5.79365 9.14286 6.20635V7.39683H8.39683C7.98413 7.39683 7.65079 7.73016 7.65079 8.14286C7.65079 8.55556 7.98413 8.88889 8.39683 8.88889V14.1111C7.98413 14.1111 7.65079 14.4444 7.65079 14.8571C7.65079 15.2698 7.98413 15.6032 8.39683 15.6032H9.14286V16.7937C9.14286 17.2063 9.47619 17.5397 9.88889 17.5397C10.3016 17.5397 10.6349 17.2063 10.6349 16.7937V15.6032H12.127V16.7937C12.127 17.2063 12.4603 17.5397 12.873 17.5397C13.2857 17.5397 13.619 17.2063 13.619 16.7937V15.6032H15.1111C15.5238 15.6032 15.8571 15.2698 15.8571 14.8571C15.8571 14.4444 15.5238 14.1111 15.1111 14.1111H14.3651C14.3651 14.1111 14.3651 13.9206 14.3651 13.9206C14.8889 13.6984 15.254 13.1905 15.254 12.5873C15.254 12.0159 14.9365 11.5397 14.4762 11.3016C14.8254 11.0635 15.0635 10.6667 15.0635 10.2063C15.0635 9.61905 14.6825 9.127 14.1587 8.95238C14.1587 8.95238 14.3651 8.88889 15.1111 8.88889ZM10.6349 14.1111V11.873H12.873C13.4921 11.873 14.0159 12.3968 14.0159 13.0159C14.0159 13.6349 13.4921 14.1587 12.873 14.1587H10.6349V14.1111ZM10.6349 10.4603V8.88889H12.873C13.2857 8.88889 13.619 9.22222 13.619 9.63492C13.619 10.0476 13.2857 10.4286 12.873 10.4286L10.6349 10.4603Z" fill="white"/>
+          </svg>
+          Account settled in Bitcoin
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <p>&copy; 2026 FRONTFACER Tunnel. All rights reserved. Built for creators.</p>
+  </footer>
+
+  <div class="drawer-overlay" id="drawerOverlay" onclick="toggleMobileMenu(false)"></div>
+  <div class="mobile-drawer" id="mobileDrawer">
+    <div class="drawer-header">
+      <span class="header-title" style="display: block !important;">MENU</span>
+      <button onclick="toggleMobileMenu(false)" style="background:none; border:none; color:var(--text-muted); cursor:pointer;">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+    <div class="drawer-nav">
+      <a href="/pricing.html" class="nav-btn active" onclick="toggleMobileMenu(false)">Pricing</a>
+      <a href="/about.html" class="nav-btn" onclick="toggleMobileMenu(false)">About</a>
+      <a href="/terms.html" class="nav-btn" onclick="toggleMobileMenu(false)">Terms</a>
+    </div>
+  </div>
+
+  <script src="/assets/common.js"></script>
+  <script>
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) entry.target.classList.add('visible');
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+  </script>
+
+</body>
+
+</html>

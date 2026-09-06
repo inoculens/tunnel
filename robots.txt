@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /index.html
+Allow: /visuals/
+Allow: /sitemap.xml
+Allow: /$
+Disallow: /
+
+# Sitemap
+Sitemap: https://tunnel.frontfacer.com/sitemap.xml
+
+# Crawl-delay (optional, for politeness)
+Crawl-delay: 1
