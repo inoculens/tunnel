@@ -5438,8 +5438,12 @@
               cancelText: "Cancel"
             }).then((ok) => { if (ok) showStep('verification'); });
           } else {
-            loadingState.innerHTML = '<span style="color: #ef4444;">Failed to generate payment address. Please close and try again.</span>';
-            showCustomModal({ title: "Error", message: "Failed to generate payment address. Please try again." });
+            // Surface the backend's real message (e.g. BTC_XPUB missing /
+            // invalid, price feed down) instead of swallowing it — otherwise
+            // neither the user nor support can tell what failed.
+            const detail = (err && err.message) ? `: ${err.message}` : '';
+            loadingState.innerHTML = `<span style="color: #ef4444;">Failed to generate payment address${escapeHTML(detail)}. Please close and try again.</span>`;
+            showCustomModal({ title: "Error", message: `Failed to generate payment address${escapeHTML(detail)}. Please try again.` });
           }
         }
       }
