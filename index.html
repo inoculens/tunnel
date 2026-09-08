@@ -3648,10 +3648,17 @@
       }
 
       // Escape a string for use as a JS string literal inside an inline
-      // onclick="..." attribute. JSON.stringify handles backslashes/newlines;
-      // the replaces keep the HTML parser from terminating/decoding early.
+      // onclick="..." attribute. MUST emit single-quoted literals: the value
+      // is interpolated into a double-quoted HTML attribute, so the double
+      // quotes from JSON.stringify would terminate the attribute early and
+      // every generated button (Short / Original / Full Stats / Delete /
+      // labels / domain manager) would throw `SyntaxError` on click.
+      // JSON.stringify handles backslashes/newlines; the replaces keep the
+      // HTML parser from terminating/decoding early.
       function escapeJS(str) {
-        return JSON.stringify(String(str === null || str === undefined ? '' : str))
+        const json = JSON.stringify(String(str === null || str === undefined ? '' : str));
+        const inner = json.slice(1, -1).replace(/'/g, "\\'");
+        return ("'" + inner + "'")
           .replace(/&/g, '\\u0026')
           .replace(/</g, '\\u003c')
           .replace(/>/g, '\\u003e')
