@@ -7,7 +7,7 @@
  * Netlify runs this automatically thanks to the `config.schedule` export.
  * No cron service needed. Uses only the public mempool.space API.
  */
-import { store, listAll } from "./lib/util.js";
+import { store, listAll, cfConfig, cfEnsureCustomHostname } from "./lib/util.js";
 
 export const config = { schedule: "@hourly" };
 
@@ -39,6 +39,19 @@ export async function handler() {
           d.paymentStatus = "paid";
           if (d.isVerified) d.status = "active";
           d.quote.paidAt = new Date().toISOString();
+          // Provision Cloudflare SaaS hostname so TLS issues immediately after payment.
+          if (cfConfig() && d.isVerified) {
+            try {
+              const cf = await cfEnsureCustomHostname(d.domain);
+              if (cf) {
+                d.cfHostnameId = cf.id || null;
+                d.cfHostnameStatus = cf.status || null;
+                d.cfSslStatus = cf.ssl?.status || null;
+              }
+            } catch (e) {
+              console.error(`SaaS ensure failed for ${d.domain}:`, e?.message || e);
+            }
+          }
           await s.setJSON(`domain/${d.domain}`, d);
           activated++;
         }

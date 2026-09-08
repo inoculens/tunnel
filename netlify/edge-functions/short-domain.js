@@ -1,19 +1,25 @@
 /**
- * Short-domain router for s.inoculens.com (single-site setup).
+ * Short-domain router (single-site setup + Cloudflare SaaS custom domains).
  *
- * Both tunnel.inoculens.com (app) and s.inoculens.com (short links) point at
- * this ONE Netlify site and share the same Blobs store. This edge function
- * dispatches short-domain traffic before static serving:
+ * Traffic:
+ *   tunnel.inoculens.com          → app (pass through, never rewritten)
+ *   s.inoculens.com/              → 301 to https://tunnel.inoculens.com/
+ *   s.inoculens.com/<code>        → rewrite to resolve (redirect + clicks + interstitial)
+ *   <custom-domain>/              → 301 to https://tunnel.inoculens.com/
+ *   <custom-domain>/<code>        → rewrite to resolve (same as s.*)
  *
- *   s.inoculens.com/            → 301 to https://tunnel.inoculens.com/
- *   s.inoculens.com/<code>      → rewrite to the resolve function
- *                                 (redirector + click logging + app interstitial)
- *   everything else, or any other hostname → pass through untouched
- *   (assets, app pages, API, main-domain traffic).
+ * Custom domains reach Netlify in two ways:
+ *   1. Primary (Cloudflare SaaS): custom -> customers.inoculens.com (proxied)
+ *      -> Worker tunnel-custom-host -> https://s.inoculens.com/<code>
+ *      (Worker path already hits the s.* branch below, but direct hits work too).
+ *   2. Direct CNAME to Netlify (fallback): custom -> *.netlify.app.
+ * Hence any non-app hostname is treated as a short-link host.
  *
  * The index.html root-redirect script is kept as a belt-and-braces fallback
  * for "/" on the short domain.
  */
+const APP_HOSTS = new Set(["tunnel.inoculens.com"]);
+
 export default async (request, context) => {
   let url;
   try {
@@ -21,7 +27,13 @@ export default async (request, context) => {
   } catch {
     return;
   }
-  if (url.hostname !== "s.inoculens.com") return;
+  const host = url.hostname.toLowerCase();
+  // App host serves the site normally.
+  if (APP_HOSTS.has(host)) return;
+  // SaaS infrastructure hosts should never serve short links directly.
+  if (host === "customers.inoculens.com" || host === "proxy-fallback.inoculens.com") {
+    return Response.redirect("https://tunnel.inoculens.com/", 302);
+  }
 
   if (url.pathname === "/" || url.pathname === "/index.html") {
     return Response.redirect("https://tunnel.inoculens.com/", 301);

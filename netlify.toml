@@ -3,27 +3,41 @@
 # - Backend: Netlify Functions in netlify/functions/ with Netlify Blobs
 #   storage (see package.json). No firebase.json/.firebaserc needed or present.
 #
-# DOMAINS (both on this ONE site — they share code, functions, and Blobs):
-#   App:         tunnel.inoculens.com   (assign in Site settings → Domains)
-#   Short links: s.inoculens.com        (assign on the SAME site)
-#   DNS: CNAME both hostnames to this site (or use Netlify DNS).
+# INOCULENS Tunnel — Cloudflare for SaaS (INOCULENS account) + Netlify.
+# - Static site + API served from this ONE Netlify site (Blobs storage).
+# - Custom-domain TLS is terminated by Cloudflare for SaaS on zone inoculens.com:
+#     SaaS CNAME target (proxied): customers.inoculens.com
+#       -> proxy-fallback.inoculens.com (fallback origin, active)
+#       -> Worker tunnel-custom-host (*/* route) -> https://s.inoculens.com/<code>
+#   Customers: CNAME <custom> -> customers.inoculens.com
+#              TXT verification.<custom> -> <token> (ownership)
+#   Certificates use HTTP validation (automatic, no _acme-challenge record).
+#
+# DOMAINS on this Netlify site (Site settings → Domains, DNS-only in Cloudflare):
+#   App:         tunnel.inoculens.com -> inoculens-tunnel.netlify.app (DNS only)
+#   Short links: s.inoculens.com      -> inoculens-tunnel.netlify.app (DNS only)
+#   DO NOT proxy s/tunnel through Cloudflare (orange cloud OFF) — they serve
+#   Netlify directly. Only customers.* + proxy-fallback are proxied (SaaS).
 #   Routing is handled by netlify/edge-functions/short-domain.js:
-#     s.inoculens.com/       → 301 to https://tunnel.inoculens.com/
-#     s.inoculens.com/<code> → resolve function (redirect + click logging)
+#     s.<any>/ or <custom>/            → 301 to https://tunnel.inoculens.com/
+#     s.<any>/<code>, <custom>/<code>  → resolve function (redirect + clicks)
 # - Required env vars (Site settings → Environment variables):
-#     SITE_URL=e.g. s.inoculens.com            (short-link host for new links)
-#     ROUTING_TARGET=e.g. <site>.netlify.app    (expected CNAME value for custom domains)
-#     DOMAIN_PRICE_USD=10  QUOTE_TTL_DAYS=7     (billing defaults)
-#     DISCOUNT_CODES={"WELCOME10":10}            (optional promo codes)
-#     BTC_USD_FALLBACK=65000                     (used if CoinGecko is unreachable)
+#     SITE_URL=s.inoculens.com                     (system short-link host)
+#     ROUTING_TARGET=customers.inoculens.com       (SaaS CNAME target customers point at)
+#     CLOUDFLARE_API_TOKEN=<token with SaaS Edit + Zone Read>
+#     CLOUDFLARE_ZONE_ID=f5257b10f944cb85e5418ab82f4be6ef  (inoculens.com)
+#     DCV_DELEGATION_UUID=adad0549ffb44d06         (zone DCV delegation suffix)
+#     DOMAIN_PRICE_USD=10  QUOTE_TTL_DAYS=7        (billing defaults)
+#     DISCOUNT_CODES={"WELCOME10":10}               (optional promo codes)
+#     BTC_USD_FALLBACK=65000                        (used if CoinGecko is unreachable)
 #     BTC_XPUB=xpub…  (+ npm i bitcoinjs-lib bip32 tiny-secp256k1)
 #        enables real payment addresses; without it generatePaymentAddress
 #        returns a clear "not configured" error. MANUAL_BTC_ADDRESS is for
 #        local testing only (single reused address — never production).
-#     HOME_URL=https://tunnel.inoculens.com/   (resolver fallback/404 base)
-#     AUTO_SSL=1 (default) — routing validity implies host-managed SSL.
-#       Set SSL_DELEGATION_TARGET to require an explicit
-#       _acme-challenge CNAME instead.
+#     HOME_URL=https://tunnel.inoculens.com/      (resolver fallback/404 base)
+#     AUTO_SSL=1 (default) — with Cloudflare SaaS HTTP validation, routing
+#       validity implies SSL will auto-provision. Set SSL_DELEGATION_TARGET
+#       only if you switch a hostname to TXT/delegated validation.
 
 [build]
   publish = "."

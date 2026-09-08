@@ -23,7 +23,14 @@ import {
   checkRate,
   verifyDns,
   routingTarget,
+  systemShortHost,
+  dcvDelegationTargetFor,
+  dcvDelegationSuffix,
   sslDelegationTarget,
+  cfConfig,
+  cfGetCustomHostname,
+  cfEnsureCustomHostname,
+  cfDeleteCustomHostname,
   btcUsdPrice,
   quoteFor,
   discountCodes,
@@ -31,6 +38,27 @@ import {
   nextWalletIndex,
   listAll,
 } from "./lib/util.js";
+
+// Ensure a Cloudflare SaaS custom hostname exists once the domain is
+// verified + paid. Best effort: DNS ownership remains the source of truth;
+// SaaS failures are logged and surfaced via cf fields, never block payment.
+async function ensureSaaSHostname(doc) {
+  if (!cfConfig()) return null;
+  if (!(doc.dnsVerification?.cnameValid && doc.dnsVerification?.txtVerified)) return null;
+  if (doc.paymentStatus !== "paid") return null;
+  try {
+    const cf = await cfEnsureCustomHostname(doc.domain);
+    if (cf) {
+      doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
+      doc.cfHostnameStatus = cf.status || null;
+      doc.cfSslStatus = cf.ssl?.status || null;
+    }
+    return cf;
+  } catch (e) {
+    console.error(`ensureSaaSHostname(${doc.domain}) failed:`, e?.message || e);
+    return null;
+  }
+}
 
 // ---------- small data-access helpers ----------
 
@@ -106,6 +134,7 @@ async function needOwnedDomain(s, domain, sessionId) {
 }
 
 function domainInfo(doc) {
+  const route = routingTarget();
   return {
     domain: doc.domain,
     id: doc.domain,
@@ -115,11 +144,25 @@ function domainInfo(doc) {
     dnsVerification: doc.dnsVerification,
     dnsVerificationToken: doc.verificationToken,
     verificationToken: doc.verificationToken,
-    sslVerification: { cnameTarget: doc.sslTarget },
+    sslVerification: {
+      cnameTarget: doc.sslTarget,
+      status: doc.cfSslStatus || (doc.dnsVerification?.sslVerified ? "active" : "pending"),
+      hostnameStatus: doc.cfHostnameStatus || null,
+    },
+    cloudflare: {
+      configured: !!cfConfig(),
+      hostnameId: doc.cfHostnameId || null,
+      hostnameStatus: doc.cfHostnameStatus || null,
+      sslStatus: doc.cfSslStatus || null,
+    },
     instructions: {
+      cnameTarget: route,
       txtHost: `verification.${doc.domain}`,
       txt: doc.verificationToken,
       sslCnameTarget: doc.sslTarget,
+      sslCnameName: `_acme-challenge.${doc.domain}`,
+      dcvTarget: dcvDelegationTargetFor(doc.domain),
+      routingTarget: route,
     },
   };
 }
@@ -180,7 +223,7 @@ const actions = {
       e.code = "invalid-argument";
       throw e;
     }
-    const host = cleanDomain(domain) || cleanDomain(process.env.SITE_URL || "") || "s.inoculens.com";
+    const host = cleanDomain(domain) || systemShortHost();
 
     let code;
     if (customSlug) {
@@ -212,7 +255,9 @@ const actions = {
     }
 
     // Custom domains must be active before they can mint links.
-    if (host !== "s.inoculens.com") {
+    // System host is always allowed; everything else must be an active
+    // domain owned by this session (Cloudflare SaaS provisions TLS).
+    if (host !== systemShortHost()) {
       const doc = await s.get(`domain/${host}`, { type: "json" });
       const usable =
         doc && doc.sessionId === sessionId && doc.status === "active";
@@ -369,10 +414,24 @@ const actions = {
     return ok({ domains: out });
   },
 
+  async getPublicConfig() {
+    // No auth: safe public values the UI needs to render correct DNS instructions.
+    return ok({
+      routingTarget: routingTarget(),
+      systemHost: systemShortHost(),
+      dcvSuffix: dcvDelegationSuffix(),
+      cloudflareConfigured: !!cfConfig(),
+      autoSsl: process.env.AUTO_SSL !== "0",
+    });
+  },
+
   async addCustomDomain(s, p) {
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
     const host = cleanDomain(p.domain);
     if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
+    // Never allow hijacking the system hosts or the SaaS infrastructure hosts.
+    const reserved = new Set([systemShortHost(), routingTarget(), "tunnel.inoculens.com", "customers.inoculens.com", "proxy-fallback.inoculens.com", "inoculens.com"]);
+    if (reserved.has(host)) return fail(400, "invalid-argument", "This domain is reserved for INOCULENS infrastructure.");
     if (!(await getSession(s, p.sessionId))) {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
@@ -391,8 +450,11 @@ const actions = {
       paymentStatus: "unpaid",
       isVerified: false,
       verificationToken: newToken(32),
-      sslTarget: delegation || `auto-host-managed (${routingTarget()})`,
+      sslTarget: delegation || `automatic via Cloudflare (${routingTarget()})`,
       dnsVerification: { cnameValid: false, txtVerified: false, sslVerified: false },
+      cfHostnameId: null,
+      cfHostnameStatus: null,
+      cfSslStatus: null,
       discount: null,
       quote: null,
       createdAt: Date.now(),
@@ -403,6 +465,16 @@ const actions = {
 
   async getDomainVerificationInfo(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    // Refresh Cloudflare SaaS status when configured (best effort, never throws).
+    if (cfConfig()) {
+      const cf = await cfGetCustomHostname(doc.domain);
+      if (cf) {
+        doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
+        doc.cfHostnameStatus = cf.status || null;
+        doc.cfSslStatus = cf.ssl?.status || null;
+        await s.setJSON(`domain/${doc.domain}`, doc);
+      }
+    }
     return ok({ ...domainInfo(doc), paymentStatus: doc.paymentStatus });
   },
 
@@ -412,20 +484,42 @@ const actions = {
       cname: false,
       txt: false,
       ssl: false,
+      cfHostnameStatus: null,
+      cfSslStatus: null,
     }));
     doc.dnsVerification = {
       cnameValid: !!live.cname,
       txtVerified: !!live.txt,
       sslVerified: !!live.ssl,
     };
+    if (live.cfHostnameStatus) doc.cfHostnameStatus = live.cfHostnameStatus;
+    if (live.cfSslStatus) doc.cfSslStatus = live.cfSslStatus;
     // Sticky ownership: once proven, stays proven (matches frontend).
     if (live.cname && live.txt) doc.isVerified = true;
-    if (doc.isVerified && doc.paymentStatus === "paid") doc.status = "active";
+    // If verified + paid, ensure the SaaS custom hostname exists so TLS provisions.
+    if (doc.isVerified && doc.paymentStatus === "paid") {
+      await ensureSaaSHostname(doc);
+      // Re-read live SaaS status after ensure (it may have just been created -> pending).
+      const cf = cfConfig() ? await cfGetCustomHostname(doc.domain) : null;
+      if (cf) {
+        doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
+        doc.cfHostnameStatus = cf.status || null;
+        doc.cfSslStatus = cf.ssl?.status || null;
+        doc.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : doc.dnsVerification.sslVerified;
+      }
+      // Active requires ownership + payment. TLS (cfSslStatus active) is reported
+      // separately so the UI can show "Propagating" without blocking link creation
+      // once DNS + payment are done. Links serve as soon as CNAME resolves (HTTP
+      // validation completes in minutes); strict TLS gating would strand paid users.
+      doc.status = "active";
+    }
     await s.setJSON(`domain/${doc.domain}`, doc);
     return ok({
       success: true,
       isVerified: doc.isVerified,
-      checks: { cname: !!live.cname, txt: !!live.txt, ssl: !!live.ssl },
+      checks: { cname: !!live.cname, txt: !!live.txt, ssl: !!doc.dnsVerification.sslVerified },
+      cfHostnameStatus: doc.cfHostnameStatus || live.cfHostnameStatus || null,
+      cfSslStatus: doc.cfSslStatus || live.cfSslStatus || null,
       status: doc.status,
       paymentStatus: doc.paymentStatus,
     });
@@ -433,6 +527,8 @@ const actions = {
 
   async deleteCustomDomain(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    // Remove Cloudflare SaaS hostname first (best effort) so certs are cleaned up.
+    if (cfConfig()) await cfDeleteCustomHostname(doc.domain);
     await s.delete(`domain/${doc.domain}`);
     let deletedUrls = 0;
     for (const b of await listAll(s, "link/")) {
@@ -511,7 +607,10 @@ const actions = {
     if (pct >= 100) {
       doc.paymentStatus = "paid";
       doc.quote = null;
-      if (doc.isVerified) doc.status = "active";
+      if (doc.isVerified) {
+        doc.status = "active";
+        await ensureSaaSHostname(doc);
+      }
       await s.setJSON(`domain/${doc.domain}`, doc);
       return ok({
         isFullDiscount: true,

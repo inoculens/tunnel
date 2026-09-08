@@ -177,35 +177,179 @@ async function doh(name, type) {
 }
 
 export function routingTarget() {
-  // Where customer domains must point their CNAME. Override per deploy.
-  return process.env.ROUTING_TARGET || "s.inoculens.com";
+  // SaaS CNAME target customers must point at (proxied, Cloudflare for SaaS).
+  // INOCULENS account (inoculens.com): customers.inoculens.com -> proxy-fallback
+  // -> Worker tunnel-custom-host -> Netlify resolver. Override per deploy.
+  return (process.env.ROUTING_TARGET || "customers.inoculens.com").toLowerCase();
+}
+
+export function systemShortHost() {
+  // System short-link host (DNS-only to Netlify, direct, no SaaS).
+  return (process.env.SITE_URL || "s.inoculens.com").toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
+export function dcvDelegationSuffix() {
+  // DCV Delegation suffix for the INOCULENS Cloudflare account.
+  // Zone inoculens.com UUID (via GET /zones/:id/dcv_delegation/uuid).
+  // Full target per domain: <domain>.<uuid>.dcv.cloudflare.com
+  // Only needed for TXT/delegated validation; HTTP validation (default) needs no extra record.
+  return process.env.DCV_DELEGATION_UUID || "adad0549ffb44d06";
+}
+
+export function dcvDelegationTargetFor(domain) {
+  const d = cleanDomain(domain);
+  if (!d) return null;
+  return `${d}.${dcvDelegationSuffix()}.dcv.cloudflare.com`;
 }
 
 export function sslDelegationTarget() {
   // If set, _acme-challenge.<domain> must CNAME here for SSL to verify.
-  // If unset and AUTO_SSL != "0", routing validity implies host-managed SSL
-  // (true for Netlify/Cloudflare SaaS once DNS points at them).
+  // If unset and AUTO_SSL != "0", Cloudflare SaaS HTTP validation is used:
+  // routing validity implies SSL will auto-provision (no extra record).
   return process.env.SSL_DELEGATION_TARGET || null;
+}
+
+// ---------- Cloudflare for SaaS (Custom Hostnames) ----------
+// Backend needs CLOUDFLARE_API_TOKEN (SaaS Edit + Zone Read) + CLOUDFLARE_ZONE_ID.
+// Used to create/delete custom hostnames on activation and to report real
+// certificate/hostname status instead of inferring SSL from DNS alone.
+
+export function cfConfig() {
+  const token = process.env.CLOUDFLARE_API_TOKEN || null;
+  const zoneId = process.env.CLOUDFLARE_ZONE_ID || "f5257b10f944cb85e5418ab82f4be6ef";
+  return token ? { token, zoneId } : null;
+}
+
+async function cfFetch(path, { method = "GET", body } = {}) {
+  const cfg = cfConfig();
+  if (!cfg) {
+    const e = new Error("Cloudflare not configured (missing CLOUDFLARE_API_TOKEN).");
+    e.statusCode = 412;
+    e.code = "failed-precondition";
+    throw e;
+  }
+  const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${cfg.zoneId}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${cfg.token}`,
+      "Content-Type": "application/json",
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* non-JSON */ }
+  if (!res.ok || !data?.success) {
+    const msg = data?.errors?.map((x) => x.message).join("; ") || `Cloudflare API ${res.status}`;
+    const e = new Error(msg);
+    e.statusCode = 502;
+    e.code = "unavailable";
+    throw e;
+  }
+  return data.result;
+}
+
+export async function cfGetCustomHostname(domain) {
+  const d = cleanDomain(domain);
+  if (!d) return null;
+  try {
+    const list = await cfFetch(`/custom_hostnames?hostname.exact=${encodeURIComponent(d)}&per_page=5`);
+    const arr = Array.isArray(list) ? list : list?.result || [];
+    return arr[0] || null;
+  } catch (e) {
+    console.error(`cfGetCustomHostname(${d}) failed:`, e?.message || e);
+    return null;
+  }
+}
+
+export async function cfEnsureCustomHostname(domain) {
+  const d = cleanDomain(domain);
+  if (!d) throw Object.assign(new Error("Invalid domain name."), { statusCode: 400, code: "invalid-argument" });
+  const existing = await cfGetCustomHostname(d);
+  if (existing) return existing;
+  // HTTP validation: no extra customer record beyond the CNAME to ROUTING_TARGET.
+  // Certificates auto-issue once the hostname points at us; downtime is a few minutes max.
+  return cfFetch(`/custom_hostnames`, {
+    method: "POST",
+    body: {
+      hostname: d,
+      ssl: { method: "http", type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } },
+    },
+  });
+}
+
+export async function cfDeleteCustomHostname(domain) {
+  const d = cleanDomain(domain);
+  if (!d) return false;
+  const existing = await cfGetCustomHostname(d).catch(() => null);
+  if (!existing?.id) return false;
+  try {
+    await cfFetch(`/custom_hostnames/${existing.id}`, { method: "DELETE" });
+    return true;
+  } catch (e) {
+    console.error(`cfDeleteCustomHostname(${d}) failed:`, e?.message || e);
+    return false;
+  }
 }
 
 export async function verifyDns(domain, token) {
   const target = routingTarget().toLowerCase().replace(/\.$/, "");
-  const checks = { cname: false, txt: false, ssl: false };
+  const legacyTargets = new Set([
+    target,
+    "s.inoculens.com",
+    systemShortHost(),
+    (process.env.ROUTING_TARGET_LEGACY || "").toLowerCase(),
+  ].filter(Boolean));
+  const checks = { cname: false, txt: false, ssl: false, cfHostnameStatus: null, cfSslStatus: null };
 
   try {
     const cname = await doh(domain, "CNAME");
-    checks.cname = cname.some(
-      (v) => v.toLowerCase().replace(/\.$/, "") === target
-    );
+    checks.cname = cname.some((v) => legacyTargets.has(v.toLowerCase().replace(/\.$/, "")));
+    // Apex / flattened setups: some providers return A instead of CNAME.
+    // If no CNAME match, accept when the domain resolves to the same edge as the SaaS target.
+    if (!checks.cname) {
+      try {
+        const [aDomain, aTarget] = await Promise.all([
+          doh(domain, "A").catch(() => []),
+          doh(target, "A").catch(() => []),
+        ]);
+        const targetIps = new Set(aTarget.map(String));
+        if (targetIps.size && aDomain.some((ip) => targetIps.has(String(ip)))) checks.cname = true;
+      } catch { /* keep false */ }
+    }
   } catch {
     checks.cname = false;
   }
 
   try {
     const txt = await doh(`verification.${domain}`, "TXT");
-    checks.txt = txt.some((v) => v.replace(/^"|"$/g, "") === token);
+    checks.txt = txt.some((v) => v.replace(/"/g, "").trim() === token);
   } catch {
     checks.txt = false;
+  }
+
+  // Real SaaS certificate/hostname status when Cloudflare is configured.
+  if (cfConfig()) {
+    const cf = await cfGetCustomHostname(domain);
+    if (cf) {
+      checks.cfHostnameStatus = cf.status || null;
+      checks.cfSslStatus = cf.ssl?.status || null;
+      // HTTP validation provisions automatically once CNAME is correct.
+      checks.ssl = cf.ssl?.status === "active";
+    } else {
+      // No custom hostname yet: SSL cannot be active. It will be created
+      // automatically after payment (see api.js ensureSaaSHostname).
+      checks.ssl = false;
+    }
+    // Explicit delegation (TXT/delegated method) still honored if configured.
+    const delegation = sslDelegationTarget();
+    if (delegation && !checks.ssl) {
+      try {
+        const cname = await doh(`_acme-challenge.${domain}`, "CNAME");
+        const want = delegation.toLowerCase().replace(/\.$/, "");
+        if (cname.some((v) => v.toLowerCase().replace(/\.$/, "") === want)) checks.ssl = true;
+      } catch { /* keep API result */ }
+    }
+    return checks;
   }
 
   const delegation = sslDelegationTarget();

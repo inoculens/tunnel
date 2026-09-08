@@ -3227,9 +3227,10 @@
             style="padding: 10px 12px; background: rgba(15, 23, 42, 0.5); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">
             <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">CNAME Record (Routing)</label>
             <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Host:</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Point your domain (CNAME) to:</div>
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-              <div id="cnameRecordHost" 
-                style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">s.inoculens.com</div>
+              <div id="cnameRecordHost"
+                style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">customers.inoculens.com</div>
               <button class="copy-btn" onclick="copyTextFromElement('cnameRecordHost')" title="Copy CNAME"
                 style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
@@ -3284,10 +3285,11 @@
 
           <div
             style="padding: 10px 12px; background: rgba(15, 23, 42, 0.5); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">
-            <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">SSL Certificate Validation</label>
+            <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">SSL Certificate (Automatic via Cloudflare)</label>
+            <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 10px;">No extra record needed — Cloudflare issues TLS automatically once the CNAME above is detected (usually a few minutes after payment).</div>
 
             <div id="sslInstructionsDelegation"
-              style="display: flex; flex-direction: column;">
+              style="display: none; flex-direction: column;">
               <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>
               <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
                 <div id="sslCnameName"
@@ -3547,6 +3549,20 @@
       const functions = {
         httpsCallable: (name) => (data) => apiCall(name, data)
       };
+      // Public SaaS config (CNAME target etc.) — backend-driven so a future
+      // Cloudflare account move never needs a frontend redeploy for DNS text.
+      // Defaults match the INOCULENS account; backend wins when reachable.
+      let publicConfig = { routingTarget: 'customers.inoculens.com', systemHost: 's.inoculens.com' };
+      (async () => {
+        try {
+          const res = await apiCall('getPublicConfig', {});
+          if (res?.data?.routingTarget) {
+            publicConfig = res.data;
+            const el = document.getElementById('cnameRecordHost');
+            if (el) el.textContent = res.data.routingTarget;
+          }
+        } catch (e) { /* static defaults stand */ }
+      })();
       // Same-origin backend: available unless the network itself fails
       // (individual apiCall failures are caught by each caller).
       let backendReady = true;
@@ -4465,22 +4481,40 @@
         if (txtTokenEl) txtTokenEl.textContent = txtToken;
         if (txtHostEl) txtHostEl.textContent = txtHost;
 
-        // SSL CNAME Delegation (DCV Delegation)
+        // CNAME target (SaaS) — backend-driven, never hardcoded.
+        // INOCULENS account: customers.inoculens.com (proxied SaaS target).
+        const cnameTarget = (domainDoc.instructions && (domainDoc.instructions.cnameTarget || domainDoc.instructions.routingTarget)) || 'customers.inoculens.com';
+        const cnameHostEl = document.getElementById('cnameRecordHost');
+        if (cnameHostEl) cnameHostEl.textContent = cnameTarget;
+
+        // SSL is automatic via Cloudflare HTTP validation (no _acme-challenge
+        // record). Keep the delegation block hidden unless the backend
+        // explicitly provides a delegation target (TXT/delegated method).
         const sslNameEl = document.getElementById('sslCnameName');
         const sslTargetEl = document.getElementById('sslCnameTarget');
+        const sslDelegEl = document.getElementById('sslInstructionsDelegation');
+        const dcvTarget = (domainDoc.instructions && domainDoc.instructions.dcvTarget) || null;
+        const explicitDeleg = (domainDoc.instructions && domainDoc.instructions.sslCnameTarget &&
+          domainDoc.instructions.sslCnameTarget.indexOf('.dcv.cloudflare.com') !== -1)
+          ? domainDoc.instructions.sslCnameTarget
+          : ((domainDoc.sslVerification && domainDoc.sslVerification.cnameTarget &&
+            String(domainDoc.sslVerification.cnameTarget).indexOf('.dcv.cloudflare.com') !== -1)
+            ? domainDoc.sslVerification.cnameTarget : null);
+        const showDelegTarget = explicitDeleg || dcvTarget;
+        // New INOCULENS DCV suffix is adad0549ffb44d06 (old FRONTFACER
+        // 2f1c96f3d5df8a0a is retired). Only shown if delegation is required.
         if (sslNameEl) sslNameEl.textContent = `_acme-challenge.${domainName}`;
-
-        // Use the target provided by Cloudflare API via backend instructions
-        const dcvTarget = (domainDoc.instructions && domainDoc.instructions.sslCnameTarget) ||
-          (domainDoc.sslVerification && domainDoc.sslVerification.cnameTarget) ||
-          `${domainName}.2f1c96f3d5df8a0a.dcv.cloudflare.com`; // Fallback (though Cloudflare targets vary)
-        if (sslTargetEl) sslTargetEl.textContent = dcvTarget;
+        if (sslTargetEl) sslTargetEl.textContent = showDelegTarget || 'Automatic — no record needed';
+        if (sslDelegEl) sslDelegEl.style.display = showDelegTarget ? 'flex' : 'none';
 
         // Initialize status from database (persistent state)
         const dns = domainDoc.dnsVerification || {};
         const sslVer = domainDoc.sslVerification || {};
-        // SSL is considered verified if: dns.sslVerified flag set, OR Cloudflare reports 'active', OR domain is active
-        const sslIsActive = dns.sslVerified === true || sslVer.status === 'active' || domainDoc.status === 'active';
+        const cf = domainDoc.cloudflare || {};
+        // SSL verified if: DNS flag, Cloudflare SaaS ssl active, or hostname active.
+        // Note: domain status 'active' alone does NOT imply TLS is deployed yet
+        // (HTTP validation takes minutes) — show Propagating until CF confirms.
+        const sslIsActive = dns.sslVerified === true || sslVer.status === 'active' || cf.sslStatus === 'active';
         verificationState = {
           cname: dns.cnameValid || false,
           txt: dns.txtVerified || false,
@@ -4551,9 +4585,10 @@
         const isActive = domainData.status === 'active' || domainData.paymentStatus === 'paid';
         const dns = domainData.dnsVerification || {};
         const sslVerif = domainData.sslVerification || {};
+        const cfSync = domainData.cloudflare || {};
 
-        // SSL is considered verified if dns.sslVerified is set, OR Cloudflare reports 'active', OR domain is active
-        const sslOk = dns.sslVerified === true || sslVerif.status === 'active' || isActive;
+        // SSL verified only on real TLS deployment (DNS flag or CF SaaS active).
+        const sslOk = dns.sslVerified === true || sslVerif.status === 'active' || cfSync.sslStatus === 'active';
 
         console.log(`syncVerificationUI: domain=${domainData.domain}, isVerified=${isVerified}, isActive=${isActive}, cfSslStatus=${sslVerif.status}, dns=${JSON.stringify(dns)}`);
 
@@ -4721,10 +4756,13 @@
           // Hide spinner once loading is over
           if (spinner) spinner.style.display = 'none';
 
-          // STICKY VERIFICATION: Enable button if all checks pass OR if domain is permanently verified
+          // Payment requires ownership (CNAME routing + TXT). SSL provisions
+          // automatically via Cloudflare SaaS HTTP validation after the CNAME
+          // is live — it must NOT block payment (takes minutes in background).
           const isPermanentlyVerified = window.domainIsVerified === true;
           const isDomainActive = window.domainIsActive === true;
-          const allChecksPass = cnameOk && txtOk && sslOk;
+          const readyForPayment = (cnameOk && txtOk) || isPermanentlyVerified;
+          const allChecksPass = readyForPayment;
 
           if (isDomainActive) {
             continueBtn.disabled = false; // Allow closing
@@ -6077,7 +6115,7 @@
             message = "Domain not active. Complete verification and payment first.";
             showCustomModal({
               title: "Domain Not Active",
-              message: "The custom domain you selected is not fully verified or paid. Please complete the following steps:<br><br>1. Set up CNAME and TXT DNS records<br>2. Complete SSL verification<br>3. Complete payment<br><br>Choose Manage Domain to continue verification.",
+              message: "The custom domain you selected is not fully verified or paid. Please complete the following steps:<br><br>1. CNAME your domain to customers.inoculens.com<br>2. Add the TXT ownership record<br>3. Complete payment (SSL provisions automatically)<br><br>Choose Manage Domain to continue verification.",
               confirmText: "Manage Domain",
               showCancel: true,
               cancelText: "Close"
