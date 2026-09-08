@@ -65,7 +65,7 @@ document.getElementById('open').addEventListener('click',function(){});
 }
 
 export async function handler(event) {
-  const s = store();
+  const s = store(event);
   const qs = event.queryStringParameters || {};
   let code = (qs.c || "").trim();
   if (!code) {

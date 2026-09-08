@@ -678,7 +678,7 @@ export async function handler(event) {
   }
   const fn = actions[body.action];
   if (!fn) return fail(400, "invalid-argument", `Unknown action: ${body.action || "(missing)"}.`);
-  const s = store();
+  const s = store(event);
   try {
     return await fn(s, body, event);
   } catch (e) {

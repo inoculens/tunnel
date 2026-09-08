@@ -38,6 +38,11 @@
 #     AUTO_SSL=1 (default) — with Cloudflare SaaS HTTP validation, routing
 #       validity implies SSL will auto-provision. Set SSL_DELEGATION_TARGET
 #       only if you switch a hostname to TXT/delegated validation.
+# - Blobs storage: request functions bind automatically via connectLambda(event)
+#   (no extra env needed). The hourly payment watcher (scheduled-payments) has
+#   no HTTP event, so ONLY it needs NETLIFY_SITE_ID + NETLIFY_BLOBS_TOKEN
+#   (or NETLIFY_TOKEN) if you want automatic BTC payment detection. Without
+#   those two, link creation/stats still work; only the scheduler no-ops.
 
 [build]
   publish = "."

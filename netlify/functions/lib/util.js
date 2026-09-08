@@ -14,10 +14,35 @@
  *   wallet/meta                     { nextIndex }
  *   rl/<name>/<ip>/<windowMinute>   { count }
  */
-import { getStore } from "@netlify/blobs";
+import { getStore, connectLambda } from "@netlify/blobs";
 import { randomBytes } from "node:crypto";
 
-export function store() {
+export function store(event) {
+  // Netlify Functions run in Lambda-compatibility mode: the Blobs environment
+  // is NOT auto-configured unless we bind the incoming Lambda event first.
+  // Without this every backend call fails with MissingBlobsEnvironmentError
+  // (the "unexpected error" seen in production). See:
+  // https://www.npmjs.com/package/@netlify/blobs (connectLambda).
+  if (event) {
+    try {
+      connectLambda(event);
+    } catch (e) {
+      console.error("connectLambda failed:", e?.message || e);
+    }
+  }
+  const siteID = process.env.NETLIFY_SITE_ID || process.env.SITE_ID || null;
+  const token =
+    process.env.NETLIFY_BLOBS_TOKEN || process.env.NETLIFY_TOKEN || process.env.BLOBS_TOKEN || null;
+  // Scheduled functions have no HTTP event, so they rely on explicit env.
+  // Regular functions prefer the event-bound environment and only fall back
+  // to explicit siteID+token when both are configured (e.g. local dev).
+  if (siteID && token) {
+    try {
+      return getStore({ name: "tunnel", siteID, token });
+    } catch (e) {
+      console.error("getStore(siteID+token) failed, falling back:", e?.message || e);
+    }
+  }
   return getStore("tunnel");
 }
 

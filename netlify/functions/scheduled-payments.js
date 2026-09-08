@@ -23,8 +23,11 @@ async function addressBalanceSats(address) {
   return (Number(stats.funded_txo_sum) || 0) - (Number(stats.spent_txo_sum) || 0);
 }
 
-export async function handler() {
-  const s = store();
+export async function handler(event) {
+  // Note: scheduled invocations carry no HTTP Lambda event, so Blobs access
+  // here requires NETLIFY_SITE_ID + NETLIFY_BLOBS_TOKEN (or NETLIFY_TOKEN) env.
+  // Regular request functions bind via connectLambda(event) instead.
+  const s = store(event);
   let checked = 0;
   let activated = 0;
   try {
