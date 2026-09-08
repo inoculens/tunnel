@@ -206,6 +206,23 @@ async function deleteClickKeys(s, code) {
   }
 }
 
+// True if any OTHER domain was ever shown this address (current or retired
+// quote). Own domain excluded: re-showing our own history address is
+// harmless, and we always take a fresh index anyway.
+async function addressTakenByOtherDomain(s, ownDomain, address) {
+  if (!address) return false;
+  for (const b of await listAll(s, "domain/")) {
+    let d = null;
+    try {
+      d = await s.get(b.key, { type: "json" });
+    } catch { continue; }
+    if (!d || d.domain === ownDomain) continue;
+    if (d.quote && d.quote.address === address) return true;
+    if (Array.isArray(d.quoteHistory) && d.quoteHistory.some((h) => h && h.address === address)) return true;
+  }
+  return false;
+}
+
 // ---------- actions ----------
 
 const actions = {
@@ -558,6 +575,20 @@ const actions = {
   },
 
   // ----- billing (Bitcoin) -----
+  // Address uniqueness model: quotes live on the domain doc (session-owned —
+  // cross-session access is rejected), each fresh quote consumes the next
+  // global wallet index, and an unexpired quote is re-shown verbatim. So a
+  // displayed address belongs to exactly one session and is stable while
+  // unpaid. When a quote is superseded (manual refresh / expiry), the old
+  // {address, amount} is retired into doc.quoteHistory so the watcher still
+  // credits funds sent to an address the user actually saw.
+  //
+  // Blobs has no compare-and-swap, so two simultaneous quotes could read the
+  // same wallet index. Collision is resolved KEEP-FIRST (never random — the
+  // first session may already be paying): after deriving, the address is
+  // checked against every other domain's current + retired quotes and
+  // re-issued from the next index on clash. This runs server-side before the
+  // response, so no duplicate ever reaches a screen — no flash needed.
 
   async generatePaymentAddress(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
@@ -582,11 +613,40 @@ const actions = {
     const q = quoteFor(pct, price);
     let address = doc.quote && doc.quote.address && !p.forceRefresh ? doc.quote.address : null;
     if (!address) {
-      const idx = await nextWalletIndex(s);
+      // Retire the quote being replaced (if any) so late payments to an
+      // address the user already saw are still credited by the watcher.
+      if (doc.quote && doc.quote.address) {
+        doc.quoteHistory = Array.isArray(doc.quoteHistory) ? doc.quoteHistory : [];
+        if (!doc.quoteHistory.some((h) => h && h.address === doc.quote.address)) {
+          doc.quoteHistory.push({
+            address: doc.quote.address,
+            amount: doc.quote.amount,
+            index: doc.quote.index,
+            expiresAt: doc.quote.expiresAt,
+            supersededAt: new Date().toISOString(),
+          });
+          if (doc.quoteHistory.length > 20) doc.quoteHistory = doc.quoteHistory.slice(-20);
+        }
+      }
+      let idx = await nextWalletIndex(s);
       try {
         address = await deriveAddress(idx);
       } catch (e) {
         return fail(e.statusCode || 412, e.code || "failed-precondition", e.message);
+      }
+      // Keep-first collision loop: another session may hold this address
+      // already (current or retired quote). Re-issue from the next index;
+      // bounded so a pathological store can't hang the request.
+      let clashes = 0;
+      while (clashes < 5 && (await addressTakenByOtherDomain(s, doc.domain, address))) {
+        console.warn(`address clash on index ${idx} for ${doc.domain}, re-issuing`);
+        idx = await nextWalletIndex(s);
+        try {
+          address = await deriveAddress(idx);
+        } catch (e) {
+          return fail(e.statusCode || 412, e.code || "failed-precondition", e.message);
+        }
+        clashes++;
       }
       doc.quote = { ...q, address, index: idx };
     } else {
@@ -639,11 +699,23 @@ const actions = {
     const q = quoteFor(pct, price);
     let address = doc.quote && doc.quote.address ? doc.quote.address : null;
     if (!address) {
-      const idx = await nextWalletIndex(s);
+      let idx = await nextWalletIndex(s);
       try {
         address = await deriveAddress(idx);
       } catch (e) {
         return fail(e.statusCode || 412, e.code || "failed-precondition", e.message);
+      }
+      // Same keep-first collision guard as generatePaymentAddress.
+      let clashes = 0;
+      while (clashes < 5 && (await addressTakenByOtherDomain(s, doc.domain, address))) {
+        console.warn(`address clash on index ${idx} for ${doc.domain}, re-issuing`);
+        idx = await nextWalletIndex(s);
+        try {
+          address = await deriveAddress(idx);
+        } catch (e) {
+          return fail(e.statusCode || 412, e.code || "failed-precondition", e.message);
+        }
+        clashes++;
       }
       doc.quote = { ...q, address, index: idx };
     } else {

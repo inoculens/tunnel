@@ -49,6 +49,14 @@
   publish = "."
   # No build step: plain HTML/CSS/JS. `npm run build` intentionally absent.
 
+[functions]
+  # MUST stay "nft": the default esbuild bundles each function into ONE file,
+  # which breaks tiny-secp256k1 (BTC payments) — it loads secp256k1.wasm via
+  # `new URL(wasm, import.meta.url)`, and the .wasm asset is lost in a bundle
+  # ("Invalid URL" at runtime). nft preserves the node_modules file tree so
+  # the WASM resolves exactly like local Node. Verified via esbuild repro.
+  node_bundler = "nft"
+
 # Clean URLs: /about serves about.html etc. (Netlify Pretty URLs also do
 # this by default; explicit rules keep it working if that setting changes).
 [[redirects]]

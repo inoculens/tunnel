@@ -33,15 +33,34 @@ export async function handler(event) {
   try {
     for (const b of await listAll(s, "domain/")) {
       const d = await s.get(b.key, { type: "json" });
-      if (!d || d.paymentStatus === "paid" || !d.quote?.address || !d.quote?.amount) continue;
-      if (new Date(d.quote.expiresAt).getTime() < Date.now()) continue;
+      if (!d || d.paymentStatus === "paid") continue;
+      // Candidates: current quote (if unexpired) + retired quotes. Retired
+      // addresses were displayed to this session, so late payments to them
+      // must still credit the domain — amounts locked at display time.
+      const candidates = [];
+      if (d.quote?.address && d.quote?.amount && new Date(d.quote.expiresAt).getTime() >= Date.now()) {
+        candidates.push({ address: d.quote.address, amount: d.quote.amount, current: true });
+      }
+      for (const h of Array.isArray(d.quoteHistory) ? d.quoteHistory : []) {
+        if (h?.address && h?.amount) candidates.push({ address: h.address, amount: h.amount, current: false });
+      }
+      if (!candidates.length) continue;
       checked++;
       try {
-        const bal = await addressBalanceSats(d.quote.address);
-        if (bal >= toSats(d.quote.amount)) {
+        let paidBy = null;
+        for (const c of candidates) {
+          const bal = await addressBalanceSats(c.address);
+          if (bal >= toSats(c.amount)) {
+            paidBy = c;
+            break;
+          }
+        }
+        if (paidBy) {
           d.paymentStatus = "paid";
           if (d.isVerified) d.status = "active";
-          d.quote.paidAt = new Date().toISOString();
+          d.paidAddress = paidBy.address;
+          d.paidAmount = paidBy.amount;
+          if (d.quote) d.quote.paidAt = new Date().toISOString();
           // Provision Cloudflare SaaS hostname so TLS issues immediately after payment.
           if (cfConfig() && d.isVerified) {
             try {
