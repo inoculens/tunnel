@@ -534,14 +534,14 @@ async function loadBtcLibs() {
   try {
     const { payments, networks } = await import("bitcoinjs-lib");
     const { BIP32Factory } = await import("bip32");
-    // tiny-secp256k1 v2 ships named ESM exports (no .default); older
-    // versions were CJS-only. Accept either shape — `.default` being
-    // undefined used to break ALL xpub derivation with
-    // "Cannot read properties of undefined (reading 'isPoint')".
-    const eccMod = await import("tiny-secp256k1");
-    const ecc = eccMod.default ?? eccMod;
+    // Pure-JS ECC (./ecc-noble.js, @noble/secp256k1): intentionally NOT
+    // tiny-secp256k1 — that package loads secp256k1.wasm via
+    // `new URL(wasm, import.meta.url)`, which breaks under function bundlers
+    // ("Invalid URL" in production). The noble adapter passes bip32's own
+    // testEcc vectors and derives byte-identical addresses.
+    const { ecc } = await import("./ecc-noble.js");
     if (!ecc || typeof ecc.isPoint !== "function") {
-      throw new Error("tiny-secp256k1 loaded without ECC functions");
+      throw new Error("ECC backend loaded without point functions");
     }
     return { payments, networks, BIP32Factory, ecc };
   } catch (e) {
