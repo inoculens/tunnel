@@ -527,20 +527,49 @@ function nodeFromExtendedKey(factory, networks, keyString) {
   throw new Error("unrecognized extended public key version (want xpub/ypub/zpub)");
 }
 
+async function loadBtcLibs() {
+  // Dynamic so the rest of the backend keeps working even if the wallet
+  // deps are missing from a deploy. Staged errors: callers must distinguish
+  // "libraries didn't load" (redeploy/dependency problem) from "key bad".
+  try {
+    const { payments, networks } = await import("bitcoinjs-lib");
+    const { BIP32Factory } = await import("bip32");
+    // tiny-secp256k1 v2 ships named ESM exports (no .default); older
+    // versions were CJS-only. Accept either shape — `.default` being
+    // undefined used to break ALL xpub derivation with
+    // "Cannot read properties of undefined (reading 'isPoint')".
+    const eccMod = await import("tiny-secp256k1");
+    const ecc = eccMod.default ?? eccMod;
+    if (!ecc || typeof ecc.isPoint !== "function") {
+      throw new Error("tiny-secp256k1 loaded without ECC functions");
+    }
+    return { payments, networks, BIP32Factory, ecc };
+  } catch (e) {
+    const err = new Error(`bitcoin libraries failed to load (${e?.message || e})`);
+    err.statusCode = 412;
+    err.code = "failed-precondition";
+    throw err;
+  }
+}
+
 export async function deriveAddress(index) {
   if (process.env.BTC_XPUB) {
+    let libs;
     try {
-      const { payments, networks } = await import("bitcoinjs-lib");
-      const { BIP32Factory } = await import("bip32");
-      // tiny-secp256k1 v2 ships named ESM exports (no .default); older
-      // versions were CJS-only. Accept either shape — `.default` being
-      // undefined used to break ALL xpub derivation with
-      // "Cannot read properties of undefined (reading 'isPoint')".
-      const eccMod = await import("tiny-secp256k1");
-      const ecc = eccMod.default ?? eccMod;
-      const { node } = nodeFromExtendedKey(BIP32Factory(ecc), networks, process.env.BTC_XPUB);
+      libs = await loadBtcLibs();
+    } catch (e) {
+      console.error("btc lib load failed:", e?.message || e);
+      const err = new Error(
+        `Bitcoin libraries unavailable on this deployment (${e?.message || e}). Redeploy so npm dependencies install.`
+      );
+      err.statusCode = 412;
+      err.code = "failed-precondition";
+      throw err;
+    }
+    try {
+      const { node } = nodeFromExtendedKey(libs.BIP32Factory(libs.ecc), libs.networks, process.env.BTC_XPUB);
       const child = node.derive(0).derive(index);
-      const { address } = payments.p2wpkh({ pubkey: child.publicKey });
+      const { address } = libs.payments.p2wpkh({ pubkey: child.publicKey });
       if (address) return address;
       throw new Error("could not encode address");
     } catch (e) {
