@@ -30,7 +30,8 @@
 #     DOMAIN_PRICE_USD=10  QUOTE_TTL_DAYS=7        (billing defaults)
 #     DISCOUNT_CODES={"WELCOME10":10}               (optional promo codes)
 #     BTC_USD_FALLBACK=65000                        (used if CoinGecko is unreachable)
-#     BTC_XPUB=xpub…  (+ npm i bitcoinjs-lib bip32 tiny-secp256k1)
+#     BTC_XPUB=xpub…  (account-level xpub, e.g. m/44'/0'/0'; code derives
+#        m/0/<index> per quote; deps already in package.json)
 #        enables real payment addresses; without it generatePaymentAddress
 #        returns a clear "not configured" error. MANUAL_BTC_ADDRESS is for
 #        local testing only (single reused address — never production).

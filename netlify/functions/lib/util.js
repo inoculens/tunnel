@@ -456,7 +456,12 @@ export async function deriveAddress(index) {
     try {
       const { payments } = await import("bitcoinjs-lib");
       const { BIP32Factory } = await import("bip32");
-      const ecc = (await import("tiny-secp256k1")).default;
+      // tiny-secp256k1 v2 ships named ESM exports (no .default); older
+      // versions were CJS-only. Accept either shape — `.default` being
+      // undefined used to break ALL xpub derivation with
+      // "Cannot read properties of undefined (reading 'isPoint')".
+      const eccMod = await import("tiny-secp256k1");
+      const ecc = eccMod.default ?? eccMod;
       const node = BIP32Factory(ecc).fromBase58(process.env.BTC_XPUB).derive(0).derive(index);
       const { address } = payments.p2wpkh({ pubkey: node.publicKey });
       if (address) return address;
