@@ -213,6 +213,48 @@ export function systemShortHost() {
   return (process.env.SITE_URL || "s.inoculens.com").toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
 }
 
+export function saasZoneApex() {
+  // Apex of the Cloudflare SaaS zone (INOCULENS account: inoculens.com).
+  return (process.env.SAAS_ZONE_APEX || "inoculens.com").toLowerCase();
+}
+
+// Apex (naked) domains like example.com cannot serve short links: DNS forbids
+// CNAME at the apex, so routing can never validate and no certificate can
+// provision (apex proxying is an Enterprise-only add-on we don't have).
+// Users must add www.example.com or a subdomain (go.example.com) instead.
+export async function isApexDomain(domain) {
+  const d = cleanDomain(domain);
+  if (!d) return false;
+  try {
+    const { default: psl } = await import("psl");
+    const parsed = psl.parse(d);
+    if (parsed && !parsed.error && parsed.domain) {
+      return !parsed.subdomain;
+    }
+  } catch { /* fall through to label heuristic */ }
+  return d.split(".").length <= 2;
+}
+
+export function apexBlockedMessage(host) {
+  return (
+    `Apex (naked) domains can't be used for short links — DNS does not allow a CNAME at the apex, ` +
+    `so neither routing nor TLS can ever validate for "${host}". ` +
+    `Use any subdomain you like instead — www.${host}, go.${host}, s.${host}, links.${host}, anything. ` +
+    `Tip: most registrars offer free domain forwarding — forward ${host} to your Tunnel subdomain so visitors still find you.`
+  );
+}
+
+export function isInZoneCustomDomain(domain) {
+  // Subdomains managed inside our own SaaS zone (e.g. btc.inoculens.com).
+  // These do NOT need a SaaS Custom Hostname: the zone Universal certificate
+  // (*.apex, proxied or DNS-only CNAME to our edge) already covers TLS, and
+  // the Worker route serves them once the CNAME exists.
+  const d = cleanDomain(domain);
+  if (!d) return false;
+  const apex = saasZoneApex();
+  return d !== apex && d.endsWith(`.${apex}`);
+}
+
 export function dcvDelegationSuffix() {
   // DCV Delegation suffix for the INOCULENS Cloudflare account.
   // Zone inoculens.com UUID (via GET /zones/:id/dcv_delegation/uuid).
@@ -352,8 +394,12 @@ export async function verifyDns(domain, token) {
     checks.txt = false;
   }
 
+  // In-zone subdomains are covered by the zone Universal certificate
+  // (*.apex) as soon as the CNAME exists — no SaaS object required.
+  const inZone = isInZoneCustomDomain(domain);
+
   // Real SaaS certificate/hostname status when Cloudflare is configured.
-  if (cfConfig()) {
+  if (cfConfig() && !inZone) {
     const cf = await cfGetCustomHostname(domain);
     if (cf) {
       checks.cfHostnameStatus = cf.status || null;
@@ -374,6 +420,12 @@ export async function verifyDns(domain, token) {
         if (cname.some((v) => v.toLowerCase().replace(/\.$/, "") === want)) checks.ssl = true;
       } catch { /* keep API result */ }
     }
+    return checks;
+  }
+
+  // In-zone: Universal certificate covers TLS once routing exists.
+  if (inZone) {
+    checks.ssl = checks.cname;
     return checks;
   }
 

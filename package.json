@@ -10,6 +10,7 @@
     "@netlify/blobs": "^11.0.3",
     "bip32": "^5.0.0",
     "bitcoinjs-lib": "^7.0.0",
+    "psl": "^1.15.0",
     "tiny-secp256k1": "^2.2.4"
   }
 }

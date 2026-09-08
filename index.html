@@ -3171,13 +3171,14 @@
       <div id="addDomainStep1" style="display: none;">
         <h2 class="modal-title" style="margin-top: 0; margin-bottom: 16px;">Connect Custom Domain</h2>
         <p class="modal-message" style="margin-bottom: 12px;">Add a new custom domain to use for your short links.</p>
-        <div style="display: flex; gap: 8px; margin-bottom: 24px;">
-          <input type="text" id="newDomainInput" placeholder="example.com"
+        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+          <input type="text" id="newDomainInput" placeholder="go.example.com"
             style="flex: 1; height: 48px; min-width: 0; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px; font-size: 0.95rem;"
             onkeydown="if(event.key==='Enter') proceedToAddDomain()">
           <button class="modal-btn modal-btn-ok" id="addDomainProceedBtn" onclick="proceedToAddDomain()"
             style="height: 48px; width: 80px;">Next</button>
         </div>
+        <div id="apexHint" style="display: none; margin-bottom: 16px; padding: 10px 14px; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4); border-radius: 8px; color: #fbbf24; font-size: 0.82rem; line-height: 1.5;"></div>
       </div>
 
       <div id="addDomainStep2" style="display: none;">
@@ -3226,8 +3227,21 @@
           <div
             style="padding: 10px 12px; background: rgba(15, 23, 42, 0.5); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">
             <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">CNAME Record (Routing)</label>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Host:</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Point your domain (CNAME) to:</div>
+            <div id="inzoneNote" style="display: none; font-size: 0.75rem; color: #10b981; margin-bottom: 8px;">This subdomain lives in your Cloudflare zone — create the records below in Cloudflare DNS for inoculens.com (proxy ON).</div>
+            <div id="apexNote" style="display: none; font-size: 0.75rem; color: #fbbf24; margin-bottom: 8px;"></div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Record name (create at your DNS provider):</div>
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+              <div id="cnameRecordName"
+                style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">[your domain]</div>
+              <button class="copy-btn" onclick="copyTextFromElement('cnameRecordName')" title="Copy record name"
+                style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+            </div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to (CNAME target):</div>
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
               <div id="cnameRecordHost"
                 style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">customers.inoculens.com</div>
@@ -4158,6 +4172,8 @@
         // Reset inputs
         const input = document.getElementById('newDomainInput');
         if (input) input.value = '';
+        const apexHint = document.getElementById('apexHint');
+        if (apexHint) apexHint.style.display = 'none';
         const cryptoCurr = document.getElementById('cryptoCurrency');
         if (cryptoCurr) cryptoCurr.value = '';
         const paymentInst = document.getElementById('paymentInstructions');
@@ -4365,12 +4381,58 @@
         }
       }
 
+      // Apex (naked) domains can't serve short links — DNS forbids CNAME at
+      // the apex. Client-side mirror of the backend psl check (common
+      // two-level suffixes); the backend remains authoritative.
+      const APEX_DOUBLE_SUFFIX = new Set(['co.uk','org.uk','me.uk','net.uk','ac.uk','sch.uk','gov.uk','co.jp','ne.jp','or.jp','com.au','net.au','org.au','co.nz','net.nz','org.nz','co.za','com.br','com.mx','com.ar','com.co','co.in','co.id','com.sg','com.hk','com.tw','co.kr','or.kr','ne.kr','com.ph','co.il']);
+      function isProbablyApex(raw) {
+        const d = String(raw || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+        if (!d || d.indexOf('.') === -1) return false;
+        const parts = d.split('.');
+        if (parts.length <= 2) return true;
+        if (parts.length === 3 && APEX_DOUBLE_SUFFIX.has(parts.slice(1).join('.'))) return true;
+        return false;
+      }
+      function apexHintHTML(d) {
+        return `⚠️ <strong>${escapeHTML(d)}</strong> looks like a naked (apex) domain, which cannot work for short links — DNS forbids a CNAME at the apex, so routing and TLS can never validate. Use <strong>any subdomain you like</strong> instead — <strong>www.${escapeHTML(d)}</strong>, <strong>go.${escapeHTML(d)}</strong>, <strong>s.${escapeHTML(d)}</strong>, whatever you prefer (you can forward the apex to it free at your registrar).`;
+      }
+      function refreshApexHint() {
+        const input = document.getElementById('newDomainInput');
+        const hint = document.getElementById('apexHint');
+        if (!input || !hint) return false;
+        const v = input.value.trim().replace(/^https?:\/\//, '').split('/')[0];
+        if (v && isProbablyApex(v)) {
+          hint.innerHTML = apexHintHTML(v);
+          hint.style.display = 'block';
+          return true;
+        }
+        hint.style.display = 'none';
+        return false;
+      }
+      (function wireApexHint() {
+        const input = document.getElementById('newDomainInput');
+        if (input && !input.dataset.apexWired) {
+          input.dataset.apexWired = '1';
+          input.addEventListener('input', refreshApexHint);
+        }
+      })();
+
       async function proceedToAddDomain() {
         const input = document.getElementById('newDomainInput').value.trim();
         const btn = document.getElementById('addDomainProceedBtn');
         if (!input || btn.classList.contains('loading')) return;
 
         pendingDomain = input.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+        // Fast client-side apex block (backend enforces authoritatively).
+        if (isProbablyApex(pendingDomain)) {
+          refreshApexHint();
+          showCustomModal({
+            title: "Apex Domains Can't Be Used",
+            message: apexHintHTML(pendingDomain) + "<br><br>Change the input above to a www/subdomain version to continue — nothing was added or charged."
+          });
+          return;
+        }
 
         try {
           btn.classList.add('loading');
@@ -4493,6 +4555,25 @@
         const cnameTarget = (domainDoc.instructions && (domainDoc.instructions.cnameTarget || domainDoc.instructions.routingTarget)) || 'customers.inoculens.com';
         const cnameHostEl = document.getElementById('cnameRecordHost');
         if (cnameHostEl) cnameHostEl.textContent = cnameTarget;
+        // Record name the user must create (source side of the CNAME).
+        const recordName = (domainDoc.instructions && domainDoc.instructions.recordName) || domainName;
+        const recordNameEl = document.getElementById('cnameRecordName');
+        if (recordNameEl) recordNameEl.textContent = recordName;
+        // In-zone subdomains are managed in the user's own Cloudflare zone.
+        const inZoneNote = document.getElementById('inzoneNote');
+        if (inZoneNote) inZoneNote.style.display =
+          (domainDoc.instructions && domainDoc.instructions.isInZone) ? 'block' : 'none';
+        // Grandfathered apex domains (blocked for new adds): explain + redirect.
+        const apexNote = document.getElementById('apexNote');
+        const isApexDoc = domainDoc.instructions && domainDoc.instructions.isApex;
+        if (apexNote) {
+          if (isApexDoc) {
+            apexNote.innerHTML = `⚠️ <strong>${escapeHTML(domainName)}</strong> is a naked (apex) domain and cannot work — DNS forbids a CNAME at the apex. Delete it and add <strong>any subdomain you like</strong> instead (<strong>www.${escapeHTML(domainName)}</strong>, <strong>go.${escapeHTML(domainName)}</strong>, …) — forward the apex to it free at your registrar.`;
+            apexNote.style.display = 'block';
+          } else {
+            apexNote.style.display = 'none';
+          }
+        }
 
         // SSL is automatic via Cloudflare HTTP validation (no _acme-challenge
         // record). Keep the delegation block hidden unless the backend

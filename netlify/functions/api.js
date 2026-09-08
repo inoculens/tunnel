@@ -26,6 +26,9 @@ import {
   systemShortHost,
   dcvDelegationTargetFor,
   dcvDelegationSuffix,
+  isInZoneCustomDomain,
+  isApexDomain,
+  apexBlockedMessage,
   sslDelegationTarget,
   cfConfig,
   cfGetCustomHostname,
@@ -43,6 +46,9 @@ import {
 // verified + paid. Best effort: DNS ownership remains the source of truth;
 // SaaS failures are logged and surfaced via cf fields, never block payment.
 async function ensureSaaSHostname(doc) {
+  // In-zone subdomains need no SaaS object: Universal *.apex certificate +
+  // Worker route already cover them once the CNAME exists.
+  if (isInZoneCustomDomain(doc.domain)) return null;
   if (!cfConfig()) return null;
   if (!(doc.dnsVerification?.cnameValid && doc.dnsVerification?.txtVerified)) return null;
   if (doc.paymentStatus !== "paid") return null;
@@ -133,7 +139,7 @@ async function needOwnedDomain(s, domain, sessionId) {
   return doc;
 }
 
-function domainInfo(doc) {
+async function domainInfo(doc) {
   const route = routingTarget();
   return {
     domain: doc.domain,
@@ -157,6 +163,9 @@ function domainInfo(doc) {
     },
     instructions: {
       cnameTarget: route,
+      recordName: doc.domain,
+      isInZone: isInZoneCustomDomain(doc.domain),
+      isApex: await isApexDomain(doc.domain),
       txtHost: `verification.${doc.domain}`,
       txt: doc.verificationToken,
       sslCnameTarget: doc.sslTarget,
@@ -409,7 +418,7 @@ const actions = {
     const out = [];
     for (const b of await listAll(s, "domain/")) {
       const d = await s.get(b.key, { type: "json" });
-      if (d && d.sessionId === p.sessionId) out.push(domainInfo(d));
+      if (d && d.sessionId === p.sessionId) out.push(await domainInfo(d));
     }
     return ok({ domains: out });
   },
@@ -432,6 +441,9 @@ const actions = {
     // Never allow hijacking the system hosts or the SaaS infrastructure hosts.
     const reserved = new Set([systemShortHost(), routingTarget(), "tunnel.inoculens.com", "customers.inoculens.com", "proxy-fallback.inoculens.com", "inoculens.com"]);
     if (reserved.has(host)) return fail(400, "invalid-argument", "This domain is reserved for INOCULENS infrastructure.");
+    // Authoritative apex block (frontend also warns live, but the backend
+    // decides — never let users pay for a domain that cannot work).
+    if (await isApexDomain(host)) return fail(400, "invalid-argument", apexBlockedMessage(host));
     if (!(await getSession(s, p.sessionId))) {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
@@ -440,7 +452,7 @@ const actions = {
       if (existing.sessionId !== p.sessionId) {
         return fail(409, "already-exists", "This domain is already managed by another session.");
       }
-      return ok(domainInfo(existing)); // idempotent re-entry
+      return ok(await domainInfo(existing)); // idempotent re-entry
     }
     const delegation = sslDelegationTarget();
     const doc = {
@@ -460,7 +472,7 @@ const actions = {
       createdAt: Date.now(),
     };
     await s.setJSON(`domain/${host}`, doc);
-    return ok(domainInfo(doc));
+    return ok(await domainInfo(doc));
   },
 
   async getDomainVerificationInfo(s, p) {
@@ -475,7 +487,7 @@ const actions = {
         await s.setJSON(`domain/${doc.domain}`, doc);
       }
     }
-    return ok({ ...domainInfo(doc), paymentStatus: doc.paymentStatus });
+    return ok({ ...(await domainInfo(doc)), paymentStatus: doc.paymentStatus });
   },
 
   async verifyCustomDomainDns(s, p) {
