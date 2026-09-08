@@ -451,10 +451,34 @@ export function discountCodes() {
 // error instead of inventing an address. MANUAL_BTC_ADDRESS exists only
 // for local testing (single reused address — NEVER production).
 
+// Mainnet extended-public-key versions by wallet export format. Electrum
+// shows segwit wallets as zpub (BIP84) — same keys as xpub, different prefix.
+const XPUB_VERSIONS = { xpub: 0x0488b21e, ypub: 0x049d7cb2, zpub: 0x04b24746 };
+
+function nodeFromExtendedKey(factory, networks, keyString) {
+  const s = String(keyString || "").trim();
+  try {
+    return { node: factory.fromBase58(s), format: "xpub" };
+  } catch (e) {
+    if (!/version/i.test(e?.message || "")) throw e;
+  }
+  for (const [name, version] of Object.entries(XPUB_VERSIONS)) {
+    if (name === "xpub") continue;
+    try {
+      const node = factory.fromBase58(s, {
+        ...networks.bitcoin,
+        bip32: { public: version, private: 0x00000000 },
+      });
+      return { node, format: name };
+    } catch { /* try next version */ }
+  }
+  throw new Error("unrecognized extended public key version (want xpub/ypub/zpub)");
+}
+
 export async function deriveAddress(index) {
   if (process.env.BTC_XPUB) {
     try {
-      const { payments } = await import("bitcoinjs-lib");
+      const { payments, networks } = await import("bitcoinjs-lib");
       const { BIP32Factory } = await import("bip32");
       // tiny-secp256k1 v2 ships named ESM exports (no .default); older
       // versions were CJS-only. Accept either shape — `.default` being
@@ -462,11 +486,17 @@ export async function deriveAddress(index) {
       // "Cannot read properties of undefined (reading 'isPoint')".
       const eccMod = await import("tiny-secp256k1");
       const ecc = eccMod.default ?? eccMod;
-      const node = BIP32Factory(ecc).fromBase58(process.env.BTC_XPUB).derive(0).derive(index);
-      const { address } = payments.p2wpkh({ pubkey: node.publicKey });
+      const { node } = nodeFromExtendedKey(BIP32Factory(ecc), networks, process.env.BTC_XPUB);
+      const child = node.derive(0).derive(index);
+      const { address } = payments.p2wpkh({ pubkey: child.publicKey });
       if (address) return address;
+      throw new Error("could not encode address");
     } catch (e) {
       console.error("xpub derivation failed:", e?.message || e);
+      const err = new Error(`Configured BTC_XPUB is invalid (${e?.message || e}). Fix the env value.`);
+      err.statusCode = 412;
+      err.code = "failed-precondition";
+      throw err;
     }
   }
   if (process.env.MANUAL_BTC_ADDRESS) return process.env.MANUAL_BTC_ADDRESS;
