@@ -3428,6 +3428,7 @@
               </button>
             </div>
             <p id="quoteExpiry" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 12px;"></p>
+            <p id="quoteIndexNote" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; display: none;"></p>
             <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center;">
               <p style="font-size: 0.75rem; color: #f59e0b;">⚡ Payment is automatically detected. Your domain activates
                 within minutes of blockchain confirmation.</p>
@@ -5414,6 +5415,19 @@
             setQuoteAmount(quoteAmountEl, res.data.amount);
           }
           quoteAddressEl.textContent = res.data.address;
+
+          // Show which wallet position this is (0-based index + 1), so the
+          // address can be located in the wallet's receiving list even when
+          // earlier indexes were consumed by failed/expired quotes.
+          const quoteIndexNote = document.getElementById('quoteIndexNote');
+          if (quoteIndexNote) {
+            if (Number.isInteger(res.data.index) && res.data.index >= 0) {
+              quoteIndexNote.textContent = `Wallet receiving address #${res.data.index + 1} (sequential position in your wallet).`;
+              quoteIndexNote.style.display = 'block';
+            } else {
+              quoteIndexNote.style.display = 'none';
+            }
+          }
 
           if (res.data.expiresAt) {
             const expiryDate = new Date(res.data.expiresAt);

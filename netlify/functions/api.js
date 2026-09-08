@@ -603,6 +603,7 @@ const actions = {
         amount: doc.quote.amount,
         address: doc.quote.address,
         expiresAt: doc.quote.expiresAt,
+        index: doc.quote.index,
         ...(doc.quote.discountPercent ? { discountPercent: doc.quote.discountPercent, originalAmount: doc.quote.originalAmount } : {}),
       });
     }
@@ -653,7 +654,7 @@ const actions = {
       doc.quote = { ...q, address, index: doc.quote.index };
     }
     await s.setJSON(`domain/${doc.domain}`, doc);
-    return ok({ amount: doc.quote.amount, address, expiresAt: doc.quote.expiresAt, ...(q.discountPercent ? { discountPercent: q.discountPercent, originalAmount: q.originalAmount } : {}) });
+    return ok({ amount: doc.quote.amount, address, expiresAt: doc.quote.expiresAt, index: doc.quote.index, ...(q.discountPercent ? { discountPercent: q.discountPercent, originalAmount: q.originalAmount } : {}) });
   },
 
   async checkDomainDiscount(s, p) {
@@ -727,6 +728,7 @@ const actions = {
       amount: doc.quote.amount,
       address,
       expiresAt: doc.quote.expiresAt,
+      index: doc.quote.index,
       discountPercent: pct,
       originalAmount: q.originalAmount,
     });
