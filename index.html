@@ -5705,20 +5705,11 @@
         overlay.style.display = 'flex';
         document.body.classList.add('modal-open');
         promoShowMain();
-        const keyInput = document.getElementById('promoAdminKey');
-        if (keyInput && !keyInput.value) keyInput.value = promoAdminKey();
       }
       function closePromoAdmin() {
         const overlay = document.getElementById('promoAdminOverlay');
         if (overlay) overlay.style.display = 'none';
         document.body.classList.remove('modal-open');
-      }
-      async function promoUnlock() {
-        const keyInput = document.getElementById('promoAdminKey');
-        const key = (keyInput.value || '').trim();
-        if (!key) { showToast('Enter the admin key.', 'error'); return; }
-        try { sessionStorage.setItem('tunnel_admin_key', key); } catch (e) {}
-        await promoLoad();
       }
       function promoShowCodes() {
         const main = document.getElementById('promoMain');
@@ -7957,13 +7948,7 @@
           <button class="copy-btn" onclick="closePromoAdmin()" style="background: transparent; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">&times;</button>
         </div>
       </div>
-      <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Single-use by default: each code binds to the first domain redeeming it. Nothing here lives in git.</p>
-      <div style="display: flex; gap: 8px; margin-bottom: 16px;">
-        <input type="password" id="promoAdminKey" placeholder="Admin key" autocomplete="off"
-          style="flex: 1; height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;"
-          onkeydown="if(event.key==='Enter') promoUnlock()">
-        <button class="modal-btn modal-btn-ok" onclick="promoUnlock()" style="height: 44px; width: auto; padding: 0 16px;">Unlock</button>
-      </div>
+      <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Single-use by default: each code binds to the first domain redeeming it.</p>
       <div id="promoMain">
       <button class="modal-btn modal-btn-ok" onclick="promoShowCodes()" style="width: 100%; margin-bottom: 16px;">View all codes</button>
       <div style="border-top: 1px solid var(--border); padding-top: 16px;">
