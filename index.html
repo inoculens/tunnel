@@ -7512,7 +7512,7 @@
       async function startFresh() {
         const confirmed = await showCustomModal({
           title: "Start Fresh?",
-          message: "This will reset your browser's memory for this app. You will be logged out of the current session. <br><br>The session and links will <strong>NOT</strong> be deleted from the server, so you can recover them later if you have the Session ID.",
+          message: "This will reset your browser's memory for this app. You will be logged out of the current session (including promo admin, if unlocked). <br><br>The session and links will <strong>NOT</strong> be deleted from the server, so you can recover them later if you have the Session ID.",
           showCancel: true,
           danger: true
         });
@@ -7520,6 +7520,10 @@
         if (confirmed) {
           localStorage.removeItem('tunnel_session_id');
           localStorage.removeItem('tunnel_history');
+          // A fresh start logs out of everything: drop the promo admin key
+          // too (reload alone preserves sessionStorage, which is why the
+          // Promo button used to survive Start Fresh).
+          try { sessionStorage.removeItem('tunnel_admin_key'); } catch (e) {}
           window.location.reload();
         }
       }
