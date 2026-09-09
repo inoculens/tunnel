@@ -4193,7 +4193,9 @@
             return;
           }
 
-          // Call backend to add/claim the domain (validates it's not taken by another user)
+          // Claim the domain: attaches it to this session (idempotent for our
+          // own domains; re-claims names held by other sessions as inert
+          // pending entries that must re-prove DNS ownership before any use).
           const addFn = functions.httpsCallable('addCustomDomain');
           await addFn({ domain: pendingDomain, type: 'managed', sessionId: getSessionId() });
 
@@ -4355,7 +4357,9 @@
         const isActive = domainDoc.status === 'active' || domainDoc.paymentStatus === 'paid';
 
         // STICKY VERIFICATION: If permanently verified AND domain is active/paid, show special UI state
-        if (isPermanentlyVerified && isActive) {
+        // (suppressed while the routing check says the domain cannot serve —
+        // see the updateRoutingUI invariant: verified XOR error, never both).
+        if (isPermanentlyVerified && isActive && verificationState.routable !== false) {
 
 
           // Also update the verificationStatus element for permanent verification
@@ -4413,7 +4417,8 @@
         updateRoutingUI((dns.routable === false) ? false : null);
 
         // Show/hide verification status in modal - only show when both verified AND active/paid
-        if (isVerified && isActive) {
+        // (and never alongside the routing error — updateRoutingUI invariant).
+        if (isVerified && isActive && verificationState.routable !== false) {
           // Update verification status element
           var verificationStatus = document.getElementById('verificationStatus');
           if (verificationStatus) {
@@ -4551,6 +4556,17 @@
         verificationState.routable = (routable === false) ? false : null;
         const note = document.getElementById('routingNote');
         if (note) note.style.display = (routable === false) ? 'block' : 'none';
+        // Invariant: the "Ownership Verified" banner and the routing error
+        // are mutually exclusive — a domain that cannot serve is never
+        // presented as verified, even if an older check passed.
+        const vs = document.getElementById('verificationStatus');
+        if (vs) {
+          if (routable === false) {
+            vs.style.display = 'none';
+          } else if (window.domainIsVerified && window.domainIsActive) {
+            vs.style.display = 'block';
+          }
+        }
         updateContinueButton();
       }
 
@@ -6189,6 +6205,11 @@
           if (searchInputWrapper) {
             searchInputWrapper.classList.remove('active');
           }
+          // Keep the search button shape in sync: fully round when retracted.
+          const purgeControls = document.getElementById('purgeControls');
+          if (purgeControls) {
+            purgeControls.classList.remove('search-active');
+          }
 
           // Manually reset UI elements instead of calling clearSearch()
           const searchInput = document.getElementById('searchInput');
@@ -6241,6 +6262,44 @@
         document.getElementById('modalInput').value = text;
       }
 
+
+      // Unified pair hover: each label row + its data row highlight as ONE
+      // card. Delegated on #historyContainer so it survives re-renders;
+      // pairing is purely sibling-based (no markup changes).
+      (function initPairHover() {
+        if (window.__pairHoverInit) return;
+        window.__pairHoverInit = true;
+        const container = document.getElementById('historyContainer');
+        if (!container) return;
+        function pairFor(tr) {
+          if (!tr) return [];
+          if (tr.classList.contains('link-item-row')) {
+            const n = tr.nextElementSibling;
+            return (n && n.classList.contains('link-data-row')) ? [tr, n] : [tr];
+          }
+          if (tr.classList.contains('link-data-row')) {
+            const p = tr.previousElementSibling;
+            return (p && p.classList.contains('link-item-row')) ? [p, tr] : [tr];
+          }
+          return [];
+        }
+        function clear() {
+          const marked = container.querySelectorAll('tr.pair-hover');
+          for (const r of marked) r.classList.remove('pair-hover');
+        }
+        container.addEventListener('mouseover', (e) => {
+          const t = e.target && e.target.closest ? e.target.closest('tr.link-item-row, tr.link-data-row') : null;
+          clear();
+          for (const r of pairFor(t)) r.classList.add('pair-hover');
+        });
+        container.addEventListener('mouseout', (e) => {
+          const t = e.target && e.target.closest ? e.target.closest('tr.link-item-row, tr.link-data-row') : null;
+          if (!t) return;
+          const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('tr.link-item-row, tr.link-data-row') : null;
+          if (to && pairFor(t).indexOf(to) !== -1) return; // still inside the pair
+          clear();
+        });
+      })();
 
       function renderHistory(links = currentLinks) {
         const container = document.getElementById('historyContainer');
@@ -7559,8 +7618,8 @@
             style="height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;">
           <input type="number" id="promoNewMax" placeholder="Max uses (default 1)" min="1" max="10000"
             style="height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;">
-          <div style="display: flex; gap: 12px; align-items: center; height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; padding: 0 12px;">
-            <label style="display: flex; gap: 8px; align-items: center; font-size: 0.85rem; color: var(--text); cursor: pointer; white-space: nowrap;">
+          <div style="display: flex; gap: 12px; align-items: center; height: 44px; background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: 8px; padding: 0 12px; overflow: hidden;">
+            <label style="display: flex; gap: 8px; align-items: center; font-size: 0.85rem; color: var(--text); cursor: pointer; white-space: nowrap; flex-shrink: 0;">
               <input type="checkbox" id="promoNeverExpiry" checked onchange="document.getElementById('promoNewExpiry').disabled = this.checked" style="width: 16px; height: 16px; accent-color: var(--primary);">
               Never expires
             </label>

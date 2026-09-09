@@ -336,14 +336,23 @@ th {
 th, td { border-bottom: 1px solid rgba(255, 255, 255, 0.07) !important; }
 
 tbody tr { transition: background 0.12s ease; }
-tbody tr:hover { background: rgba(255, 255, 255, 0.035); }
+tbody tr:hover { background: transparent; }
 
+/* Label row + data row behave as ONE card: flush together, and the
+   .pair-hover class (set via mouse delegation in renderHistory) washes
+   both rows at once — hovering either half highlights the whole thing. */
 .link-item-row td {
   background: transparent !important;
-  padding: 14px 16px 4px !important;
+  border-bottom: none !important;
+  padding: 14px 16px 2px !important;
 }
 
 .link-data-row td { background: transparent !important; }
+
+tr.link-item-row.pair-hover td,
+tr.link-data-row.pair-hover td {
+  background: rgba(255, 255, 255, 0.05) !important;
+}
 
 .history-original { color: #717171 !important; font-size: 0.83rem !important; }
 .history-short { color: #3ea6ff !important; font-weight: 500 !important; text-decoration: none !important; }
@@ -403,6 +412,8 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.035); }
 .purge-btn:hover { background: rgba(240, 65, 65, 0.16) !important; color: #fff !important; }
 .purge-btn:active { transform: scale(0.97); }
 
+.search-container { gap: 0 !important; }
+
 .search-btn {
   border: 1px solid rgba(255, 255, 255, 0.12) !important;
   color: #aaaaaa !important;
@@ -410,9 +421,19 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.035); }
   background: rgba(255, 255, 255, 0.05) !important;
   height: 44px !important;
   min-height: 44px !important;
+  transition: border-radius 0.25s ease, background 0.15s ease !important;
 }
 
 .search-btn:hover { background: rgba(255, 255, 255, 0.1) !important; color: #fff !important; border-color: rgba(255, 255, 255, 0.12) !important; }
+
+/* Expanded: the button's right edge goes straight and fuses with the
+   input's straight left edge — one continuous pill. Collapsed (no
+   .search-active) the button is fully round again. */
+.purge-controls.search-active .search-btn {
+  border-radius: 999px 0 0 999px !important;
+  border-right: none !important;
+  margin-right: 0 !important;
+}
 
 .search-input-wrapper { border-radius: 0 999px 999px 0 !important; }
 .search-input {
@@ -421,10 +442,47 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.035); }
   height: 44px !important;
   backdrop-filter: none !important;
 }
+.purge-controls.search-active .search-input-wrapper { border-radius: 0 !important; }
+.purge-controls.search-active .search-input { border-left: none !important; }
 .search-input-wrapper.active { width: 240px !important; }
 
 .search-clear-btn:hover { background: rgba(240, 65, 65, 0.14) !important; color: #f28b82 !important; }
 .search-count { color: #717171 !important; }
+
+/* ---------- Native controls: this is a dark UI ---------- */
+/* Without color-scheme, browsers render <select> popups and date-field
+   segments in LIGHT mode (white popup, white segment box) no matter what
+   the page theme is. Declaring dark fixes those mismatches at the source. */
+:root, html, body, input, select, textarea { color-scheme: dark; }
+
+/* Timezone dropdown options: explicit dark rows, not UA white. */
+.timezone-select {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #f1f1f1 !important;
+}
+.timezone-select option {
+  background: #1c1c1f !important;
+  color: #f1f1f1 !important;
+}
+
+/* Promo expiry date field: stable box, no white segment surround. */
+#promoNewExpiry {
+  flex: 1 1 0 !important;
+  min-width: 148px !important;
+  width: 100% !important;
+  background: transparent !important;
+  border: none !important;
+  color: #f1f1f1 !important;
+  color-scheme: dark;
+}
+#promoNewExpiry::-webkit-datetime-edit { background: transparent !important; padding: 0 !important; }
+#promoNewExpiry::-webkit-datetime-edit-fields-wrapper { background: transparent !important; padding: 0 !important; }
+#promoNewExpiry::-webkit-calendar-picker-indicator { opacity: 0.55; cursor: pointer; }
+/* Keep the calendar glyph's box reserved in both states so toggling
+   "Never expires" never reflows the row. */
+#promoNewExpiry:disabled { opacity: 0.55; }
+#promoNewExpiry:disabled::-webkit-calendar-picker-indicator { opacity: 0.25; }
 
 /* ---------- History filter — Win11 dropdown ---------- */
 .history-filter-trigger {

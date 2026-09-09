@@ -516,7 +516,23 @@ const actions = {
     const existing = await s.get(`domain/${host}`, { type: "json" });
     if (existing) {
       if (existing.sessionId !== p.sessionId) {
-        return fail(409, "already-exists", "This domain is already managed by another session.");
+        // Claim flow: any session may attach this name to itself (e.g. the
+        // owner lost their Session ID), but the claim starts INERT — fresh
+        // TXT token, verification flags cleared, demoted to pending. Use
+        // (shortenUrl) stays gated on sessionId + active status, so the
+        // domain cannot serve under any circumstances until THIS session
+        // proves ownership: the new token must appear at
+        // verification.<domain> in live DNS (verifyCustomDomainDns), which
+        // only someone controlling the domain's DNS can arrange. Payment /
+        // quote state carries over (it prices the domain, not the session)
+        // and re-activates automatically once the new owner verifies.
+        existing.sessionId = p.sessionId;
+        existing.status = "pending_verification";
+        existing.isVerified = false;
+        existing.verificationToken = newToken(32);
+        existing.dnsVerification = { cnameValid: false, txtVerified: false, sslVerified: false };
+        await s.setJSON(`domain/${host}`, existing);
+        return ok(await domainInfo(existing));
       }
       return ok(await domainInfo(existing)); // idempotent re-entry
     }
