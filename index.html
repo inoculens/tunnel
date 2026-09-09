@@ -3182,7 +3182,6 @@
               </button>
             </div>
             <p id="quoteExpiry" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 12px;"></p>
-            <p id="quoteIndexNote" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; display: none;"></p>
             <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center;">
               <p style="font-size: 0.75rem; color: #f59e0b;">⚡ Payment is automatically detected. Your domain activates
                 within minutes of blockchain confirmation.</p>
@@ -3785,7 +3784,11 @@
 
 
         // Populate history filter dropdown
-        const currentFilter = historyFilterInput.value;
+        // Single source of truth: the selectedHistoryDomain variable. The
+        // hidden input + trigger label only mirror it, never drive the UI —
+        // so checkmark, label, and actual filtering cannot disagree.
+        const currentFilter = selectedHistoryDomain;
+        historyFilterInput.value = currentFilter;
         const checkIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
 
         // Add active domains from user domains to history filter dropdown
@@ -4147,14 +4150,9 @@
         hint.style.display = 'none';
         return false;
       }
-      (function wireApexHint() {
-        const input = document.getElementById('newDomainInput');
-        if (input && !input.dataset.apexWired) {
-          input.dataset.apexWired = '1';
-          input.addEventListener('input', refreshApexHint);
-        }
-      })();
-
+      // NOTE: no live 'input' listener here on purpose — partial input like
+      // "s." looks apex-like until the user finishes typing, so the warning
+      // appears only after Next is pressed (proceedToAddDomain validates).
       async function proceedToAddDomain() {
         const input = document.getElementById('newDomainInput').value.trim();
         const btn = document.getElementById('addDomainProceedBtn');
@@ -5097,19 +5095,6 @@
             setQuoteAmount(quoteAmountEl, res.data.amount);
           }
           quoteAddressEl.textContent = res.data.address;
-
-          // Show which wallet position this is (0-based index + 1), so the
-          // address can be located in the wallet's receiving list even when
-          // earlier indexes were consumed by failed/expired quotes.
-          const quoteIndexNote = document.getElementById('quoteIndexNote');
-          if (quoteIndexNote) {
-            if (Number.isInteger(res.data.index) && res.data.index >= 0) {
-              quoteIndexNote.textContent = `Wallet receiving address #${res.data.index + 1} (sequential position in your wallet).`;
-              quoteIndexNote.style.display = 'block';
-            } else {
-              quoteIndexNote.style.display = 'none';
-            }
-          }
 
           if (res.data.expiresAt) {
             const expiryDate = new Date(res.data.expiresAt);
@@ -6288,6 +6273,25 @@
             return;
           }
 
+          // Filtered view with no matches (but links exist and no search is
+          // active): keep header/filter/purge visible and say so per-domain
+          // instead of nuking the UI with the fully-empty state.
+          if (!searchTerm && currentLinks && currentLinks.length > 0 && domainFilter !== 'all') {
+            if (header) header.style.display = 'flex';
+            if (purgeControls) purgeControls.classList.remove('hidden');
+            const filterContainer = document.getElementById('historyDomainFilterContainer');
+            if (filterContainer) filterContainer.style.display = 'block';
+            updateSearchVisibility();
+            lastRenderedLinks = [];
+            container.innerHTML = `
+            <div class="empty-history" style="text-align:center; padding: 60px 0;">
+              <p style="color: var(--text-muted); font-size: 1.1rem; margin-bottom: 10px;">No links for ${escapeHTML(domainFilter)} yet.</p>
+              <p style="color: var(--text-muted); font-size: 0.95rem; opacity: 0.8;">Shorten a link with this domain to see it here.</p>
+            </div>
+          `;
+            return;
+          }
+
           renderEmptyState();
           return;
         }
@@ -7157,7 +7161,7 @@
 
         const result = await showCustomModal({
           title: "Merge Sessions",
-          message: "Enter the Session ID you want to merge <strong>INTO</strong> this one. <br>The links from that session will be moved here, and that session will become empty.",
+          message: "Enter the Session ID you want to merge <strong>INTO</strong> this one. <br>The links and custom domains from that session will be moved here, and that session will become empty.",
           showCancel: true,
           showInput: true,
           inputPlaceholder: "Enter other Session ID..."
@@ -7226,9 +7230,26 @@
             const res = await mergeFn({ oldSessionId: otherSid, newSessionId: currentSid });
 
             if (res.data.success) {
+              const mergedCount = Number(res.data.count) || 0;
+              const movedDomains = Number(res.data.domains) || 0;
+              const prevCount = currentLinks.length;
               await fetchAndRenderSession(currentSid);
-              const mergedCount = Number(res.data.count);
-              showCustomModal({ title: "Success", message: `Merged ${Number.isFinite(mergedCount) ? mergedCount : 0} links into this session.` });
+              // Storage reads lag writes: re-sync until the merged links
+              // show up (bounded retries so a slow backend can't hang the UI).
+              if (mergedCount > 0) {
+                const target = prevCount + mergedCount;
+                for (let i = 0; i < 3 && currentLinks.length < target; i++) {
+                  await new Promise((r) => setTimeout(r, 2000));
+                  await fetchAndRenderSession(currentSid);
+                }
+              }
+              await loadUserDomains();
+              // Show everything post-merge so moved links and domains are
+              // visible immediately without a refresh.
+              currentPage = 1;
+              selectHistoryFilter('all', 'All domains');
+              const domainBit = movedDomains > 0 ? ` and ${movedDomains} custom domain${movedDomains === 1 ? '' : 's'}` : '';
+              showCustomModal({ title: "Success", message: `Merged ${mergedCount} link${mergedCount === 1 ? '' : 's'}${domainBit} into this session.` });
             }
           } catch (e) {
             showCustomModal({ title: "Merge Error", message: escapeHTML(e.message || 'Merge failed') });

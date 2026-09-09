@@ -462,7 +462,19 @@ const actions = {
       l.sessionId = newSessionId;
       await s.setJSON(`link/${l.code}`, l);
     }
-    return ok({ success: true, count: links.length });
+    // Custom domains belong to the session too: move them along so a merge
+    // transfers everything (links + domains). Hostnames are unique docs, so
+    // no conflicts are possible. Past promo redemptions stay recorded.
+    let movedDomains = 0;
+    for (const b of await listAll(s, "domain/")) {
+      const d = await s.get(b.key, { type: "json" });
+      if (d && d.sessionId === oldSessionId) {
+        d.sessionId = newSessionId;
+        await s.setJSON(`domain/${d.domain}`, d);
+        movedDomains++;
+      }
+    }
+    return ok({ success: true, count: links.length, domains: movedDomains });
   },
 
   // ----- custom domains -----
