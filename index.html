@@ -2950,6 +2950,7 @@
         <a href="/pricing.html" class="nav-btn">Pricing</a>
         <a href="/about.html" class="nav-btn">About</a>
         <a href="/terms.html" class="nav-btn">Terms</a>
+        <button class="nav-btn" onclick="openPromoAdmin()" title="Promo code admin (key required)">Promo</button>
       </div>
       <button class="mobile-menu-btn" onclick="toggleMobileMenu(true)">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -5649,6 +5650,114 @@
         }
       }
 
+      // --- Promo Code Admin (owner only, ADMIN_KEY gated) ---
+      // Codes live in Blobs (promo/<CODE>), never in git or env. Default
+      // maxUses=1: each code is bound to the first domain redeeming it.
+      function promoAdminKey() {
+        try { return sessionStorage.getItem('tunnel_admin_key') || ''; } catch (e) { return ''; }
+      }
+      function openPromoAdmin() {
+        const overlay = document.getElementById('promoAdminOverlay');
+        if (!overlay) return;
+        overlay.style.display = 'flex';
+        document.body.classList.add('modal-open');
+        const keyInput = document.getElementById('promoAdminKey');
+        if (keyInput && !keyInput.value) keyInput.value = promoAdminKey();
+        if (promoAdminKey()) promoLoad();
+      }
+      function closePromoAdmin() {
+        const overlay = document.getElementById('promoAdminOverlay');
+        if (overlay) overlay.style.display = 'none';
+        document.body.classList.remove('modal-open');
+      }
+      async function promoUnlock() {
+        const keyInput = document.getElementById('promoAdminKey');
+        const key = (keyInput.value || '').trim();
+        if (!key) { showToast('Enter the admin key.', 'error'); return; }
+        try { sessionStorage.setItem('tunnel_admin_key', key); } catch (e) {}
+        await promoLoad();
+      }
+      async function promoLoad() {
+        const list = document.getElementById('promoCodesList');
+        if (list) list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">Loading…</div>';
+        try {
+          const fn = functions.httpsCallable('adminListDiscountCodes');
+          const res = await fn({ adminKey: promoAdminKey() });
+          renderPromoCodes(res.data.codes || []);
+        } catch (e) {
+          console.error('promoLoad:', e);
+          if (list) list.innerHTML = `<div style="padding:16px; text-align:center; color:var(--danger);">${escapeHTML(e.message || 'Unlock failed')}</div>`;
+        }
+      }
+      function renderPromoCodes(codes) {
+        const list = document.getElementById('promoCodesList');
+        if (!list) return;
+        if (!codes.length) {
+          list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">No codes yet — create one below.</div>';
+          return;
+        }
+        list.innerHTML = codes.map((c) => {
+          const used = Number(c.used || 0), max = Number(c.maxUses || 1);
+          const exhausted = used >= max;
+          const uses = (c.uses || []).map((u) =>
+            `<div style="font-size:0.72rem; color:var(--text-muted);">${escapeHTML(u.domain || '?')} · ${escapeHTML((u.at || '').slice(0, 10))}</div>`
+          ).join('');
+          return `<div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; ${exhausted ? 'opacity:0.6;' : ''}">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+              <div style="font-family:monospace; font-weight:700;">${escapeHTML(c.code)}</div>
+              <button class="btn-small btn-delete-small" onclick="promoRevoke(${escapeJS(c.code)})" title="Revoke future use">Revoke</button>
+            </div>
+            <div style="font-size:0.8rem; margin-top:4px;">${c.percent}% off · <strong>${used}/${max}</strong> used${c.expiresAt ? ` · expires ${escapeHTML(c.expiresAt.slice(0, 10))}` : ''}${c.note ? ` · ${escapeHTML(c.note)}` : ''}</div>
+            ${uses}
+          </div>`;
+        }).join('');
+      }
+      async function promoCreate() {
+        const codeEl = document.getElementById('promoNewCode');
+        const pctEl = document.getElementById('promoNewPercent');
+        const maxEl = document.getElementById('promoNewMax');
+        const expEl = document.getElementById('promoNewExpiry');
+        const noteEl = document.getElementById('promoNewNote');
+        const btn = document.getElementById('promoCreateBtn');
+        try {
+          if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+          const fn = functions.httpsCallable('adminCreateDiscountCode');
+          const res = await fn({
+            adminKey: promoAdminKey(),
+            code: (codeEl.value || '').trim(),
+            percent: Number(pctEl.value),
+            maxUses: maxEl.value === '' ? 1 : Number(maxEl.value),
+            expiresAt: (expEl.value || '').trim() || null,
+            note: (noteEl.value || '').trim(),
+          });
+          showToast(`Code ${res.data.code} created (${res.data.percent}% off).`, 'success');
+          codeEl.value = ''; noteEl.value = ''; expEl.value = '';
+          await promoLoad();
+        } catch (e) {
+          console.error('promoCreate:', e);
+          showToast(e.message || 'Create failed', 'error');
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = 'Create'; }
+        }
+      }
+      async function promoRevoke(code) {
+        const ok = await showCustomModal({
+          title: "Revoke Code",
+          message: `Revoke <strong>${escapeHTML(code)}</strong>? Domains that already used it keep their discount; it just can't be redeemed again.`,
+          showCancel: true, danger: true, confirmText: "Revoke", cancelText: "Keep"
+        });
+        if (!ok) return;
+        try {
+          const fn = functions.httpsCallable('adminDeleteDiscountCode');
+          await fn({ adminKey: promoAdminKey(), code });
+          showToast(`Code ${code} revoked.`, 'success');
+          await promoLoad();
+        } catch (e) {
+          console.error('promoRevoke:', e);
+          showToast(e.message || 'Revoke failed', 'error');
+        }
+      }
+
       // --- Payment Status Polling ---
       // Polls the Netlify backend every 10s while payment step is open.
       // Auto-activates UI when payment is detected.
@@ -7673,6 +7782,39 @@
     </script>
     <script src="/assets/common.js"></script>
 
+  <div id="promoAdminOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 40000; align-items: center; justify-content: center; padding: 20px;">
+    <div class="modal-card" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+        <h2 class="modal-title" style="margin: 0;">Promo Codes (Admin)</h2>
+        <button class="copy-btn" onclick="closePromoAdmin()" style="background: transparent; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">&times;</button>
+      </div>
+      <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Single-use by default: each code binds to the first domain redeeming it. Nothing here lives in git.</p>
+      <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+        <input type="password" id="promoAdminKey" placeholder="Admin key" autocomplete="off"
+          style="flex: 1; height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;"
+          onkeydown="if(event.key==='Enter') promoUnlock()">
+        <button class="modal-btn modal-btn-ok" onclick="promoUnlock()" style="height: 44px; width: auto; padding: 0 16px;">Unlock</button>
+      </div>
+      <div id="promoCodesList" style="margin-bottom: 16px;"></div>
+      <div style="border-top: 1px solid var(--border); padding-top: 16px;">
+        <h3 style="margin: 0 0 12px; font-size: 0.95rem;">Create code</h3>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+          <input type="text" id="promoNewCode" placeholder="Code (blank = auto)" maxlength="32"
+            style="height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px; font-family: monospace;">
+          <input type="number" id="promoNewPercent" placeholder="Percent (1–100)" min="1" max="100"
+            style="height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;">
+          <input type="number" id="promoNewMax" placeholder="Max uses (default 1)" min="1" max="10000"
+            style="height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;">
+          <input type="date" id="promoNewExpiry" title="Expiry (optional)"
+            style="height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;">
+        </div>
+        <input type="text" id="promoNewNote" placeholder="Note (who is this for?) — optional" maxlength="140"
+          style="width: 100%; height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px; margin-bottom: 12px; box-sizing: border-box;">
+        <button class="modal-btn modal-btn-ok" id="promoCreateBtn" onclick="promoCreate()" style="width: 100%;">Create</button>
+      </div>
+    </div>
+  </div>
+
   <div class="drawer-overlay" id="drawerOverlay" onclick="toggleMobileMenu(false)"></div>
   <div class="mobile-drawer" id="mobileDrawer">
     <div class="drawer-header">
@@ -7688,6 +7830,7 @@
       <a href="/pricing.html" class="nav-btn" onclick="toggleMobileMenu(false)">Pricing</a>
       <a href="/about.html" class="nav-btn" onclick="toggleMobileMenu(false)">About</a>
       <a href="/terms.html" class="nav-btn" onclick="toggleMobileMenu(false)">Terms</a>
+      <button class="nav-btn" onclick="toggleMobileMenu(false); openPromoAdmin()">Promo</button>
     </div>
   </div>
 </body>

@@ -206,6 +206,64 @@ async function deleteClickKeys(s, code) {
   }
 }
 
+// ---------- managed promo codes (single-use, Blobs-backed) ----------
+// Why Blobs and not a file or env var:
+// - A file would ship with the open-source repo (public) or need a sidecar.
+// - Netlify env values are masked and single-field — unmanageable.
+// - Blobs lives next to the data, viewable/revocable from the in-app admin
+//   panel, and never touches git. Only ADMIN_KEY (Netlify env) gates it.
+//
+// Storage: promo/<CODE> -> { code, percent, maxUses, uses: [{domain,
+//   sessionId, at}], note, createdAt, expiresAt|null, disabled }
+// Single-use = maxUses 1 (default). A consumed use is NEVER freed — not by
+// removeDiscountCode, not by domain deletion — otherwise apply/remove loops
+// would mint infinite discounts. Deleting a code revokes future use; domains
+// that already applied keep theirs.
+
+const PCODE_RE = /^[A-Z0-9][A-Z0-9\-_]{2,31}$/;
+
+function cleanPromoCode(raw) {
+  const c = String(raw || "").trim().toUpperCase();
+  return PCODE_RE.test(c) ? c : null;
+}
+
+async function needAdmin(s, p, event) {
+  const key = process.env.ADMIN_KEY;
+  if (!key) {
+    const e = new Error("Promo admin is not configured on this deployment (no ADMIN_KEY).");
+    e.statusCode = 412;
+    e.code = "failed-precondition";
+    throw e;
+  }
+  const ip = clientIp(event);
+  if (!(await checkRate(s, "admin", ip, 10))) {
+    const e = new Error("Too many attempts, wait a moment.");
+    e.statusCode = 429;
+    e.code = "resource-exhausted";
+    throw e;
+  }
+  if (typeof p.adminKey !== "string" || p.adminKey.length < 8 || p.adminKey !== key) {
+    const e = new Error("Invalid admin key.");
+    e.statusCode = 403;
+    e.code = "permission-denied";
+    throw e;
+  }
+}
+
+function promoShape(p) {
+  return {
+    code: p.code,
+    percent: p.percent,
+    maxUses: p.maxUses,
+    used: Array.isArray(p.uses) ? p.uses.length : 0,
+    uses: (Array.isArray(p.uses) ? p.uses : []).slice(-50),
+    note: p.note || "",
+    createdAt: p.createdAt,
+    expiresAt: p.expiresAt || null,
+    disabled: !!p.disabled,
+  };
+}
+
 // True if any OTHER domain was ever shown this address (current or retired
 // quote). Own domain excluded: re-showing our own history address is
 // harmless, and we always take a fresh index anyway.
@@ -671,11 +729,121 @@ const actions = {
     return ok({ hasDiscount: false });
   },
 
+  async adminCreateDiscountCode(s, p, event) {
+    await needAdmin(s, p, event);
+    let code = cleanPromoCode(p.code);
+    if (!code) {
+      // Auto-generate a readable unique code when blank/invalid.
+      code = null;
+      for (let i = 0; i < 5 && !code; i++) {
+        const c = `TUNNEL-${newCode(6).toUpperCase()}`;
+        if (!(await s.get(`promo/${c}`, { type: "json" }).catch(() => null))) code = c;
+      }
+      if (!code) return fail(503, "unavailable", "Could not mint a unique code, try again.");
+    } else if (await s.get(`promo/${code}`, { type: "json" }).catch(() => null)) {
+      return fail(409, "already-exists", "That code already exists — delete it first or pick another.");
+    }
+    const percent = Number.isFinite(Number(p.percent)) ? Math.floor(Number(p.percent)) : 0;
+    if (!(percent >= 1 && percent <= 100)) return fail(400, "invalid-argument", "Percent must be 1–100.");
+    const maxUses = p.maxUses === undefined || p.maxUses === null || p.maxUses === ""
+      ? 1
+      : Math.floor(Number(p.maxUses));
+    if (!(maxUses >= 1 && maxUses <= 10000)) return fail(400, "invalid-argument", "Max uses must be 1–10000.");
+    let expiresAt = null;
+    if (p.expiresAt) {
+      const t = new Date(p.expiresAt).getTime();
+      if (!Number.isFinite(t) || t <= Date.now()) return fail(400, "invalid-argument", "Expiry must be a future date.");
+      expiresAt = new Date(t).toISOString();
+    }
+    const note = String(p.note || "").slice(0, 140);
+    const promo = {
+      code,
+      percent,
+      maxUses,
+      uses: [],
+      note,
+      createdAt: new Date().toISOString(),
+      expiresAt,
+      disabled: false,
+    };
+    await s.setJSON(`promo/${code}`, promo);
+    return ok(promoShape(promo));
+  },
+
+  async adminListDiscountCodes(s, p, event) {
+    await needAdmin(s, p, event);
+    const out = [];
+    for (const b of await listAll(s, "promo/")) {
+      const promo = await s.get(b.key, { type: "json" }).catch(() => null);
+      if (promo) out.push(promoShape(promo));
+    }
+    out.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+    return ok({ codes: out });
+  },
+
+  async adminDeleteDiscountCode(s, p, event) {
+    await needAdmin(s, p, event);
+    const code = cleanPromoCode(p.code);
+    if (!code) return fail(400, "invalid-argument", "Invalid code.");
+    await s.delete(`promo/${code}`);
+    // Past redemptions stay consumed (recorded on each domain doc + gone
+    // with the promo doc): deleting revokes FUTURE use only.
+    return ok({ deleted: code });
+  },
+
   async applyDiscountCode(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
     const code = String(p.code || "").trim().toUpperCase();
-    const pct = discountCodes()[code];
-    if (!code || !pct) return fail(400, "invalid-argument", "Invalid or expired discount code.");
+    if (!cleanPromoCode(code)) return fail(400, "invalid-argument", "Invalid or expired discount code.");
+    // Idempotent: this domain already holds this exact code.
+    if (doc.discount && doc.discount.code === code) {
+      if (doc.discount.percent >= 100 && doc.paymentStatus === "paid") {
+        return ok({
+          isFullDiscount: true,
+          discounted: true,
+          message: "Discount covers the full price — your domain is activated.",
+          amount: "0.00000000",
+          discountPercent: 100,
+        });
+      }
+      if (doc.quote && doc.quote.address) {
+        return ok({
+          discounted: true,
+          amount: doc.quote.amount,
+          address: doc.quote.address,
+          expiresAt: doc.quote.expiresAt,
+          index: doc.quote.index,
+          discountPercent: doc.discount.percent,
+          originalAmount: doc.quote.originalAmount,
+        });
+      }
+    }
+    // Managed single-use promo first, legacy env map as fallback.
+    let pct = 0;
+    let promo = null;
+    const stored = await s.get(`promo/${code}`, { type: "json" }).catch(() => null);
+    if (stored && !stored.disabled) {
+      if (stored.expiresAt && new Date(stored.expiresAt).getTime() <= Date.now()) {
+        return fail(400, "invalid-argument", "Invalid or expired discount code.");
+      }
+      const used = Array.isArray(stored.uses) ? stored.uses.length : 0;
+      if (used >= (stored.maxUses || 1)) {
+        return fail(400, "invalid-argument", "This code has already been redeemed.");
+      }
+      pct = stored.percent;
+      promo = stored;
+    } else {
+      pct = discountCodes()[code];
+      if (!code || !pct) return fail(400, "invalid-argument", "Invalid or expired discount code.");
+    }
+    // Reserve the single-use BEFORE applying: if the doc save below ever
+    // failed, the use stays burned (conservative — a code can never stretch
+    // to maxUses+1 through retries).
+    if (promo) {
+      promo.uses = Array.isArray(promo.uses) ? promo.uses : [];
+      promo.uses.push({ domain: doc.domain, sessionId: p.sessionId, at: new Date().toISOString() });
+      await s.setJSON(`promo/${code}`, promo);
+    }
     doc.discount = { code, percent: pct };
     if (pct >= 100) {
       doc.paymentStatus = "paid";
@@ -738,6 +906,9 @@ const actions = {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
     doc.discount = null;
     await s.setJSON(`domain/${doc.domain}`, doc);
+    // NOTE: promo uses are intentionally NOT freed — a consumed single-use
+    // code stays consumed, otherwise apply/remove would loop into infinite
+    // discounts. The domain simply returns to full price.
     return ok({});
   },
 

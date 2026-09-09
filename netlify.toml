@@ -28,7 +28,13 @@
 #     CLOUDFLARE_ZONE_ID=f5257b10f944cb85e5418ab82f4be6ef  (inoculens.com)
 #     DCV_DELEGATION_UUID=adad0549ffb44d06         (zone DCV delegation suffix)
 #     DOMAIN_PRICE_USD=10  QUOTE_TTL_DAYS=7        (billing defaults)
-#     DISCOUNT_CODES={"WELCOME10":10}               (optional promo codes)
+#     DISCOUNT_CODES={"WELCOME10":10}               (legacy reusable promos;
+#        prefer managed codes below — env values are masked in the dashboard)
+#     ADMIN_KEY=<long random string, e.g. openssl rand -hex 24>
+#        enables the in-app Promo admin (header: Promo). Codes live in Blobs
+#        (promo/<CODE>), never in git: single-use by default (maxUses=1 binds
+#        the code to the first redeeming domain), revocable, expirable, with
+#        per-code redemption history. Create many 100% codes freely.
 #     BTC_USD_FALLBACK=65000                        (used if CoinGecko is unreachable)
 #     BTC_XPUB=xpub…  (account-level xpub, e.g. m/44'/0'/0'; code derives
 #        m/0/<index> per quote; deps already in package.json)
