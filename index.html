@@ -5746,18 +5746,44 @@
         list.innerHTML = codes.map((c) => {
           const used = Number(c.used || 0), max = Number(c.maxUses || 1);
           const exhausted = used >= max;
+          const usesId = 'promo-uses-' + String(c.code || '');
           const uses = (c.uses || []).map((u) =>
-            `<div style="font-size:0.72rem; color:var(--text-muted);">${escapeHTML(u.domain || '?')} · session <span style="font-family:monospace;">${escapeHTML(u.sessionId || '?')}</span> · ${escapeHTML((u.at || '').slice(0, 10))}</div>`
+            `<div style="font-size:0.72rem; color:var(--text-muted); padding:6px 0; border-top:1px solid var(--border); overflow-wrap:anywhere;">${escapeHTML(u.domain || '?')} · session <span style="font-family:monospace;">${escapeHTML(u.sessionId || '?')}</span> · ${escapeHTML((u.at || '').slice(0, 10))}</div>`
           ).join('');
           return `<div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; ${exhausted ? 'opacity:0.6;' : ''}">
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-              <div style="font-family:monospace; font-weight:700;">${escapeHTML(c.code)}</div>
-              <button class="btn-small btn-delete-small" onclick="promoRevoke(${escapeJS(c.code)})" title="Revoke future use">Revoke</button>
+            <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
+              <div style="display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap;">
+                <div style="font-family:monospace; font-weight:700; overflow-wrap:anywhere;">${escapeHTML(c.code)}</div>
+                <button class="btn-small btn-copy-small" onclick="promoCopyCode(${escapeJS(c.code)}, this)" title="Copy code">Copy</button>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">
+                <button class="btn-small btn-delete-small" onclick="promoRevoke(${escapeJS(c.code)})" title="Revoke future use">Revoke</button>
+                <button class="btn-small btn-copy-small" onclick="promoToggleStats(${escapeJS(c.code)}, this)" title="Show redemptions" aria-expanded="false">Stats (${used})</button>
+              </div>
             </div>
             <div style="font-size:0.8rem; margin-top:4px;">${c.percent}% off · <strong>${used}/${max}</strong> used · ${c.expiresAt ? `expires ${escapeHTML(c.expiresAt.slice(0, 10))}` : 'never expires'}${c.note ? ` · ${escapeHTML(c.note)}` : ''}</div>
-            ${uses}
+            <div id="${escapeAttr(usesId)}" style="display:none; margin-top:4px;">${uses || '<div style="font-size:0.72rem; color:var(--text-muted); padding:6px 0;">No redemptions yet.</div>'}</div>
           </div>`;
         }).join('');
+      }
+      function promoCopyCode(code, btnElement) {
+        copyText(String(code || ''), btnElement);
+      }
+      function promoToggleStats(code, btnElement) {
+        const box = document.getElementById('promo-uses-' + String(code || ''));
+        if (!box) return;
+        const hidden = box.style.display === 'none';
+        box.style.display = hidden ? 'block' : 'none';
+        if (btnElement) {
+          btnElement.setAttribute('aria-expanded', hidden ? 'true' : 'false');
+          // Keep the redemption count visible in both states.
+          const m = String(btnElement.textContent || '').match(/\((\d+)\)/);
+          const count = m ? m[1] : String((box.querySelectorAll(':scope > div').length) || 0);
+          // "No redemptions yet." placeholder counts as 1 div — prefer the
+          // count already on the button when the list is empty.
+          btnElement.textContent = hidden ? `Hide (${count})` : `Stats (${count})`;
+          btnElement.dataset.originalText = btnElement.textContent;
+        }
       }
       async function promoCreate() {
         const codeEl = document.getElementById('promoNewCode');
