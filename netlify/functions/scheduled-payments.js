@@ -34,11 +34,12 @@ export async function handler(event) {
     for (const b of await listAll(s, "domain/")) {
       const d = await s.get(b.key, { type: "json" });
       if (!d || d.paymentStatus === "paid") continue;
-      // Candidates: current quote (if unexpired) + retired quotes. Retired
-      // addresses were displayed to this session, so late payments to them
-      // must still credit the domain — amounts locked at display time.
+      // Candidates: the current quote address ALWAYS (even expired — the user
+      // saw it and may pay late) + retired quotes. Retired addresses were
+      // displayed to this session, so late payments to them must still credit
+      // the domain — amounts locked at display time.
       const candidates = [];
-      if (d.quote?.address && d.quote?.amount && new Date(d.quote.expiresAt).getTime() >= Date.now()) {
+      if (d.quote?.address && d.quote?.amount) {
         candidates.push({ address: d.quote.address, amount: d.quote.amount, current: true });
       }
       for (const h of Array.isArray(d.quoteHistory) ? d.quoteHistory : []) {

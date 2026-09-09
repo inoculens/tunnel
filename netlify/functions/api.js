@@ -646,7 +646,9 @@ const actions = {
   // same wallet index. Collision is resolved KEEP-FIRST (never random — the
   // first session may already be paying): after deriving, the address is
   // checked against every other domain's current + retired quotes and
-  // re-issued from the next index on clash. This runs server-side before the
+  // re-issued from the next index on clash. A post-save re-check closes the
+  // residual race where two requests derive the same index concurrently —
+  // whoever saved second re-issues. This runs server-side before the
   // response, so no duplicate ever reaches a screen — no flash needed.
 
   async generatePaymentAddress(s, p) {
@@ -684,6 +686,9 @@ const actions = {
             index: doc.quote.index,
             expiresAt: doc.quote.expiresAt,
             supersededAt: new Date().toISOString(),
+            // Tag discounted deals: removeDiscountCode voids them so the
+            // discounted amount can never stay payable after removal.
+            ...(doc.quote.discountPercent ? { discountPercent: doc.quote.discountPercent } : {}),
           });
           if (doc.quoteHistory.length > 20) doc.quoteHistory = doc.quoteHistory.slice(-20);
         }
@@ -713,7 +718,23 @@ const actions = {
       doc.quote = { ...q, address, index: doc.quote.index };
     }
     await s.setJSON(`domain/${doc.domain}`, doc);
-    return ok({ amount: doc.quote.amount, address, expiresAt: doc.quote.expiresAt, index: doc.quote.index, ...(q.discountPercent ? { discountPercent: q.discountPercent, originalAmount: q.originalAmount } : {}) });
+    // Post-save clash re-check (see model above): whoever saved second
+    // re-issues. Derivation is deterministic, so a working xpub cannot start
+    // failing here; bounded so a pathological store can't hang the request.
+    // The retired entry keeps its discount tag (spread) for removeDiscountCode.
+    let reverified = 0;
+    while (reverified < 3 && (await addressTakenByOtherDomain(s, doc.domain, doc.quote.address))) {
+      console.warn(`post-save address clash on index ${doc.quote.index} for ${doc.domain}, re-issuing`);
+      doc.quoteHistory = Array.isArray(doc.quoteHistory) ? doc.quoteHistory : [];
+      doc.quoteHistory.push({ ...doc.quote, supersededAt: new Date().toISOString() });
+      if (doc.quoteHistory.length > 20) doc.quoteHistory = doc.quoteHistory.slice(-20);
+      const idx = await nextWalletIndex(s);
+      const fresh = await deriveAddress(idx);
+      doc.quote = { ...q, address: fresh, index: idx };
+      await s.setJSON(`domain/${doc.domain}`, doc);
+      reverified++;
+    }
+    return ok({ amount: doc.quote.amount, address: doc.quote.address, expiresAt: doc.quote.expiresAt, index: doc.quote.index, ...(q.discountPercent ? { discountPercent: q.discountPercent, originalAmount: q.originalAmount } : {}) });
   },
 
   async checkDomainDiscount(s, p) {
@@ -886,10 +907,25 @@ const actions = {
       doc.quote = { ...q, address, index: doc.quote.index };
     }
     await s.setJSON(`domain/${doc.domain}`, doc);
+    // Post-save clash re-check: same simultaneous-issuance race as
+    // generatePaymentAddress (see model above) — whoever saved second
+    // re-issues, keeping its discounted price.
+    let reverified = 0;
+    while (reverified < 3 && (await addressTakenByOtherDomain(s, doc.domain, doc.quote.address))) {
+      console.warn(`post-save address clash on index ${doc.quote.index} for ${doc.domain}, re-issuing`);
+      doc.quoteHistory = Array.isArray(doc.quoteHistory) ? doc.quoteHistory : [];
+      doc.quoteHistory.push({ ...doc.quote, supersededAt: new Date().toISOString() });
+      if (doc.quoteHistory.length > 20) doc.quoteHistory = doc.quoteHistory.slice(-20);
+      const idx = await nextWalletIndex(s);
+      const fresh = await deriveAddress(idx);
+      doc.quote = { ...q, address: fresh, index: idx };
+      await s.setJSON(`domain/${doc.domain}`, doc);
+      reverified++;
+    }
     return ok({
       discounted: true,
       amount: doc.quote.amount,
-      address,
+      address: doc.quote.address,
       expiresAt: doc.quote.expiresAt,
       index: doc.quote.index,
       discountPercent: pct,
@@ -900,6 +936,25 @@ const actions = {
   async removeDiscountCode(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
     doc.discount = null;
+    // Void discounted history entries: they priced a deal that no longer
+    // exists — otherwise the discounted amount would stay payable forever
+    // on a retired address. Full-price entries are untouched (late payments
+    // and top-ups to them keep crediting).
+    if (Array.isArray(doc.quoteHistory)) {
+      doc.quoteHistory = doc.quoteHistory.filter((h) => !(h && h.discountPercent));
+    }
+    // Re-price the current quote at full price in place (same address), so
+    // the displayed amount can never be a stale discount. If the price feed
+    // is down, drop the quote so the next call mints a fresh full-price one.
+    if (doc.quote && doc.quote.address) {
+      try {
+        const price = await btcUsdPrice();
+        const q = quoteFor(0, price);
+        doc.quote = { ...q, address: doc.quote.address, index: doc.quote.index };
+      } catch (e) {
+        doc.quote = null;
+      }
+    }
     await s.setJSON(`domain/${doc.domain}`, doc);
     // NOTE: promo uses are intentionally NOT freed — a consumed single-use
     // code stays consumed, otherwise apply/remove would loop into infinite
