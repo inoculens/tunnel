@@ -1,17 +1,40 @@
-/* Core Design Tokens */
+/* ============================================================
+   INOCULENS Tunnel — Matte Glass Dark Design System
+   Inspiration: YouTube dark (#0f0f0f) + Windows 11 Mica/Acrylic
+   + TranslucentTB matte floating bar. Design only.
+   ============================================================ */
 :root {
-  --primary: #4f46e5;
-  --primary-hover: #4338ca;
-  --bg: #0f172a;
-  --card-bg: #1e293b;
-  --text: #f8fafc;
-  --text-muted: #94a3b8;
-  --border: #334155;
-  --accent: #818cf8;
-  --accent-secondary: #c084fc;
-  --success: #10b981;
-  --danger: #ef4444;
-  --danger-hover: #dc2626;
+  --primary: #e8eaed;
+  --primary-hover: #ffffff;
+  --primary-ink: #0f0f0f;
+  --accent: #3ea6ff;
+  --accent-soft: rgba(62, 166, 255, 0.12);
+  --accent-secondary: #8ab4ff;
+  --bg: #0f0f0f;
+  --bg-2: #131314;
+  --card-bg: rgba(33, 33, 36, 0.62);
+  --card-solid: #212123;
+  --surface-2: rgba(255, 255, 255, 0.06);
+  --surface-3: rgba(255, 255, 255, 0.09);
+  --text: #f1f1f1;
+  --text-muted: #aaaaaa;
+  --text-faint: #717171;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --stroke-top: rgba(255, 255, 255, 0.07);
+  --success: #2ba640;
+  --success-soft: rgba(43, 166, 64, 0.13);
+  --danger: #f04141;
+  --danger-hover: #d92d20;
+  --danger-soft: rgba(240, 65, 65, 0.12);
+  --warning: #f5a623;
+  --radius-lg: 18px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --radius-pill: 999px;
+  --shadow-1: 0 8px 28px rgba(0, 0, 0, 0.45);
+  --shadow-2: 0 16px 48px rgba(0, 0, 0, 0.5);
+  --mica-blur: blur(28px) saturate(135%);
 }
 
 * {
@@ -20,16 +43,53 @@
   padding: 0;
 }
 
+html {
+  scrollbar-color: #3d3d3d #0f0f0f;
+}
+
 body {
-  font-family: 'DM Sans', 'Inter', 'Mulish', sans-serif;
-  background: var(--bg);
+  font-family: 'DM Sans', 'Inter', 'Roboto', 'Mulish', sans-serif;
+  background:
+    radial-gradient(1100px 500px at 50% -180px, rgba(255, 255, 255, 0.055), transparent 60%),
+    radial-gradient(800px 420px at 85% 10%, rgba(62, 166, 255, 0.05), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--text);
-  padding: 140px 20px 80px;
+  padding: 124px 20px 80px;
   display: flex;
   flex-direction: column;
   align-items: center;
   min-height: 100vh;
   overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Subtle mica grain — matte, not glossy */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.5;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 22px 22px;
+  mask-image: linear-gradient(to bottom, black 0%, transparent 55%);
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  left: 50%;
+  top: -220px;
+  width: 720px;
+  height: 340px;
+  transform: translateX(-50%);
+  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.06), transparent);
+  filter: blur(10px);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .container {
@@ -39,46 +99,67 @@ body {
 }
 
 h1 {
-  font-family: 'Lexend Giga', sans-serif;
-  font-size: 3rem;
-  font-weight: 800;
-  background: linear-gradient(to right, #818cf8, #c084fc);
+  font-family: 'DM Sans', 'Inter', sans-serif;
+  font-size: 2.6rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(to bottom, #ffffff 30%, #b8bcc4 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
   margin-bottom: 1rem;
 }
 
-@media (max-width: 768px) {
-  h1 { font-size: 2.2rem; }
-  body { padding-top: 110px; }
+::selection {
+  background: rgba(62, 166, 255, 0.35);
 }
 
-/* Header & Navigation */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #3d3d3d;
+  border-radius: 8px;
+  border: 2px solid #0f0f0f;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4d4d4d;
+}
+
+@media (max-width: 768px) {
+  h1 { font-size: 2rem; }
+  body { padding-top: 104px; }
+}
+
+/* ============ Header — TranslucentTB matte floating bar ============ */
 .glass-header {
   position: fixed;
-  top: 35px;
+  top: 16px;
   left: 50%;
   transform: translateX(-50%);
   width: calc(100% - 32px);
-  max-width: 1000px;
-  height: 72px;
-  background: rgba(15, 23, 42, 0.75);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 18px;
+  max-width: 1020px;
+  height: 62px;
+  background: rgba(24, 24, 27, 0.55);
+  backdrop-filter: var(--mica-blur);
+  -webkit-backdrop-filter: var(--mica-blur);
+  border: 1px solid var(--border);
+  border-radius: 16px;
   z-index: 9000;
   display: flex;
   justify-content: center;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 12px 40px -8px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+  box-shadow: var(--shadow-1), inset 0 1px 0 var(--stroke-top);
 }
 
 .header-content {
   width: 100%;
   height: 100%;
-  padding: 0 28px;
+  padding: 0 14px 0 18px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -92,88 +173,96 @@ h1 {
 }
 
 .header-logo {
-  height: 36px;
+  height: 30px;
   width: auto;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 3px;
+  border: 1px solid var(--border);
 }
 
 .header-title {
-  font-family: 'Lexend Giga', sans-serif;
-  font-size: 1.1rem;
-  font-weight: 800;
-  background: linear-gradient(to right, #818cf8, #c084fc);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  background: none;
+  -webkit-background-clip: unset;
+  background-clip: unset;
+  color: var(--text);
   margin: 0;
-  letter-spacing: -0.02em;
   white-space: nowrap;
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
+/* YouTube-style chips */
 .nav-btn {
-  font-family: 'Lexend Giga', sans-serif;
-  font-size: 0.7rem;
-  font-weight: 600;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 500;
   color: var(--text);
   text-decoration: none;
-  padding: 8px 14px;
-  border-radius: 8px;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 8px 16px;
+  border-radius: var(--radius-pill);
+  transition: background 0.15s ease, border-color 0.15s ease;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid transparent;
   white-space: nowrap;
+  line-height: 1.2;
 }
 
 .nav-btn:hover {
-  background: rgba(79, 70, 229, 0.15);
-  border-color: var(--primary);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.15);
+  background: rgba(255, 255, 255, 0.13);
+  border-color: transparent;
+  transform: none;
+  box-shadow: none;
 }
 
 .nav-btn:active {
-  transform: scale(0.96);
+  transform: scale(0.97);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* Active State — matte filled chip like YouTube selected filter */
+.nav-btn.active {
+  background: #f1f1f1;
+  border-color: #f1f1f1;
+  color: #0f0f0f;
+  cursor: default;
+  pointer-events: none;
+  box-shadow: none;
+  transform: none !important;
+  font-weight: 600;
 }
 
 .glass-header .mobile-menu-btn {
   display: none !important;
 }
 
-/* Active State */
-.nav-btn.active {
-  background: rgba(79, 70, 229, 0.2);
-  border-color: var(--primary);
-  color: white;
-  cursor: default;
-  pointer-events: none;
-  box-shadow: inset 0 0 10px rgba(79, 70, 229, 0.2);
-  transform: none !important;
-}
-
 @media (max-width: 768px) {
   .glass-header {
-    width: calc(100% - 24px);
-    top: 25px;
-    height: 64px;
+    width: calc(100% - 20px);
+    top: 12px;
+    height: 58px;
     border-radius: 16px;
   }
 
   .header-content {
-    padding: 0 16px;
+    padding: 0 10px 0 14px;
   }
-  
+
   .header-title {
     display: block !important;
-    font-size: 0.9rem;
+    font-size: 0.88rem;
   }
 
   .header-right {
-    display: none; /* Hide desktop nav (Pricing / About / Terms live here) */
+    display: none;
   }
 
   .glass-header .mobile-menu-btn {
@@ -182,47 +271,47 @@ h1 {
     justify-content: center;
     width: 40px;
     height: 40px;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid transparent;
+    border-radius: 50%;
     color: var(--text);
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background 0.15s ease;
   }
 
   .mobile-menu-btn:active {
-    transform: scale(0.9);
-    background: rgba(255, 255, 255, 0.1);
+    transform: scale(0.92);
+    background: rgba(255, 255, 255, 0.14);
   }
 }
 
 @media (max-width: 450px) {
   .glass-header {
-    height: 60px;
-    top: 20px;
+    height: 56px;
+    top: 10px;
   }
   .header-logo {
     height: 24px;
   }
   .header-title {
     font-size: 0.8rem;
-    max-width: 140px;
+    max-width: 150px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 }
 
-/* Mobile Drawer Styles */
+/* ============ Mobile Drawer — Win11 acrylic panel ============ */
 .drawer-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
   z-index: 20000;
   display: none;
   opacity: 0;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.25s ease;
 }
 
 .drawer-overlay.active {
@@ -237,16 +326,18 @@ h1 {
   width: 280px;
   height: 100vh;
   height: 100dvh;
-  background: rgba(15, 23, 42, 0.8);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  background: rgba(28, 28, 31, 0.82);
+  backdrop-filter: blur(30px) saturate(130%);
+  -webkit-backdrop-filter: blur(30px) saturate(130%);
   z-index: 20001;
-  transition: right 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  transition: right 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+  border-left: 1px solid var(--border);
+  border-top-left-radius: 12px;
+  border-bottom-left-radius: 12px;
   display: flex;
   flex-direction: column;
-  padding: 32px 24px;
-  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.5);
+  padding: 24px 18px;
+  box-shadow: -16px 0 48px rgba(0, 0, 0, 0.5);
 }
 
 .mobile-drawer.active {
@@ -257,42 +348,82 @@ h1 {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 40px;
+  margin-bottom: 24px;
+  padding: 0 4px;
 }
 
 .drawer-close {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid transparent;
+  border-radius: 50%;
   color: var(--text-muted);
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.drawer-close:hover {
+  background: rgba(255, 255, 255, 0.13);
+  color: var(--text);
 }
 
 .drawer-nav {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 4px;
 }
 
 .drawer-nav .nav-btn {
   width: 100%;
-  padding: 14px 20px;
+  padding: 12px 16px;
   font-size: 0.9rem;
   text-align: left;
   justify-content: flex-start;
+  border-radius: 10px;
+  background: transparent;
 }
 
-/* Analytics consent banner (GDPR) */
+.drawer-nav .nav-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.drawer-nav .nav-btn.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+  border-color: transparent;
+}
+
+/* ============ Footer — quiet YouTube-style ============ */
+.footer {
+  text-align: center;
+  padding: 32px 0 12px;
+  border-top: 1px solid var(--border);
+  width: 100%;
+  max-width: 1000px;
+  color: var(--text-faint);
+  font-size: 0.82rem;
+  margin-top: 3rem;
+}
+
+.footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.footer a:hover {
+  text-decoration: underline;
+}
+
+/* ============ Analytics consent banner — Win11 dialog mini ============ */
 #consentBanner {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  bottom: 20px;
+  bottom: 18px;
   width: calc(100% - 32px);
   max-width: 640px;
   z-index: 60000;
@@ -300,18 +431,20 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 18px;
-  background: rgba(15, 23, 42, 0.95);
+  padding: 14px 14px 14px 18px;
+  background: rgba(30, 30, 33, 0.78);
+  backdrop-filter: blur(28px) saturate(130%);
+  -webkit-backdrop-filter: blur(28px) saturate(130%);
   border: 1px solid var(--border);
   border-radius: 14px;
-  box-shadow: 0 12px 40px -8px rgba(0, 0, 0, 0.6);
-  font-size: 0.9rem;
+  box-shadow: var(--shadow-2), inset 0 1px 0 var(--stroke-top);
+  font-size: 0.86rem;
   color: var(--text);
 }
 
 #consentBanner .consent-text {
   color: var(--text-muted);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 #consentBanner .consent-actions {
@@ -321,22 +454,31 @@ h1 {
 }
 
 .consent-btn {
-  font-family: 'Lexend Giga', sans-serif;
-  font-size: 0.7rem;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.8rem;
   font-weight: 600;
-  padding: 8px 14px;
-  border-radius: 8px;
+  padding: 9px 18px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.07);
   color: var(--text);
   white-space: nowrap;
+  transition: background 0.15s ease;
+}
+
+.consent-btn:hover {
+  background: rgba(255, 255, 255, 0.13);
 }
 
 .consent-btn.consent-accept {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: #fff;
+  background: #f1f1f1;
+  border-color: #f1f1f1;
+  color: #0f0f0f;
+}
+
+.consent-btn.consent-accept:hover {
+  background: #ffffff;
 }
 
 @media (max-width: 520px) {
