@@ -188,6 +188,14 @@ input:focus, #slugInput:focus, .search-input:focus {
 
 .domain-chevron { color: #717171 !important; }
 
+/* The composer card must paint above the history section: its backdrop
+   blur traps the domain dropdown in the card's stacking context, so the
+   whole card is lifted (still far below header/modals/drawer). */
+.shorter-box {
+  position: relative;
+  z-index: 60;
+}
+
 .domain-dropdown {
   background: rgba(30, 30, 33, 0.92) !important;
   backdrop-filter: blur(28px) saturate(130%) !important;
@@ -195,8 +203,18 @@ input:focus, #slugInput:focus, .search-input:focus {
   border: 1px solid var(--border) !important;
   border-radius: 12px !important;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.07) !important;
-  overflow: hidden !important;
+  /* Grow with content up to ~5 rows, then hold size and scroll inside. */
+  max-height: 262px !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #3d3d3d transparent;
 }
+
+.domain-dropdown::-webkit-scrollbar { width: 8px; }
+.domain-dropdown::-webkit-scrollbar-track { background: transparent; }
+.domain-dropdown::-webkit-scrollbar-thumb { background: #3d3d3d; border-radius: 8px; }
 
 .domain-option {
   border-bottom: 1px solid rgba(255, 255, 255, 0.07) !important;
