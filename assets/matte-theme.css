@@ -469,7 +469,7 @@ tr.link-data-row.pair-hover td {
 /* Promo expiry date field: stable box, no white segment surround. */
 #promoNewExpiry {
   flex: 1 1 0 !important;
-  min-width: 148px !important;
+  min-width: 0 !important;
   width: 100% !important;
   background: transparent !important;
   border: none !important;
