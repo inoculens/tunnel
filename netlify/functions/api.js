@@ -36,7 +36,6 @@ import {
   cfDeleteCustomHostname,
   btcUsdPrice,
   quoteFor,
-  discountCodes,
   deriveAddress,
   nextWalletIndex,
   listAll,
@@ -818,32 +817,26 @@ const actions = {
         });
       }
     }
-    // Managed single-use promo first, legacy env map as fallback.
-    let pct = 0;
-    let promo = null;
+    // Managed Blobs promos are the only source of discount codes.
     const stored = await s.get(`promo/${code}`, { type: "json" }).catch(() => null);
-    if (stored && !stored.disabled) {
-      if (stored.expiresAt && new Date(stored.expiresAt).getTime() <= Date.now()) {
-        return fail(400, "invalid-argument", "Invalid or expired discount code.");
-      }
-      const used = Array.isArray(stored.uses) ? stored.uses.length : 0;
-      if (used >= (stored.maxUses || 1)) {
-        return fail(400, "invalid-argument", "This code has already been redeemed.");
-      }
-      pct = stored.percent;
-      promo = stored;
-    } else {
-      pct = discountCodes()[code];
-      if (!code || !pct) return fail(400, "invalid-argument", "Invalid or expired discount code.");
+    if (!stored || stored.disabled) {
+      return fail(400, "invalid-argument", "Invalid or expired discount code.");
     }
+    if (stored.expiresAt && new Date(stored.expiresAt).getTime() <= Date.now()) {
+      return fail(400, "invalid-argument", "Invalid or expired discount code.");
+    }
+    const used = Array.isArray(stored.uses) ? stored.uses.length : 0;
+    if (used >= (stored.maxUses || 1)) {
+      return fail(400, "invalid-argument", "This code has already been redeemed.");
+    }
+    const pct = stored.percent;
+    const promo = stored;
     // Reserve the single-use BEFORE applying: if the doc save below ever
     // failed, the use stays burned (conservative — a code can never stretch
     // to maxUses+1 through retries).
-    if (promo) {
-      promo.uses = Array.isArray(promo.uses) ? promo.uses : [];
-      promo.uses.push({ domain: doc.domain, sessionId: p.sessionId, at: new Date().toISOString() });
-      await s.setJSON(`promo/${code}`, promo);
-    }
+    promo.uses = Array.isArray(promo.uses) ? promo.uses : [];
+    promo.uses.push({ domain: doc.domain, sessionId: p.sessionId, at: new Date().toISOString() });
+    await s.setJSON(`promo/${code}`, promo);
     doc.discount = { code, percent: pct };
     if (pct >= 100) {
       doc.paymentStatus = "paid";

@@ -478,26 +478,9 @@ export function quoteFor(discountPct, price) {
   };
 }
 
-export function discountCodes() {
-  try {
-    const raw = process.env.DISCOUNT_CODES || "{}";
-    const parsed = JSON.parse(raw);
-    const out = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      const n = Number(v);
-      if (typeof k === "string" && Number.isFinite(n) && n > 0 && n <= 100) {
-        out[k.trim().toUpperCase()] = n;
-      }
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
 // ---------- Wallet adapter ----------
-// Real payment addresses need an HD wallet XPUB plus derivation libraries:
-//   npm i bitcoinjs-lib bip32 tiny-secp256k1
+// Real payment addresses need an HD wallet XPUB plus derivation libraries
+// (see package.json: bitcoinjs-lib, bip32, @noble/secp256k1 via ecc-noble.js)
 // and env BTC_XPUB=xpub…  (first receiving chain, index per quote).
 // Without it, generatePaymentAddress fails with a clear "not configured"
 // error instead of inventing an address. MANUAL_BTC_ADDRESS exists only
