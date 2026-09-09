@@ -533,8 +533,19 @@ tr.link-data-row.pair-hover td {
   -webkit-backdrop-filter: blur(28px) saturate(130%) !important;
   border-radius: 12px !important;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55) !important;
-  overflow: hidden !important;
+  /* Same logic as the domain dropdown: grow to ~5 rows, then hold size
+     and scroll inside. */
+  max-height: 262px !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #3d3d3d transparent;
 }
+
+.history-filter-dropdown::-webkit-scrollbar { width: 8px; }
+.history-filter-dropdown::-webkit-scrollbar-track { background: transparent; }
+.history-filter-dropdown::-webkit-scrollbar-thumb { background: #3d3d3d; border-radius: 8px; }
 
 .filter-option { color: #aaaaaa !important; font-size: 0.85rem !important; }
 .filter-option:hover { background: rgba(255, 255, 255, 0.07) !important; color: #fff !important; }
