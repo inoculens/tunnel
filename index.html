@@ -5680,9 +5680,9 @@
         if (!overlay) return;
         overlay.style.display = 'flex';
         document.body.classList.add('modal-open');
+        promoShowMain();
         const keyInput = document.getElementById('promoAdminKey');
         if (keyInput && !keyInput.value) keyInput.value = promoAdminKey();
-        if (promoAdminKey()) promoLoad();
       }
       function closePromoAdmin() {
         const overlay = document.getElementById('promoAdminOverlay');
@@ -5696,13 +5696,41 @@
         try { sessionStorage.setItem('tunnel_admin_key', key); } catch (e) {}
         await promoLoad();
       }
-      async function promoLoad() {
+      function promoShowCodes() {
+        const main = document.getElementById('promoMain');
+        const view = document.getElementById('promoCodesView');
+        if (main) main.style.display = 'none';
+        if (view) view.style.display = 'block';
+        promoLoad();
+      }
+      function promoShowMain() {
+        const main = document.getElementById('promoMain');
+        const view = document.getElementById('promoCodesView');
+        if (view) view.style.display = 'none';
+        if (main) main.style.display = 'block';
+      }
+      // Blob list reads lag behind writes (eventual consistency): a code
+      // created/revoked seconds ago may be missing/stale in the listing.
+      // Callers pass the affected code so we re-check once after a delay.
+      async function promoLoad(awaitCode, expectAbsent) {
         const list = document.getElementById('promoCodesList');
         if (list) list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">Loading…</div>';
         try {
           const fn = functions.httpsCallable('adminListDiscountCodes');
           const res = await fn({ adminKey: promoAdminKey() });
-          renderPromoCodes(res.data.codes || []);
+          const codes = res.data.codes || [];
+          renderPromoCodes(codes);
+          if (awaitCode) {
+            const present = codes.some((c) => c.code === awaitCode);
+            if (present === !expectAbsent) return;
+            if (list) list.innerHTML += '<div style="padding:8px; text-align:center; color:var(--text-muted); font-size:0.75rem;">Syncing latest change…</div>';
+            setTimeout(async () => {
+              try {
+                const res2 = await fn({ adminKey: promoAdminKey() });
+                renderPromoCodes(res2.data.codes || []);
+              } catch (e2) { console.error('promoLoad retry:', e2); }
+            }, 2500);
+          }
         } catch (e) {
           console.error('promoLoad:', e);
           if (list) list.innerHTML = `<div style="padding:16px; text-align:center; color:var(--danger);">${escapeHTML(e.message || 'Unlock failed')}</div>`;
@@ -5719,14 +5747,14 @@
           const used = Number(c.used || 0), max = Number(c.maxUses || 1);
           const exhausted = used >= max;
           const uses = (c.uses || []).map((u) =>
-            `<div style="font-size:0.72rem; color:var(--text-muted);">${escapeHTML(u.domain || '?')} · ${escapeHTML((u.at || '').slice(0, 10))}</div>`
+            `<div style="font-size:0.72rem; color:var(--text-muted);">${escapeHTML(u.domain || '?')} · session <span style="font-family:monospace;">${escapeHTML(u.sessionId || '?')}</span> · ${escapeHTML((u.at || '').slice(0, 10))}</div>`
           ).join('');
           return `<div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; ${exhausted ? 'opacity:0.6;' : ''}">
             <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
               <div style="font-family:monospace; font-weight:700;">${escapeHTML(c.code)}</div>
               <button class="btn-small btn-delete-small" onclick="promoRevoke(${escapeJS(c.code)})" title="Revoke future use">Revoke</button>
             </div>
-            <div style="font-size:0.8rem; margin-top:4px;">${c.percent}% off · <strong>${used}/${max}</strong> used${c.expiresAt ? ` · expires ${escapeHTML(c.expiresAt.slice(0, 10))}` : ''}${c.note ? ` · ${escapeHTML(c.note)}` : ''}</div>
+            <div style="font-size:0.8rem; margin-top:4px;">${c.percent}% off · <strong>${used}/${max}</strong> used · ${c.expiresAt ? `expires ${escapeHTML(c.expiresAt.slice(0, 10))}` : 'never expires'}${c.note ? ` · ${escapeHTML(c.note)}` : ''}</div>
             ${uses}
           </div>`;
         }).join('');
@@ -5741,17 +5769,20 @@
         try {
           if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
           const fn = functions.httpsCallable('adminCreateDiscountCode');
+          const neverEl = document.getElementById('promoNeverExpiry');
           const res = await fn({
             adminKey: promoAdminKey(),
             code: (codeEl.value || '').trim(),
             percent: Number(pctEl.value),
             maxUses: maxEl.value === '' ? 1 : Number(maxEl.value),
-            expiresAt: (expEl.value || '').trim() || null,
+            expiresAt: (neverEl && neverEl.checked) ? null : ((expEl.value || '').trim() || null),
             note: (noteEl.value || '').trim(),
           });
           showToast(`Code ${res.data.code} created (${res.data.percent}% off).`, 'success');
           codeEl.value = ''; noteEl.value = ''; expEl.value = '';
-          await promoLoad();
+          if (neverEl) { neverEl.checked = true; expEl.disabled = true; }
+          promoShowCodes();
+          await promoLoad(res.data.code, false);
         } catch (e) {
           console.error('promoCreate:', e);
           showToast(e.message || 'Create failed', 'error');
@@ -5770,7 +5801,7 @@
           const fn = functions.httpsCallable('adminDeleteDiscountCode');
           await fn({ adminKey: promoAdminKey(), code });
           showToast(`Code ${code} revoked.`, 'success');
-          await promoLoad();
+          await promoLoad(code, true);
         } catch (e) {
           console.error('promoRevoke:', e);
           showToast(e.message || 'Revoke failed', 'error');
@@ -7859,7 +7890,8 @@
           onkeydown="if(event.key==='Enter') promoUnlock()">
         <button class="modal-btn modal-btn-ok" onclick="promoUnlock()" style="height: 44px; width: auto; padding: 0 16px;">Unlock</button>
       </div>
-      <div id="promoCodesList" style="margin-bottom: 16px;"></div>
+      <div id="promoMain">
+      <button class="modal-btn modal-btn-ok" onclick="promoShowCodes()" style="width: 100%; margin-bottom: 16px;">View all codes</button>
       <div style="border-top: 1px solid var(--border); padding-top: 16px;">
         <h3 style="margin: 0 0 12px; font-size: 0.95rem;">Create code</h3>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
@@ -7869,12 +7901,26 @@
             style="height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;">
           <input type="number" id="promoNewMax" placeholder="Max uses (default 1)" min="1" max="10000"
             style="height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;">
-          <input type="date" id="promoNewExpiry" title="Expiry (optional)"
-            style="height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;">
+          <div style="display: flex; gap: 12px; align-items: center; height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; padding: 0 12px;">
+            <label style="display: flex; gap: 8px; align-items: center; font-size: 0.85rem; color: var(--text); cursor: pointer; white-space: nowrap;">
+              <input type="checkbox" id="promoNeverExpiry" checked onchange="document.getElementById('promoNewExpiry').disabled = this.checked" style="width: 16px; height: 16px; accent-color: var(--primary);">
+              Never expires
+            </label>
+            <input type="date" id="promoNewExpiry" title="Expiry date (only when Never expires is off)" disabled
+              style="flex: 1; min-width: 0; height: 32px; background: transparent; border: none; color: var(--text); font-size: 0.85rem;">
+          </div>
         </div>
         <input type="text" id="promoNewNote" placeholder="Note (who is this for?) — optional" maxlength="140"
           style="width: 100%; height: 44px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px; margin-bottom: 12px; box-sizing: border-box;">
         <button class="modal-btn modal-btn-ok" id="promoCreateBtn" onclick="promoCreate()" style="width: 100%;">Create</button>
+      </div>
+      </div>
+      <div id="promoCodesView" style="display: none;">
+        <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+          <button class="modal-btn modal-btn-cancel" onclick="promoShowMain()" style="height: 44px; width: auto; padding: 0 16px;">← Back</button>
+          <button class="modal-btn modal-btn-ok" onclick="promoLoad()" style="height: 44px; flex: 1;">Refresh</button>
+        </div>
+        <div id="promoCodesList"></div>
       </div>
     </div>
   </div>
