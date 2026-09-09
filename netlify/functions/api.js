@@ -570,20 +570,30 @@ const actions = {
       cname: false,
       txt: false,
       ssl: false,
+      routable: null,
       cfHostnameStatus: null,
       cfSslStatus: null,
     }));
+    // routable: true = resolves to edge, false = definitively unservable as
+    // configured, null = unknown (fail-open, never blocks on lookup hiccups).
+    const routable = live.routable === false ? false : live.routable === true ? true : null;
     doc.dnsVerification = {
       cnameValid: !!live.cname,
       txtVerified: !!live.txt,
       sslVerified: !!live.ssl,
+      routable,
     };
     if (live.cfHostnameStatus) doc.cfHostnameStatus = live.cfHostnameStatus;
     if (live.cfSslStatus) doc.cfSslStatus = live.cfSslStatus;
     // Sticky ownership: once proven, stays proven (matches frontend).
     if (live.cname && live.txt) doc.isVerified = true;
-    // If verified + paid, ensure the SaaS custom hostname exists so TLS provisions.
-    if (doc.isVerified && doc.paymentStatus === "paid") {
+    // A definitively unroutable domain cannot serve links: drop it back to
+    // pending (payment kept) so no new links mint on a dead domain.
+    // Re-verify re-activates once it resolves. Unknown (null) never demotes.
+    if (routable === false && doc.status === "active") doc.status = "pending_verification";
+    // If verified + paid + resolvable, ensure the SaaS custom hostname exists
+    // so TLS provisions.
+    if (doc.isVerified && doc.paymentStatus === "paid" && routable !== false) {
       await ensureSaaSHostname(doc);
       // Re-read live SaaS status after ensure (it may have just been created -> pending).
       const cf = cfConfig() ? await cfGetCustomHostname(doc.domain) : null;
@@ -603,7 +613,7 @@ const actions = {
     return ok({
       success: true,
       isVerified: doc.isVerified,
-      checks: { cname: !!live.cname, txt: !!live.txt, ssl: !!doc.dnsVerification.sslVerified },
+      checks: { cname: !!live.cname, txt: !!live.txt, ssl: !!doc.dnsVerification.sslVerified, routable },
       cfHostnameStatus: doc.cfHostnameStatus || live.cfHostnameStatus || null,
       cfSslStatus: doc.cfSslStatus || live.cfSslStatus || null,
       status: doc.status,

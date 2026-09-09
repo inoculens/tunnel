@@ -3355,6 +3355,8 @@
           <div id="verificationStatusContent" style="padding: 12px; border-radius: 8px; font-size: 0.85rem;"></div>
         </div>
 
+        <div id="routingNote" style="display: none; margin-bottom: 16px; padding: 12px; border-radius: 8px; font-size: 0.85rem; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; text-align: center;">⚠️ This domain doesn't resolve to Tunnel edge (no usable address) — browsers can't reach it as configured. If you just created the record, wait a few minutes and Re-verify; otherwise fix the CNAME target.</div>
+
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 16px; text-align: center;">
           DNS changes can take a few minutes. Click Verify again after propagation.
         </p>
@@ -4614,6 +4616,8 @@
           cname: dns.cnameValid || false,
           txt: dns.txtVerified || false,
           ssl: sslIsActive,
+          // false = definitively unroutable (no edge address); null = ok/unknown.
+          routable: (dns.routable === false) ? false : null,
           acme: {}
         };
 
@@ -4629,6 +4633,7 @@
         updateStatusUI('cname', verificationState.cname);
         updateStatusUI('txt', verificationState.txt);
         updateStatusUI('ssl', verificationState.ssl);
+        updateRoutingUI(verificationState.routable);
 
         const isPermanentlyVerified = domainDoc.isVerified === true;
         const isActive = domainDoc.status === 'active' || domainDoc.paymentStatus === 'paid';
@@ -4695,6 +4700,7 @@
         updateStatusUI('cname', !!dns.cnameValid);
         updateStatusUI('txt', !!dns.txtVerified);
         updateStatusUI('ssl', sslOk);
+        updateRoutingUI((dns.routable === false) ? false : null);
 
         // Show/hide verification status in modal - only show when both verified AND active/paid
         if (isVerified && isActive) {
@@ -4828,12 +4834,23 @@
         updateContinueButton();
       }
 
+      function updateRoutingUI(routable) {
+        // false = definitive: no usable edge address, domain cannot serve.
+        // true/null/undefined = resolvable or unknown (fail-open: lookup
+        // hiccups and legacy docs without the flag never block).
+        verificationState.routable = (routable === false) ? false : null;
+        const note = document.getElementById('routingNote');
+        if (note) note.style.display = (routable === false) ? 'block' : 'none';
+        updateContinueButton();
+      }
+
       function updateContinueButton(isLoading = false, loadingText = 'Loading...') {
         const cnameOk = verificationState.cname === true;
         const txtOk = verificationState.txt === true;
         const sslOk = verificationState.ssl === true;
+        const routableOk = verificationState.routable !== false;
 
-        console.log('updateContinueButton: current states', { isLoading, loadingText, cnameOk, txtOk, sslOk, domainIsVerified: window.domainIsVerified, domainIsActive: window.domainIsActive });
+        console.log('updateContinueButton: current states', { isLoading, loadingText, cnameOk, txtOk, sslOk, routableOk, domainIsVerified: window.domainIsVerified, domainIsActive: window.domainIsActive });
 
         const continueBtn = document.getElementById('continueToPaymentBtn');
         const spinner = document.getElementById('continueBtnSpinner');
@@ -4851,12 +4868,14 @@
           // Hide spinner once loading is over
           if (spinner) spinner.style.display = 'none';
 
-          // Payment requires ownership (CNAME routing + TXT). SSL provisions
-          // automatically via Cloudflare SaaS HTTP validation after the CNAME
-          // is live — it must NOT block payment (takes minutes in background).
+          // Payment requires ownership (CNAME routing + TXT) AND resolvability:
+          // a domain with no usable edge address cannot serve links, so it
+          // must not take payment. SSL provisions automatically via Cloudflare
+          // SaaS HTTP validation after the CNAME is live — it must NOT block
+          // payment (takes minutes in background).
           const isPermanentlyVerified = window.domainIsVerified === true;
           const isDomainActive = window.domainIsActive === true;
-          const readyForPayment = (cnameOk && txtOk) || isPermanentlyVerified;
+          const readyForPayment = ((cnameOk && txtOk) || isPermanentlyVerified) && routableOk;
           const allChecksPass = readyForPayment;
 
           if (isDomainActive) {
@@ -4929,6 +4948,13 @@
         updateStatusUI('cname', !!checks.cname);
         updateStatusUI('txt', !!checks.txt);
         updateStatusUI('ssl', !!checks.ssl);
+        // Routing: null/undefined = unknown (fail-open), false = unservable.
+        if (checks.routable === false) {
+          updateRoutingUI(false);
+          showToast('Domain does not resolve to Tunnel edge — fix the CNAME target or wait for propagation, then Re-verify.', 'error');
+        } else {
+          updateRoutingUI(null);
+        }
 
         // Update ACME record results if provided (SSL detail list)
         if (data.acmeVerificationResults) {
@@ -4958,7 +4984,10 @@
           console.log('CNAME verification backend response:', res.data);
           updateAllChecksFromResponse(res.data);
 
-          if (res.data?.checks?.cname) {
+          if (res.data?.checks?.routable === false) {
+            console.warn('CNAME Verification: UNROUTABLE (no edge address)');
+            showToast('CNAME points at Tunnel, but the domain resolves nowhere usable — browsers cannot reach it. Fix the target or wait for propagation.', 'error');
+          } else if (res.data?.checks?.cname) {
             console.log('CNAME Verification: SUCCESS');
             showToast('CNAME verified!', 'success');
           } else {

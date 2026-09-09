@@ -357,7 +357,7 @@ export async function verifyDns(domain, token) {
     systemShortHost(),
     (process.env.ROUTING_TARGET_LEGACY || "").toLowerCase(),
   ].filter(Boolean));
-  const checks = { cname: false, txt: false, ssl: false, cfHostnameStatus: null, cfSslStatus: null };
+  const checks = { cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null, cfSslStatus: null };
 
   // Authoritative CNAME check via the Cloudflare API when the hostname has
   // a record there (grey or proxied): public DoH HIDES the CNAME of proxied
@@ -410,6 +410,31 @@ export async function verifyDns(domain, token) {
     checks.txt = txt.some((v) => v.replace(/"/g, "").trim() === token);
   } catch {
     checks.txt = false;
+  }
+
+  // Routability: does the name resolve to a usable edge address? Ownership
+  // checks can pass while the domain is still unservable (wrong target, or
+  // a same-zone grey CNAME bottoming out at the originless fallback 100::).
+  // Fail-open by design: lookup errors yield null (unknown, never blocks);
+  // only a definitive empty/discard answer yields false.
+  try {
+    const [a, aaaa] = await Promise.all([
+      doh(domain, "A").catch(() => null),
+      doh(domain, "AAAA").catch(() => null),
+    ]);
+    if (a === null && aaaa === null) {
+      checks.routable = null;
+    } else {
+      const v4 = Array.isArray(a) ? a.map(String) : [];
+      const v6 = Array.isArray(aaaa) ? aaaa.map(String) : [];
+      const usableV6 = v6.filter((ip) => {
+        const n = ip.toLowerCase().replace(/\.$/, "");
+        return n !== "100::" && n !== "::" && n !== "::1";
+      });
+      checks.routable = v4.length > 0 || usableV6.length > 0;
+    }
+  } catch {
+    checks.routable = null;
   }
 
   // SaaS certificate/hostname status when Cloudflare is configured — the
