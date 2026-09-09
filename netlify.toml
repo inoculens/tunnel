@@ -17,7 +17,13 @@
 #   App:         tunnel.inoculens.com -> inoculens-tunnel.netlify.app (DNS only)
 #   Short links: s.inoculens.com      -> inoculens-tunnel.netlify.app (DNS only)
 #   DO NOT proxy s/tunnel through Cloudflare (orange cloud OFF) — they serve
-#   Netlify directly. Only customers.* + proxy-fallback are proxied (SaaS).
+#   Netlify directly. customers.* + proxy-fallback are proxied (SaaS Worker
+#   origin).
+#   Custom domains (ANY DNS provider, plain records): CNAME <custom> ->
+#   customers.inoculens.com + TXT verification.<custom>. Backend verifies over
+#   public DNS and auto-creates a SaaS custom hostname (HTTP validation) after
+#   payment — identically for every domain. Only s./tunnel. are the app and
+#   can never be claimed (reserved).
 #   Routing is handled by netlify/edge-functions/short-domain.js:
 #     s.<any>/ or <custom>/            → 301 to https://tunnel.inoculens.com/
 #     s.<any>/<code>, <custom>/<code>  → resolve function (redirect + clicks)

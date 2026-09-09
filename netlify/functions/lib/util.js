@@ -215,6 +215,8 @@ export function systemShortHost() {
 
 export function saasZoneApex() {
   // Apex of the Cloudflare SaaS zone (INOCULENS account: inoculens.com).
+  // Kept as configuration; routing treats every custom domain identically
+  // regardless of zone membership.
   return (process.env.SAAS_ZONE_APEX || "inoculens.com").toLowerCase();
 }
 
@@ -242,17 +244,6 @@ export function apexBlockedMessage(host) {
     `Use any subdomain you like instead — www.${host}, go.${host}, s.${host}, links.${host}, anything. ` +
     `Tip: most registrars offer free domain forwarding — forward ${host} to your Tunnel subdomain so visitors still find you.`
   );
-}
-
-export function isInZoneCustomDomain(domain) {
-  // Subdomains managed inside our own SaaS zone (e.g. btc.inoculens.com).
-  // These do NOT need a SaaS Custom Hostname: the zone Universal certificate
-  // (*.apex, proxied or DNS-only CNAME to our edge) already covers TLS, and
-  // the Worker route serves them once the CNAME exists.
-  const d = cleanDomain(domain);
-  if (!d) return false;
-  const apex = saasZoneApex();
-  return d !== apex && d.endsWith(`.${apex}`);
 }
 
 export function dcvDelegationSuffix() {
@@ -368,23 +359,50 @@ export async function verifyDns(domain, token) {
   ].filter(Boolean));
   const checks = { cname: false, txt: false, ssl: false, cfHostnameStatus: null, cfSslStatus: null };
 
-  try {
-    const cname = await doh(domain, "CNAME");
-    checks.cname = cname.some((v) => legacyTargets.has(v.toLowerCase().replace(/\.$/, "")));
-    // Apex / flattened setups: some providers return A instead of CNAME.
-    // If no CNAME match, accept when the domain resolves to the same edge as the SaaS target.
-    if (!checks.cname) {
-      try {
-        const [aDomain, aTarget] = await Promise.all([
-          doh(domain, "A").catch(() => []),
-          doh(target, "A").catch(() => []),
-        ]);
-        const targetIps = new Set(aTarget.map(String));
-        if (targetIps.size && aDomain.some((ip) => targetIps.has(String(ip)))) checks.cname = true;
-      } catch { /* keep false */ }
+  // Authoritative CNAME check via the Cloudflare API when the hostname has
+  // a record there (grey or proxied): public DoH HIDES the CNAME of proxied
+  // (orange) records (returns edge A/AAAA instead), so DoH alone fails
+  // exactly the correctly-configured proxied domains. The API record content
+  // is authoritative in both states. Names without a record there are never
+  // found and fall through to DoH below.
+  let apiCheckedCname = false;
+  if (cfConfig()) {
+    try {
+      const list = await cfFetch(`/dns_records?name.exact=${encodeURIComponent(cleanDomain(domain))}&per_page=10`);
+      const arr = Array.isArray(list) ? list : list?.result || [];
+      const cnameRec = arr.find((r) => String(r.type || "").toUpperCase() === "CNAME");
+      if (cnameRec) {
+        apiCheckedCname = true;
+        checks.cname = legacyTargets.has(String(cnameRec.content || "").toLowerCase().replace(/\.$/, ""));
+      } else if (arr.length) {
+        // A/AAAA directly on the name (not the documented CNAME setup).
+        apiCheckedCname = true;
+        checks.cname = false;
+      }
+    } catch (e) {
+      console.error(`verifyDns(${domain}) API check failed, falling back to DoH:`, e?.message || e);
     }
-  } catch {
-    checks.cname = false;
+  }
+
+  if (!apiCheckedCname) {
+    try {
+      const cname = await doh(domain, "CNAME");
+      checks.cname = cname.some((v) => legacyTargets.has(v.toLowerCase().replace(/\.$/, "")));
+      // Apex / flattened setups: some providers return A instead of CNAME.
+      // If no CNAME match, accept when the domain resolves to the same edge as the SaaS target.
+      if (!checks.cname) {
+        try {
+          const [aDomain, aTarget] = await Promise.all([
+            doh(domain, "A").catch(() => []),
+            doh(target, "A").catch(() => []),
+          ]);
+          const targetIps = new Set(aTarget.map(String));
+          if (targetIps.size && aDomain.some((ip) => targetIps.has(String(ip)))) checks.cname = true;
+        } catch { /* keep false */ }
+      }
+    } catch {
+      checks.cname = false;
+    }
   }
 
   try {
@@ -394,12 +412,10 @@ export async function verifyDns(domain, token) {
     checks.txt = false;
   }
 
-  // In-zone subdomains are covered by the zone Universal certificate
-  // (*.apex) as soon as the CNAME exists — no SaaS object required.
-  const inZone = isInZoneCustomDomain(domain);
-
-  // Real SaaS certificate/hostname status when Cloudflare is configured.
-  if (cfConfig() && !inZone) {
+  // SaaS certificate/hostname status when Cloudflare is configured — the
+  // same lookup for every custom domain (HTTP validation needs no extra
+  // customer record beyond the CNAME).
+  if (cfConfig()) {
     const cf = await cfGetCustomHostname(domain);
     if (cf) {
       checks.cfHostnameStatus = cf.status || null;
@@ -423,12 +439,7 @@ export async function verifyDns(domain, token) {
     return checks;
   }
 
-  // In-zone: Universal certificate covers TLS once routing exists.
-  if (inZone) {
-    checks.ssl = checks.cname;
-    return checks;
-  }
-
+  // No Cloudflare token (local dev): TLS follows routing when AUTO_SSL is on.
   const delegation = sslDelegationTarget();
   if (delegation) {
     try {

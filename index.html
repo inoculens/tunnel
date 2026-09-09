@@ -3227,7 +3227,6 @@
           <div
             style="padding: 10px 12px; background: rgba(15, 23, 42, 0.5); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">
             <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">CNAME Record (Routing)</label>
-            <div id="inzoneNote" style="display: none; font-size: 0.75rem; color: #10b981; margin-bottom: 8px;">This subdomain lives in your Cloudflare zone — create the records below in Cloudflare DNS for inoculens.com (proxy ON).</div>
             <div id="apexNote" style="display: none; font-size: 0.75rem; color: #fbbf24; margin-bottom: 8px;"></div>
             <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Record name (create at your DNS provider):</div>
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
@@ -4571,10 +4570,6 @@
         const recordName = (domainDoc.instructions && domainDoc.instructions.recordName) || domainName;
         const recordNameEl = document.getElementById('cnameRecordName');
         if (recordNameEl) recordNameEl.textContent = recordName;
-        // In-zone subdomains are managed in the user's own Cloudflare zone.
-        const inZoneNote = document.getElementById('inzoneNote');
-        if (inZoneNote) inZoneNote.style.display =
-          (domainDoc.instructions && domainDoc.instructions.isInZone) ? 'block' : 'none';
         // Grandfathered apex domains (blocked for new adds): explain + redirect.
         const apexNote = document.getElementById('apexNote');
         const isApexDoc = domainDoc.instructions && domainDoc.instructions.isApex;
@@ -5738,6 +5733,8 @@
       }
       function renderPromoCodes(codes) {
         const list = document.getElementById('promoCodesList');
+        // Cache for the dedicated stats screen (avoids a refetch per open).
+        window._promoCodes = Array.isArray(codes) ? codes : [];
         if (!list) return;
         if (!codes.length) {
           list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">No codes yet — create one below.</div>';
@@ -5746,10 +5743,6 @@
         list.innerHTML = codes.map((c) => {
           const used = Number(c.used || 0), max = Number(c.maxUses || 1);
           const exhausted = used >= max;
-          const usesId = 'promo-uses-' + String(c.code || '');
-          const uses = (c.uses || []).map((u) =>
-            `<div style="font-size:0.72rem; color:var(--text-muted); padding:6px 0; border-top:1px solid var(--border); overflow-wrap:anywhere;">${escapeHTML(u.domain || '?')} · session <span style="font-family:monospace;">${escapeHTML(u.sessionId || '?')}</span> · ${escapeHTML((u.at || '').slice(0, 10))}</div>`
-          ).join('');
           return `<div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; ${exhausted ? 'opacity:0.6;' : ''}">
             <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
               <div style="display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap;">
@@ -5758,32 +5751,58 @@
               </div>
               <div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">
                 <button class="btn-small btn-delete-small" onclick="promoRevoke(${escapeJS(c.code)})" title="Revoke future use">Revoke</button>
-                <button class="btn-small btn-copy-small" onclick="promoToggleStats(${escapeJS(c.code)}, this)" title="Show redemptions" aria-expanded="false">Stats (${used})</button>
+                <button class="btn-small btn-copy-small" onclick="promoOpenStats(${escapeJS(c.code)})" title="Open redemption stats">Stats (${used})</button>
               </div>
             </div>
             <div style="font-size:0.8rem; margin-top:4px;">${c.percent}% off · <strong>${used}/${max}</strong> used · ${c.expiresAt ? `expires ${escapeHTML(c.expiresAt.slice(0, 10))}` : 'never expires'}${c.note ? ` · ${escapeHTML(c.note)}` : ''}</div>
-            <div id="${escapeAttr(usesId)}" style="display:none; margin-top:4px;">${uses || '<div style="font-size:0.72rem; color:var(--text-muted); padding:6px 0;">No redemptions yet.</div>'}</div>
           </div>`;
         }).join('');
       }
       function promoCopyCode(code, btnElement) {
         copyText(String(code || ''), btnElement);
       }
-      function promoToggleStats(code, btnElement) {
-        const box = document.getElementById('promo-uses-' + String(code || ''));
-        if (!box) return;
-        const hidden = box.style.display === 'none';
-        box.style.display = hidden ? 'block' : 'none';
-        if (btnElement) {
-          btnElement.setAttribute('aria-expanded', hidden ? 'true' : 'false');
-          // Keep the redemption count visible in both states.
-          const m = String(btnElement.textContent || '').match(/\((\d+)\)/);
-          const count = m ? m[1] : String((box.querySelectorAll(':scope > div').length) || 0);
-          // "No redemptions yet." placeholder counts as 1 div — prefer the
-          // count already on the button when the list is empty.
-          btnElement.textContent = hidden ? `Hide (${count})` : `Stats (${count})`;
-          btnElement.dataset.originalText = btnElement.textContent;
+      function promoFindCached(code) {
+        const all = Array.isArray(window._promoCodes) ? window._promoCodes : [];
+        return all.find((c) => c && c.code === code) || null;
+      }
+      function promoOpenStats(code) {
+        const c = promoFindCached(code);
+        if (!c) { showToast('Code no longer in the list — hit Refresh.', 'error'); return; }
+        const overlay = document.getElementById('promoStatsOverlay');
+        const codeEl = document.getElementById('promoStatsCode');
+        const summaryEl = document.getElementById('promoStatsSummary');
+        const countEl = document.getElementById('promoStatsCount');
+        const listEl = document.getElementById('promoStatsList');
+        const used = Number(c.used || 0), max = Number(c.maxUses || 1);
+        const uses = Array.isArray(c.uses) ? c.uses.slice().reverse() : [];
+        if (codeEl) codeEl.textContent = c.code || '';
+        if (summaryEl) {
+          summaryEl.innerHTML = `${c.percent}% off · <strong>${used}/${max}</strong> used · ${c.expiresAt ? `expires ${escapeHTML(c.expiresAt.slice(0, 10))}` : 'never expires'}${c.note ? ` · ${escapeHTML(c.note)}` : ''}${c.createdAt ? `<div style="margin-top:4px; color:var(--text-muted);">Created ${escapeHTML(String(c.createdAt).slice(0, 10))}</div>` : ''}`;
         }
+        if (countEl) {
+          const truncated = used > uses.length ? ` · showing latest ${uses.length}` : '';
+          countEl.textContent = `Redemptions (${used})${truncated}`;
+        }
+        if (listEl) {
+          listEl.innerHTML = uses.length ? uses.map((u, i) =>
+            `<div class="click-entry"><div style="min-width:0;"><div class="click-time font-bold" style="overflow-wrap:anywhere;">#${uses.length - i} · ${escapeHTML(u.domain || '?')}</div><div class="click-ip">session <span style="font-family:monospace;">${escapeHTML(u.sessionId || '?')}</span> · ${escapeHTML((u.at || '').slice(0, 10))}</div></div></div>`
+          ).join('') : '<div style="padding:40px; text-align:center; color:var(--text-muted);">No redemptions yet.</div>';
+          listEl.scrollTop = 0;
+        }
+        if (overlay) {
+          overlay.style.display = 'flex';
+          document.body.classList.add('modal-open');
+          window.addEventListener('keydown', handlePromoStatsEsc);
+        }
+      }
+      function handlePromoStatsEsc(e) {
+        if (e.key === 'Escape') promoCloseStats();
+      }
+      function promoCloseStats() {
+        const overlay = document.getElementById('promoStatsOverlay');
+        if (overlay) overlay.style.display = 'none';
+        window.removeEventListener('keydown', handlePromoStatsEsc);
+        // Promo admin stays open underneath — keep the scroll lock.
       }
       async function promoCreate() {
         const codeEl = document.getElementById('promoNewCode');
@@ -7948,6 +7967,25 @@
         </div>
         <div id="promoCodesList"></div>
       </div>
+    </div>
+  </div>
+
+  <div id="promoStatsOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 50000; align-items: center; justify-content: center; padding: 20px;">
+    <div class="modal-card" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px;">
+        <h2 class="modal-title" style="margin: 0;">Code stats</h2>
+        <button class="copy-btn" onclick="promoCloseStats()" style="background: transparent; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">&times;</button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-width: 0; flex-wrap: wrap;">
+        <div id="promoStatsCode" style="font-family: monospace; font-weight: 700; overflow-wrap: anywhere;"></div>
+        <button class="btn-small btn-copy-small" onclick="promoCopyCode(document.getElementById('promoStatsCode').textContent, this)" title="Copy code">Copy</button>
+      </div>
+      <div id="promoStatsSummary" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;"></div>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+        <h3 id="promoStatsCount" style="margin: 0; font-size: 0.95rem;">Redemptions</h3>
+      </div>
+      <div id="promoStatsList" class="stats-table" style="max-height: 40vh; overflow-y: auto;"></div>
+      <button class="modal-btn modal-btn-cancel" onclick="promoCloseStats()" style="width: 100%; margin-top: 16px;">← Back to codes</button>
     </div>
   </div>
 

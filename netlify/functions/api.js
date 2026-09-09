@@ -26,7 +26,6 @@ import {
   systemShortHost,
   dcvDelegationTargetFor,
   dcvDelegationSuffix,
-  isInZoneCustomDomain,
   isApexDomain,
   apexBlockedMessage,
   sslDelegationTarget,
@@ -42,12 +41,11 @@ import {
 } from "./lib/util.js";
 
 // Ensure a Cloudflare SaaS custom hostname exists once the domain is
-// verified + paid. Best effort: DNS ownership remains the source of truth;
-// SaaS failures are logged and surfaced via cf fields, never block payment.
+// verified + paid — identically for every custom domain. Only s./tunnel.
+// are the app itself (reserved in addCustomDomain, can never be claimed).
+// Best effort: DNS ownership remains the source of truth; SaaS failures are
+// logged and surfaced via cf fields, never block payment.
 async function ensureSaaSHostname(doc) {
-  // In-zone subdomains need no SaaS object: Universal *.apex certificate +
-  // Worker route already cover them once the CNAME exists.
-  if (isInZoneCustomDomain(doc.domain)) return null;
   if (!cfConfig()) return null;
   if (!(doc.dnsVerification?.cnameValid && doc.dnsVerification?.txtVerified)) return null;
   if (doc.paymentStatus !== "paid") return null;
@@ -163,7 +161,6 @@ async function domainInfo(doc) {
     instructions: {
       cnameTarget: route,
       recordName: doc.domain,
-      isInZone: isInZoneCustomDomain(doc.domain),
       isApex: await isApexDomain(doc.domain),
       txtHost: `verification.${doc.domain}`,
       txt: doc.verificationToken,
@@ -255,7 +252,10 @@ function promoShape(p) {
     percent: p.percent,
     maxUses: p.maxUses,
     used: Array.isArray(p.uses) ? p.uses.length : 0,
-    uses: (Array.isArray(p.uses) ? p.uses : []).slice(-50),
+    // Admin stats screen pages hundreds of redemptions: keep a generous
+    // bounded window (newest last, frontend reverses). 1000 tiny records is
+    // still a small payload and covers the "100s of uses" case.
+    uses: (Array.isArray(p.uses) ? p.uses : []).slice(-1000),
     note: p.note || "",
     createdAt: p.createdAt,
     expiresAt: p.expiresAt || null,
