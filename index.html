@@ -2,13 +2,6 @@
 <html lang="en">
 
 <head>
-  <script>
-    // Root Redirect: s.inoculens.com/ -> tunnel.inoculens.com/
-    if (window.location.hostname === 's.inoculens.com' && (window.location.pathname === '/' || window.location.pathname === '/index.html')) {
-      window.location.replace('https://tunnel.inoculens.com/');
-    }
-  </script>
-
   <!-- Analytics (consent-gated, GDPR): the gtag loader is injected by
        assets/common.js ONLY after the visitor accepts the banner.
        Default-deny here so nothing fires beforehand. -->
@@ -159,12 +152,6 @@
       background-clip: text;
       color: transparent;
       margin-bottom: 1rem;
-    }
-
-    .logo {
-      width: 180px;
-      height: auto;
-      margin-bottom: 0.75rem;
     }
 
     .marquee-container {
@@ -620,18 +607,6 @@
       gap: 1rem;
     }
 
-    .history-title {
-      font-family: 'Lexend Giga', sans-serif;
-      font-size: 1.5rem;
-      font-weight: 700;
-      line-height: 1.2;
-    }
-
-    .history-header-left {
-      display: flex;
-      flex-direction: column;
-    }
-
     .purge-controls {
       display: flex;
       gap: 10px;
@@ -948,20 +923,6 @@
       background: rgba(0, 119, 181, 0.25);
     }
 
-    /* Result box platform indicator */
-    .result-platform-info {
-      display: none;
-      align-items: center;
-      gap: 6px;
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      margin-top: 0.5rem;
-    }
-
-    .result-platform-info.visible {
-      display: flex;
-    }
-
     .history-table-wrapper {
       margin-top: 1rem;
       border-radius: 0.75rem;
@@ -1044,16 +1005,6 @@
       flex-shrink: 1;
       cursor: default;
       line-height: 1.4;
-    }
-
-    .link-label.has-label {
-      color: rgba(248, 250, 252, 0.85);
-      font-weight: 300;
-      cursor: pointer;
-    }
-
-    .link-label.has-label:hover {
-      color: var(--primary);
     }
 
     .label-edit-btn {
@@ -1360,23 +1311,6 @@
       transform: scale(0.98);
     }
 
-    .btn-purge-local {
-      background: rgba(245, 158, 11, 0.1);
-      color: #f59e0b;
-    }
-
-    @media (hover: hover) {
-      .btn-purge-local:hover {
-        background: #f59e0b;
-        color: white;
-      }
-    }
-
-    .btn-purge-local:active {
-      background: #f59e0b;
-      color: white;
-    }
-
     .btn-delete-small {
       background: rgba(239, 68, 68, 0.1);
       color: #ef4444;
@@ -1640,12 +1574,6 @@
       display: block;
     }
 
-    /* Session ID input wrapper for masked input */
-    .session-input-wrapper {
-      position: relative;
-      width: 100%;
-    }
-
     /* Session buttons row container */
     .session-buttons-row {
       display: flex;
@@ -1669,106 +1597,6 @@
         justify-content: center !important;
         align-items: center !important;
       }
-    }
-
-    .session-input-wrapper input {
-      width: 100%;
-      display: block;
-      box-sizing: border-box;
-      padding: 12px 40px;
-      background: rgba(255, 255, 255, 0.05) !important;
-      border: 1px solid var(--border) !important;
-      border-radius: 0.75rem;
-      color: white !important;
-      text-align: center !important;
-      letter-spacing: 3px;
-      font-size: 1rem;
-      transition: border-color 0.2s;
-      font-family: 'DM Sans', 'Mulish', sans-serif;
-      -webkit-text-security: none;
-      -moz-appearance: none !important;
-      -webkit-appearance: none !important;
-      appearance: none !important;
-    }
-
-    .session-input-wrapper input.masked {
-      -webkit-text-security: disc;
-    }
-
-    .session-input-wrapper input::placeholder {
-      text-align: center !important;
-      letter-spacing: 1px;
-      color: var(--text-muted) !important;
-    }
-
-    .session-input-wrapper input:focus {
-      border-color: var(--primary) !important;
-      outline: none !important;
-      box-shadow: none !important;
-    }
-
-    .session-input-wrapper .input-eye-toggle {
-      position: absolute;
-      right: 8px;
-      top: 0;
-      bottom: 0;
-      margin: auto 0;
-      background: transparent;
-      border: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      padding: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 4px;
-      transition: all 0.2s;
-      z-index: 1;
-      height: 100%;
-      -webkit-tap-highlight-color: transparent;
-      touch-action: manipulation;
-      outline: none !important;
-      box-shadow: none !important;
-    }
-
-    .session-input-wrapper .input-eye-toggle:active,
-    .session-input-wrapper .input-eye-toggle:focus,
-    .session-input-wrapper .input-eye-toggle.active {
-      background: transparent !important;
-      color: var(--text-muted) !important;
-      outline: none !important;
-      box-shadow: none !important;
-    }
-
-    .session-input-wrapper .input-eye-toggle:hover {
-      color: var(--primary);
-    }
-
-    @media (hover: hover) {
-      .session-input-wrapper .input-eye-toggle:hover {
-        color: var(--primary);
-      }
-    }
-
-    .session-input-wrapper .input-eye-toggle svg {
-      width: 18px;
-      height: 18px;
-    }
-
-    .session-input-wrapper .input-eye-toggle .eye-slash {
-      display: block;
-    }
-
-    .session-input-wrapper .input-eye-toggle .eye-open {
-      display: none;
-    }
-
-    .session-input-wrapper .input-eye-toggle.visible .eye-slash {
-      display: none;
-    }
-
-    .session-input-wrapper .input-eye-toggle.visible .eye-open {
-      display: block;
     }
 
     /* Custom Modal */
@@ -1970,23 +1798,10 @@
       cursor: not-allowed;
     }
 
-    .modal-btn.loading,
-    .ssl-choice-card.loading {
+    .modal-btn.loading {
       position: relative;
       color: transparent !important;
       pointer-events: none;
-    }
-
-    .ssl-choice-card:hover {
-      border-color: var(--primary) !important;
-      background: rgba(255, 255, 255, 0.03);
-      transform: translateY(-2px);
-    }
-
-    .ssl-choice-card.active {
-      border-color: var(--primary) !important;
-      background: rgba(79, 70, 229, 0.1) !important;
-      box-shadow: 0 0 0 1px var(--primary);
     }
 
     .ssl-badge {
@@ -1998,11 +1813,6 @@
       display: inline-block;
       padding: 2px 6px;
       border-radius: 4px;
-    }
-
-    .ssl-badge.free {
-      background: rgba(16, 185, 129, 0.1);
-      color: #10b981;
     }
 
     .ssl-badge.paid {
@@ -2019,8 +1829,7 @@
       transition: transform 0.1s;
     }
 
-    .modal-btn.loading::after,
-    .ssl-choice-card.loading::after {
+    .modal-btn.loading::after {
       content: "";
       position: absolute;
       width: 18px;
@@ -2179,21 +1988,6 @@
         /* Essential for flex shrinking */
       }
 
-      /* Filter Container - Desktop/Mobile logic */
-      .filter-container {
-        flex-shrink: 0 !important;
-        flex-basis: auto !important;
-        transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
-      }
-
-      .purge-controls.search-active .filter-container {
-        pointer-events: none !important;
-        opacity: 0 !important;
-        flex-basis: 0 !important;
-        margin-right: -6px !important;
-        /* Counteract gap */
-      }
-
       #historyDomainFilter {
         padding: 0 12px !important;
         height: 52px !important;
@@ -2230,18 +2024,6 @@
         font-size: 1.25rem !important;
         display: inline-block !important;
         flex-shrink: 0 !important;
-      }
-
-      .portability-controls {
-        flex-direction: column;
-        gap: 0.75rem;
-        width: 100%;
-        padding: 0 4px;
-      }
-
-      .btn-portability {
-        width: 100%;
-        justify-content: center;
       }
 
       /* Card layout for table on mobile */
@@ -2514,22 +2296,6 @@
 
       .modal-btn {
         width: 100%;
-      }
-
-      tr.row-ghost td {
-        padding: 12px 20px !important;
-      }
-
-      tr.row-ghost td::before {
-        display: none;
-      }
-
-      .ghost-overlay {
-        padding: 0 1rem;
-        flex-direction: column;
-        justify-content: center;
-        gap: 10px;
-        text-align: center;
       }
     }
 
@@ -2840,18 +2606,6 @@
         max-width: 250px;
       }
 
-      .ghost-overlay {
-        flex-direction: column;
-        justify-content: center;
-        text-align: center;
-        padding: 1rem;
-      }
-
-      .btn-remove-ghost {
-        margin-top: 10px;
-        width: auto;
-      }
-
 
       .slug-wrapper {
         flex-direction: column;
@@ -3060,7 +2814,7 @@
       </div>
       <div class="purge-controls hidden" id="purgeControls">
         <div class="search-container" id="searchContainer">
-          <button class="search-btn" id="searchBtn" onclick="toggleSearch()" title="Search links">
+          <button class="search-btn" onclick="toggleSearch()" title="Search links">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
               stroke-linejoin="round">
               <circle cx="11" cy="11" r="8"></circle>
@@ -3087,7 +2841,7 @@
     </div>
 
     <div id="historyDomainFilterContainer" class="history-filter-container" style="margin: 0.5rem 0 1.5rem 0; display: none; width: fit-content; align-self: flex-start;">
-      <div class="history-filter-trigger" id="historyFilterTrigger" onclick="toggleHistoryFilter(event)">
+      <div class="history-filter-trigger" onclick="toggleHistoryFilter(event)">
         <div style="display: flex; align-items: center; gap: 10px;">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"></circle>
@@ -3223,7 +2977,7 @@
 
 
         <!-- Per-field verification buttons -->
-        <div id="domainVerificationStep" style="margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px;">
           <div
             style="padding: 10px 12px; background: rgba(15, 23, 42, 0.5); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">
             <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">CNAME Record (Routing)</label>
@@ -3352,7 +3106,6 @@
 
 
         <div id="verificationStatus" style="display: none; margin-bottom: 16px;">
-          <div id="verificationStatusContent" style="padding: 12px; border-radius: 8px; font-size: 0.85rem;"></div>
         </div>
 
         <div id="routingNote" style="display: none; margin-bottom: 16px; padding: 12px; border-radius: 8px; font-size: 0.85rem; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; text-align: center;">⚠️ This domain doesn't resolve to Tunnel edge (no usable address) — browsers can't reach it as configured. If you just created the record, wait a few minutes and Re-verify; otherwise fix the CNAME target.</div>
@@ -3443,9 +3196,9 @@
         </div>
 
         <!-- Discount Code Section -->
-        <div id="discountCodeSection"
+        <div
           style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); margin-bottom: 20px;">
-          <div id="discountCodeInputRow" style="display: flex; gap: 8px; align-items: stretch;">
+          <div style="display: flex; gap: 8px; align-items: stretch;">
             <input type="text" id="discountCodeInput" placeholder="Enter discount code" maxlength="50"
               style="flex: 1; height: 44px; padding: 0 12px; font-size: 0.9rem; background: #0f172a; border: 1px solid var(--border); border-radius: 0.5rem; color: var(--text);"
               onkeydown="if(event.key==='Enter') applyDiscountCode()">
@@ -3531,8 +3284,7 @@
       }
 
       // Backend client: same-origin Netlify Functions (/.netlify/functions/api).
-      // This replaces the old Firebase SDK. The `functions.httpsCallable`
-      // shape is kept as a thin shim so all existing call sites work unchanged.
+      // `functions.httpsCallable` mirrors the action-dispatch call shape.
       // No API keys or credentials live in the frontend: authorization is
       // enforced server-side (session IDs + per-link deleteTokens).
       const API_URL = '/.netlify/functions/api';
@@ -4021,8 +3773,6 @@
         
         if (!dropdown || !historyFilterDropdown || !historyFilterInput) return;
 
-        console.log('userCustomDomains:', userCustomDomains);
-
         // Update creation dropdown
         const existingOptions = dropdown.querySelectorAll('.domain-option:not(.add-new)');
         existingOptions.forEach(opt => opt.remove());
@@ -4163,7 +3913,6 @@
               message: "Your session ID is being created, please wait"
             });
 
-            console.log("No session ID found, creating one for domain management...");
             const sid = await generateSessionId();
             await createSessionInDb(sid);
             setSessionId(sid);
@@ -4187,8 +3936,6 @@
         if (input) input.value = '';
         const apexHint = document.getElementById('apexHint');
         if (apexHint) apexHint.style.display = 'none';
-        const cryptoCurr = document.getElementById('cryptoCurrency');
-        if (cryptoCurr) cryptoCurr.value = '';
         const paymentInst = document.getElementById('paymentInstructions');
         if (paymentInst) paymentInst.style.display = 'none';
 
@@ -4214,10 +3961,8 @@
       function handleDomainManagerEsc(e) {
         if (e.key === 'Escape') {
           const customModal = document.getElementById('modalOverlay');
-          const loadingModal = document.getElementById('loadingOverlay');
           // Only close if no other modals are on top
-          if ((!customModal || customModal.style.display !== 'flex') &&
-            (!loadingModal || loadingModal.style.display !== 'flex')) {
+          if (!customModal || customModal.style.display !== 'flex') {
             closeDomainManager();
           }
         }
@@ -4297,41 +4042,22 @@
         }
       }
 
-      // Wrapper function for showAddDomainStep to maintain backward compatibility
-      function showAddDomainStep(step) {
-        if (step === 3 && window.domainIsActive) {
-          showToast("This domain is already active!", "info");
-          return;
-        }
-        if (step === 3) {
-          showStep('payment');
-        } else {
-          showStep(step);
-        }
-      }
-
       // CHECK CURRENT DOMAIN STATUS: Call backend to get current domain state
       // This fixes the "badges disappear on refresh" issue
       async function checkCurrentDomainStatus() {
         if (!pendingDomain) {
-          console.log('checkCurrentDomainStatus: No pendingDomain');
           return;
         }
 
         const sessionId = getSessionId();
         if (!sessionId) {
-          console.log('checkCurrentDomainStatus: No sessionId');
           return;
         }
 
         try {
-          console.log(`checkCurrentDomainStatus: Calling backend for ${pendingDomain}`);
-          // FIX: Use getDomainVerificationInfo instead of addCustomDomain to get full dnsVerification data
           const getInfoFn = functions.httpsCallable('getDomainVerificationInfo');
           const res = await getInfoFn({ domain: pendingDomain, sessionId: sessionId });
           const data = res.data || {};
-
-          console.log(`checkCurrentDomainStatus: Got data for ${pendingDomain}:`, data);
 
           // Pass the result to syncVerificationUI to update badges
           syncVerificationUI({
@@ -4389,7 +4115,6 @@
 
           return false;
         } catch (err) {
-          console.log('No existing discount found or error checking discount:', err);
           return false;
         }
       }
@@ -4527,11 +4252,6 @@
         }
       }
 
-      // NOTE: verifyDomainDNS (full-check variant bound to #verifyDNSBtn) was
-      // removed: no such button exists in the markup (per-field Verify
-      // CNAME/TXT/SSL buttons below are the live path). Keeping dead code
-      // around only preserved unescaped error-message innerHTML paths.
-
       // Per-field verification functions
       let currentDomain = null;
       let currentSessionId = null;
@@ -4548,8 +4268,6 @@
         window.currentDomain = domainName;
         currentDomain = domainName;
         currentSessionId = getSessionId();
-
-        console.log(`setVerificationUI: domain=${domainName}, isVerified=${domainDoc.isVerified}`);
 
         // Store the isVerified state globally for use in updateContinueButton
         window.domainIsVerified = domainDoc.isVerified === true;
@@ -4598,8 +4316,7 @@
             String(domainDoc.sslVerification.cnameTarget).indexOf('.dcv.cloudflare.com') !== -1)
             ? domainDoc.sslVerification.cnameTarget : null);
         const showDelegTarget = explicitDeleg || dcvTarget;
-        // New INOCULENS DCV suffix is adad0549ffb44d06 (old FRONTFACER
-        // 2f1c96f3d5df8a0a is retired). Only shown if delegation is required.
+        // Shown only if TXT/delegated validation is required.
         if (sslNameEl) sslNameEl.textContent = `_acme-challenge.${domainName}`;
         if (sslTargetEl) sslTargetEl.textContent = showDelegTarget || 'Automatic — no record needed';
         if (sslDelegEl) sslDelegEl.style.display = showDelegTarget ? 'flex' : 'none';
@@ -4665,10 +4382,6 @@
 
         updateContinueButton();
 
-        // Show DNS propagation note
-        const propagationNote = document.getElementById('propagationNote');
-        if (propagationNote) propagationNote.style.display = 'block';
-
         // Update continue button state
         updateContinueButton();
       }
@@ -4689,8 +4402,6 @@
 
         // SSL verified only on real TLS deployment (DNS flag or CF SaaS active).
         const sslOk = dns.sslVerified === true || sslVerif.status === 'active' || cfSync.sslStatus === 'active';
-
-        console.log(`syncVerificationUI: domain=${domainData.domain}, isVerified=${isVerified}, isActive=${isActive}, cfSslStatus=${sslVerif.status}, dns=${JSON.stringify(dns)}`);
 
         // Store globally for other functions to use
         window.domainIsVerified = isVerified;
@@ -4850,8 +4561,6 @@
         const sslOk = verificationState.ssl === true;
         const routableOk = verificationState.routable !== false;
 
-        console.log('updateContinueButton: current states', { isLoading, loadingText, cnameOk, txtOk, sslOk, routableOk, domainIsVerified: window.domainIsVerified, domainIsActive: window.domainIsActive });
-
         const continueBtn = document.getElementById('continueToPaymentBtn');
         const spinner = document.getElementById('continueBtnSpinner');
         const btnText = document.getElementById('continueBtnText');
@@ -4937,13 +4646,6 @@
         window.domainIsVerified = data.isVerified === true;
         window.domainIsActive = (data.status === 'active' || data.paymentStatus === 'paid');
 
-        console.log('Syncing UI from response:', {
-          isVerified: window.domainIsVerified,
-          isActive: window.domainIsActive,
-          paymentStatus: data.paymentStatus,
-          checks
-        });
-
         // Update main status rows - badges always show reality now
         updateStatusUI('cname', !!checks.cname);
         updateStatusUI('txt', !!checks.txt);
@@ -4967,7 +4669,6 @@
       }
 
       async function verifyCnameOnly() {
-        console.log('--- Manual CNAME Verification Start ---');
         if (!currentDomain || !getSessionId()) {
           showToast('Selection error: please re-open the domain manager.', 'error');
           console.error('verifyCnameOnly: Context missing', { currentDomain, sessionId: getSessionId() });
@@ -4977,18 +4678,15 @@
         if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
 
         try {
-          console.log(`Requesting CNAME check for: ${currentDomain} (force: true)`);
           const verifyFn = functions.httpsCallable('verifyCustomDomainDns');
           const res = await verifyFn({ domain: currentDomain, sessionId: getSessionId(), field: 'cname', force: true });
 
-          console.log('CNAME verification backend response:', res.data);
           updateAllChecksFromResponse(res.data);
 
           if (res.data?.checks?.routable === false) {
             console.warn('CNAME Verification: UNROUTABLE (no edge address)');
             showToast('CNAME points at Tunnel, but the domain resolves nowhere usable — browsers cannot reach it. Fix the target or wait for propagation.', 'error');
           } else if (res.data?.checks?.cname) {
-            console.log('CNAME Verification: SUCCESS');
             showToast('CNAME verified!', 'success');
           } else {
             console.warn('CNAME Verification: FAILED (Check DNS)');
@@ -5000,12 +4698,10 @@
           showToast('Error verifying CNAME: ' + (e.message || 'Unknown error'), 'error');
         } finally {
           if (btn) btn.disabled = false;
-          console.log('--- Manual CNAME Verification End ---');
         }
       }
 
       async function verifyTxtOnly() {
-        console.log('--- Manual TXT Verification Start ---');
         if (!currentDomain || !getSessionId()) {
           showToast('Selection error: please re-open the domain manager.', 'error');
           console.error('verifyTxtOnly: Context missing', { currentDomain, sessionId: getSessionId() });
@@ -5015,15 +4711,12 @@
         if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
 
         try {
-          console.log(`Requesting TXT check for: ${currentDomain} (force: true)`);
           const verifyFn = functions.httpsCallable('verifyCustomDomainDns');
           const res = await verifyFn({ domain: currentDomain, sessionId: getSessionId(), field: 'txt', force: true });
 
-          console.log('TXT verification backend response:', res.data);
           updateAllChecksFromResponse(res.data);
 
           if (res.data?.checks?.txt) {
-            console.log('TXT Verification: SUCCESS');
             showToast('Ownership TXT verified!', 'success');
           } else {
             console.warn('TXT Verification: FAILED (Check DNS)');
@@ -5035,12 +4728,10 @@
           showToast('Error verifying TXT: ' + (e.message || 'Unknown error'), 'error');
         } finally {
           if (btn) btn.disabled = false;
-          console.log('--- Manual TXT Verification End ---');
         }
       }
 
       async function verifySslOnly() {
-        console.log('--- Manual SSL Verification Start ---');
         if (!currentDomain || !getSessionId()) {
           showToast('Selection error: please re-open the domain manager.', 'error');
           console.error('verifySslOnly: Context missing', { currentDomain, sessionId: getSessionId() });
@@ -5050,15 +4741,12 @@
         if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
 
         try {
-          console.log(`Requesting SSL check for: ${currentDomain} (force: true)`);
           const verifyFn = functions.httpsCallable('verifyCustomDomainDns');
           const res = await verifyFn({ domain: currentDomain, sessionId: getSessionId(), field: 'ssl', force: true });
 
-          console.log('SSL verification backend response:', res.data);
           updateAllChecksFromResponse(res.data);
 
           if (res.data?.checks?.ssl) {
-            console.log('SSL Verification: SUCCESS');
             showToast('SSL Certificate verified!', 'success');
           } else {
             console.warn('SSL Verification: PENDING (Cloudflare Validating)');
@@ -5070,13 +4758,11 @@
           showToast('Error verifying SSL: ' + (e.message || 'Unknown error'), 'error');
         } finally {
           if (btn) btn.disabled = false;
-          console.log('--- Manual SSL Verification End ---');
         }
       }
 
       // Verify a specific ACME record by name
       async function verifyAcmeRecord(recordName) {
-        console.log("verifyAcmeRecord clicked. recordName:", recordName, "currentDomain:", window.currentDomain, "sessionId:", getSessionId());
         if (!window.currentDomain || !getSessionId()) {
           showToast('Selection error: please re-open the domain manager.', 'error');
           console.warn('verifyAcmeRecord: missing context', { currentDomain: window.currentDomain, sessionId: getSessionId() });
@@ -5103,11 +4789,6 @@
           } else {
             // Fallback to overall acmeTxtVerified
             updateAcmeRecordStatus(recordName, data.acmeTxtVerified);
-          }
-
-          // Show last checked time if available
-          if (data.lastCheckedAt) {
-            console.log(`ACME verified at: ${new Date(data.lastCheckedAt).toISOString()}`);
           }
         } catch (e) {
           console.error('verifyAcmeRecord error:', e);
@@ -5145,17 +4826,12 @@
         }
 
         try {
-          // FIX: Use getDomainVerificationInfo to properly check verification status
           const checkFn = functions.httpsCallable('getDomainVerificationInfo');
           const res = await checkFn({ sessionId: getSessionId(), domain: currentDomain });
           const data = res.data;
 
-          console.log('Verification check result:', data);
-
           // Trust the backend's verification state (prioritize sticky isVerified flag)
           const isVerified = data.isVerified === true || (data.dnsVerification?.cnameValid && data.dnsVerification?.txtVerified);
-
-          console.log('isVerified check:', { isVerified, dataIsVerified: data.isVerified, dns: data.dnsVerification });
 
           if (isVerified) {
             // SUCCESS: Check if payment is already done or domain is active
@@ -5168,8 +4844,7 @@
             // Hide the verification modal and move to payment
             document.body.classList.remove('modal-open');
 
-            showAddDomainStep(3); // Go to Payment screen
-            // Note: showAddDomainStep(3) already calls updateQuote() internally
+            showStep('payment'); // Go to Payment screen
           } else {
             showToast("Verification records not yet detected. Please click the 'Verify' buttons first.", "error");
             // Re-enable button on failure
@@ -5184,13 +4859,6 @@
           updateContinueButton();
         }
       }
-
-      // NOTE: addDomainAndPrepare() was removed (dead code, no callers;
-      // manageDomain()/loadVerificationInfo() cover this path).
-
-      // NOTE: fetchBTCPrice() (direct CoinGecko call) was removed: dead code,
-      // and api.coingecko.com is not in connect-src. updatePricingScreenBTC()
-      // below uses the backend getBtcPrice function instead.
 
       async function updatePricingScreenBTC() {
         const btcEstimateEl = document.getElementById('btcPriceEstimate');
@@ -5216,9 +4884,6 @@
         }
       }
 
-      // NOTE: selectSSLMode() was removed (dead code, no callers; the live
-      // flow is proceedToAddDomain -> confirmPricingAndProceed).
-
       function copyTextFromElement(id) {
         const el = document.getElementById(id);
         if (!el) return;
@@ -5233,24 +4898,8 @@
           cleanText = text.includes(' ') ? text.split(' ')[0] : text;
         }
 
-        if (!navigator.clipboard || !navigator.clipboard.writeText) {
-          // Fallback for non-HTTPS or older browsers
-          const textarea = document.createElement("textarea");
-          textarea.value = cleanText;
-          document.body.appendChild(textarea);
-          textarea.select();
-          try {
-            document.execCommand("copy");
-            animateSuccess(el);
-          } catch (err) {
-            console.error("Fallback copy failed", err);
-            showToast('Copy failed — select the text manually.', 'error');
-          }
-          document.body.removeChild(textarea);
-          return;
-        }
-
-        navigator.clipboard.writeText(cleanText).then(() => {
+        // Single shared clipboard path (incl. non-secure-context fallback).
+        writeClipboardText(cleanText).then(() => {
           animateSuccess(el);
         }).catch(err => {
           console.error("Clipboard copy failed", err);
@@ -5277,8 +4926,6 @@
           const getDomainsFn = functions.httpsCallable('getUserDomains');
           const response = await getDomainsFn({ sessionId: sid });
           userCustomDomains = response.data.domains || [];
-
-          console.log('Loaded custom domains:', userCustomDomains);
 
           renderDomainOptions();
 
@@ -5767,7 +5414,7 @@
             <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
               <div style="display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap;">
                 <div style="font-family:monospace; font-weight:700; overflow-wrap:anywhere;">${escapeHTML(c.code)}</div>
-                <button class="btn-small btn-copy-small" onclick="promoCopyCode(${escapeJS(c.code)}, this)" title="Copy code">Copy</button>
+                <button class="btn-small btn-copy-small" onclick="copyText(${escapeJS(c.code)}, this)" title="Copy code">Copy</button>
               </div>
               <div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">
                 <button class="btn-small btn-delete-small" onclick="promoRevoke(${escapeJS(c.code)})" title="Revoke future use">Revoke</button>
@@ -5777,9 +5424,6 @@
             <div style="font-size:0.8rem; margin-top:4px;">${c.percent}% off · <strong>${used}/${max}</strong> used · ${c.expiresAt ? `expires ${escapeHTML(c.expiresAt.slice(0, 10))}` : 'never expires'}${c.note ? ` · ${escapeHTML(c.note)}` : ''}</div>
           </div>`;
         }).join('');
-      }
-      function promoCopyCode(code, btnElement) {
-        copyText(String(code || ''), btnElement);
       }
       function promoFindCached(code) {
         const all = Array.isArray(window._promoCodes) ? window._promoCodes : [];
@@ -5920,8 +5564,7 @@
           }
 
           try {
-            // Same-origin backend check (replaces the old direct-Firestore
-            // read): ask getDomainVerificationInfo for the live status.
+            // Same-origin backend check: ask getDomainVerificationInfo for the live status.
             const infoFn = functions.httpsCallable('getDomainVerificationInfo');
             const info = await infoFn({ domain, sessionId: getSessionId() });
 
@@ -6070,27 +5713,6 @@
           }
 
           let sid = getSessionId();
-
-          // --- MIGRATION LOGIC ---
-          // If no session ID but we have local links, we must migrate them to a new session
-          if (!sid && currentLinks && currentLinks.length > 0) {
-            console.log("Migrating legacy links to new session...");
-            sid = await generateSessionId();
-            setSessionId(sid);
-
-            try {
-              const migrateFn = functions.httpsCallable('migrateLegacyLinks');
-              // We only need code and deleteToken for migration
-              const legacyLinks = currentLinks.map(l => ({ code: l.code, deleteToken: l.deleteToken }));
-
-              await migrateFn({ sessionId: sid, links: legacyLinks });
-              console.log("Migration complete.");
-            } catch (e) {
-              console.error("Migration failed:", e);
-              // We still keep the session ID so we don't retry indefinitely on every refresh if it's a persistent error,
-              // or maybe we should? For now, we keep it.
-            }
-          }
 
           if (sid) {
             await fetchAndRenderSession(sid, false, true); // pass true for initial load to avoid double modals if possible
@@ -7692,30 +7314,41 @@
         const url = linkElement.href;
         const btn = document.querySelector('#result .copy-btn');
 
-        // Prevent spam
-        if (btn && btn.textContent === 'Copied!') {
-          return;
-        }
-
-        if (url) {
-          writeClipboardText(url).then(() => {
-            flashCopied(btn, null);
-          }).catch((err) => {
-            console.error('Copy failed:', err);
-            showToast('Copy failed — long-press / right-click to copy manually.', 'error');
-          });
-        }
+        // copyText carries the same spam guard, feedback, and error toast.
+        if (url) copyText(url, btn);
       }
 
       // Modal System Logic (Enhanced with Input)
+      // Shared modal primitives: every dialog below uses the same overlay
+      // elements, nested-modal scroll check, and Esc-handler lifecycle.
+      function modalEls() {
+        return {
+          overlay: document.getElementById('modalOverlay'),
+          titleEl: document.getElementById('modalTitle'),
+          messageEl: document.getElementById('modalMessage'),
+          cancelBtn: document.getElementById('modalCancelBtn'),
+          okBtn: document.getElementById('modalOkBtn'),
+          inputEl: document.getElementById('modalInput'),
+        };
+      }
+      function modalRestoreScroll() {
+        const statsOverlay = document.getElementById('statsOverlay');
+        const domainManager = document.getElementById('domainManagerOverlay');
+        const isAnyOtherModalOpen = (statsOverlay && statsOverlay.style.display === 'flex') ||
+          (domainManager && domainManager.style.display === 'flex');
+        if (!isAnyOtherModalOpen) {
+          document.body.classList.remove('modal-open');
+        }
+      }
+      function modalClearEsc() {
+        if (window.modalEscHandler) {
+          window.removeEventListener('keydown', window.modalEscHandler);
+          window.modalEscHandler = null;
+        }
+      }
       function showCustomModal({ title, message, showCancel = false, danger = false, showInput = false, inputPlaceholder = '', confirmText = '', cancelText = '' }) {
         return new Promise((resolve) => {
-          const overlay = document.getElementById('modalOverlay');
-          const titleEl = document.getElementById('modalTitle');
-          const messageEl = document.getElementById('modalMessage');
-          const cancelBtn = document.getElementById('modalCancelBtn');
-          const okBtn = document.getElementById('modalOkBtn');
-          const inputEl = document.getElementById('modalInput');
+          const { overlay, titleEl, messageEl, cancelBtn, okBtn, inputEl } = modalEls();
 
           // Lock Nested Scroll Logic
           document.body.classList.add('modal-open');
@@ -7749,24 +7382,8 @@
 
           const handleAction = (result) => {
             overlay.style.display = 'none';
-
-            // Nested scroll check
-            const statsOverlay = document.getElementById('statsOverlay');
-            const domainManager = document.getElementById('domainManagerOverlay');
-            const freeCertOverlay = document.getElementById('freeCertInstructionsOverlay');
-
-            const isAnyOtherModalOpen = (statsOverlay && statsOverlay.style.display === 'flex') ||
-              (domainManager && domainManager.style.display === 'flex') ||
-              (freeCertOverlay && freeCertOverlay.style.display === 'flex');
-
-            if (!isAnyOtherModalOpen) {
-              document.body.classList.remove('modal-open');
-            }
-
-            if (window.modalEscHandler) {
-              window.removeEventListener('keydown', window.modalEscHandler);
-              window.modalEscHandler = null;
-            }
+            modalRestoreScroll();
+            modalClearEsc();
             resolve(result);
           };
 
@@ -7783,7 +7400,7 @@
             if (e.key === 'Enter' && showInput) okHandler();
           };
 
-          if (window.modalEscHandler) window.removeEventListener('keydown', window.modalEscHandler);
+          modalClearEsc();
           window.modalEscHandler = escHandler;
           window.addEventListener('keydown', escHandler);
 
@@ -7796,12 +7413,7 @@
       // The caller is responsible for closing this modal manually after their operation
       function showLoadingModal({ title, message, danger = false }) {
         return new Promise((resolve) => {
-          const overlay = document.getElementById('modalOverlay');
-          const titleEl = document.getElementById('modalTitle');
-          const messageEl = document.getElementById('modalMessage');
-          const cancelBtn = document.getElementById('modalCancelBtn');
-          const okBtn = document.getElementById('modalOkBtn');
-          const inputEl = document.getElementById('modalInput');
+          const { overlay, titleEl, messageEl, cancelBtn, okBtn, inputEl } = modalEls();
 
           // Lock scroll
           document.body.classList.add('modal-open');
@@ -7817,10 +7429,7 @@
 
           overlay.style.display = 'flex';
 
-          if (window.modalEscHandler) {
-            window.removeEventListener('keydown', window.modalEscHandler);
-            window.modalEscHandler = null;
-          }
+          modalClearEsc();
 
           okBtn.onclick = null;
           cancelBtn.onclick = null;
@@ -7833,12 +7442,7 @@
       // Show error modal with Try Again and OK buttons
       function showErrorModal({ title, message, danger = false }) {
         return new Promise((resolve) => {
-          const overlay = document.getElementById('modalOverlay');
-          const titleEl = document.getElementById('modalTitle');
-          const messageEl = document.getElementById('modalMessage');
-          const cancelBtn = document.getElementById('modalCancelBtn');
-          const okBtn = document.getElementById('modalOkBtn');
-          const inputEl = document.getElementById('modalInput');
+          const { overlay, titleEl, messageEl, cancelBtn, okBtn, inputEl } = modalEls();
 
           // Lock scroll
           document.body.classList.add('modal-open');
@@ -7861,24 +7465,8 @@
 
           const handleAction = (result) => {
             overlay.style.display = 'none';
-
-            // Restore scroll
-            const statsOverlay = document.getElementById('statsOverlay');
-            const domainManager = document.getElementById('domainManagerOverlay');
-            const freeCertOverlay = document.getElementById('freeCertInstructionsOverlay');
-
-            const isAnyOtherModalOpen = (statsOverlay && statsOverlay.style.display === 'flex') ||
-              (domainManager && domainManager.style.display === 'flex') ||
-              (freeCertOverlay && freeCertOverlay.style.display === 'flex');
-
-            if (!isAnyOtherModalOpen) {
-              document.body.classList.remove('modal-open');
-            }
-
-            if (window.modalEscHandler) {
-              window.removeEventListener('keydown', window.modalEscHandler);
-              window.modalEscHandler = null;
-            }
+            modalRestoreScroll();
+            modalClearEsc();
             resolve(result);
           };
 
@@ -7888,7 +7476,7 @@
             if (e.key === 'Escape') handleAction(false);
           };
 
-          if (window.modalEscHandler) window.removeEventListener('keydown', window.modalEscHandler);
+          modalClearEsc();
           window.modalEscHandler = escHandler;
           window.addEventListener('keydown', escHandler);
 
@@ -7904,18 +7492,7 @@
           if (overlay) overlay.style.display = 'none';
           const resolve = window.loadingModalResolve;
           window.loadingModalResolve = null;
-
-          // Restore scroll
-          const statsOverlay = document.getElementById('statsOverlay');
-          const domainManager = document.getElementById('domainManagerOverlay');
-
-          const isAnyOtherModalOpen = (statsOverlay && statsOverlay.style.display === 'flex') ||
-            (domainManager && domainManager.style.display === 'flex');
-
-          if (!isAnyOtherModalOpen) {
-            document.body.classList.remove('modal-open');
-          }
-
+          modalRestoreScroll();
           resolve(true);
         }
       }
@@ -7992,7 +7569,7 @@
       </div>
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-width: 0; flex-wrap: wrap;">
         <div id="promoStatsCode" style="font-family: monospace; font-weight: 700; overflow-wrap: anywhere;"></div>
-        <button class="btn-small btn-copy-small" onclick="promoCopyCode(document.getElementById('promoStatsCode').textContent, this)" title="Copy code">Copy</button>
+        <button class="btn-small btn-copy-small" onclick="copyText(document.getElementById('promoStatsCode').textContent, this)" title="Copy code">Copy</button>
       </div>
       <div id="promoStatsSummary" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;"></div>
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">

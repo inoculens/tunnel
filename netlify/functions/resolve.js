@@ -6,12 +6,8 @@
  *  - everything else → immediate 302 to the original URL.
  * Unknown/expired codes → 302 to the branded /404 page (keeps ?c= for display).
  *
- * Wire-up: point your short domain at this Netlify site and add (on the
- * SHORT domain's site, or as a commented rule in netlify.toml):
- *   [[redirects]]
- *     from = "/*"
- *     to = "/.netlify/functions/resolve?c=:splat"
- *     status = 200
+ * Wire-up: netlify/edge-functions/short-domain.js rewrites short-host paths
+ * to this function (GET /.netlify/functions/resolve?c=<code>).
  */
 import { store, newClickId, clientIp } from "./lib/util.js";
 

@@ -125,7 +125,6 @@ export function validHttpUrl(v) {
 // ---------- IDs / tokens ----------
 
 const CODE_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const SID_ALPHABET = CODE_ALPHABET + "-_!";
 const TOKEN_ALPHABET = CODE_ALPHABET + "-_";
 
 function randFrom(alphabet, n) {
@@ -136,7 +135,6 @@ function randFrom(alphabet, n) {
 }
 
 export const newCode = (n = 8) => randFrom(CODE_ALPHABET, n);
-export const newSessionId = () => randFrom(SID_ALPHABET, 10);
 export const newToken = (n = 24) => randFrom(TOKEN_ALPHABET, n);
 export const newClickId = () => `${Date.now().toString(36)}-${randFrom(CODE_ALPHABET, 8)}`;
 
@@ -211,13 +209,6 @@ export function routingTarget() {
 export function systemShortHost() {
   // System short-link host (DNS-only to Netlify, direct, no SaaS).
   return (process.env.SITE_URL || "s.inoculens.com").toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-}
-
-export function saasZoneApex() {
-  // Apex of the Cloudflare SaaS zone (INOCULENS account: inoculens.com).
-  // Kept as configuration; routing treats every custom domain identically
-  // regardless of zone membership.
-  return (process.env.SAAS_ZONE_APEX || "inoculens.com").toLowerCase();
 }
 
 // Apex (naked) domains like example.com cannot serve short links: DNS forbids
@@ -351,12 +342,8 @@ export async function cfDeleteCustomHostname(domain) {
 
 export async function verifyDns(domain, token) {
   const target = routingTarget().toLowerCase().replace(/\.$/, "");
-  const legacyTargets = new Set([
-    target,
-    "s.inoculens.com",
-    systemShortHost(),
-    (process.env.ROUTING_TARGET_LEGACY || "").toLowerCase(),
-  ].filter(Boolean));
+  // Only the live SaaS target is accepted (pre-launch: no legacy records exist).
+  const acceptedTargets = new Set([target]);
   const checks = { cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null, cfSslStatus: null };
 
   // Authoritative CNAME check via the Cloudflare API when the hostname has
@@ -373,7 +360,7 @@ export async function verifyDns(domain, token) {
       const cnameRec = arr.find((r) => String(r.type || "").toUpperCase() === "CNAME");
       if (cnameRec) {
         apiCheckedCname = true;
-        checks.cname = legacyTargets.has(String(cnameRec.content || "").toLowerCase().replace(/\.$/, ""));
+        checks.cname = acceptedTargets.has(String(cnameRec.content || "").toLowerCase().replace(/\.$/, ""));
       } else if (arr.length) {
         // A/AAAA directly on the name (not the documented CNAME setup).
         apiCheckedCname = true;
@@ -387,7 +374,7 @@ export async function verifyDns(domain, token) {
   if (!apiCheckedCname) {
     try {
       const cname = await doh(domain, "CNAME");
-      checks.cname = cname.some((v) => legacyTargets.has(v.toLowerCase().replace(/\.$/, "")));
+      checks.cname = cname.some((v) => acceptedTargets.has(v.toLowerCase().replace(/\.$/, "")));
       // Apex / flattened setups: some providers return A instead of CNAME.
       // If no CNAME match, accept when the domain resolves to the same edge as the SaaS target.
       if (!checks.cname) {

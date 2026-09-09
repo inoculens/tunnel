@@ -1,7 +1,7 @@
-# INOCULENS Tunnel — Netlify configuration (frontend + backend, no Firebase).
+# INOCULENS Tunnel — Netlify configuration (frontend + backend).
 # - Static site served from repo root.
 # - Backend: Netlify Functions in netlify/functions/ with Netlify Blobs
-#   storage (see package.json). No firebase.json/.firebaserc needed or present.
+#   storage (see package.json).
 #
 # INOCULENS Tunnel — Cloudflare for SaaS (INOCULENS account) + Netlify.
 # - Static site + API served from this ONE Netlify site (Blobs storage).

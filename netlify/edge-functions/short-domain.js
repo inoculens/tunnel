@@ -8,15 +8,12 @@
  *   <custom-domain>/              → 301 to https://tunnel.inoculens.com/
  *   <custom-domain>/<code>        → rewrite to resolve (same as s.*)
  *
- * Custom domains reach Netlify in two ways:
- *   1. Primary (Cloudflare SaaS): custom -> customers.inoculens.com (proxied)
- *      -> Worker tunnel-custom-host -> https://s.inoculens.com/<code>
- *      (Worker path already hits the s.* branch below, but direct hits work too).
- *   2. Direct CNAME to Netlify (fallback): custom -> *.netlify.app.
- * Hence any non-app hostname is treated as a short-link host.
+ * Custom domains reach the resolver through Cloudflare SaaS (custom CNAME
+ * -> customers.inoculens.com -> Worker tunnel-custom-host, which proxies to
+ * https://s.inoculens.com/<code>). Any non-app hostname hitting this site
+ * directly is likewise treated as a short-link host below.
  *
- * The index.html root-redirect script is kept as a belt-and-braces fallback
- * for "/" on the short domain.
+ * This edge function is the sole "/" handler for short domains.
  */
 const APP_HOSTS = new Set(["tunnel.inoculens.com"]);
 

@@ -1,14 +1,11 @@
 /**
  * INOCULENS Tunnel API — single Netlify Function routing all backend actions.
- * Replaces the Firebase `functions.httpsCallable(...)` surface 1:1 so the
- * existing frontend keeps working unchanged (see frontend api shim).
  *
  * POST /.netlify/functions/api  { action: "<name>", ...params }
  * Success: 200 + JSON payload. Failure: { error: { code, message } }.
  */
 import {
   store,
-  json,
   ok,
   fail,
   validSessionId,
@@ -17,7 +14,6 @@ import {
   validHttpUrl,
   newCode,
   newToken,
-  newClickId,
   detectPlatform,
   clientIp,
   checkRate,
@@ -397,22 +393,6 @@ const actions = {
     await needSession(s, p.sessionId);
     const links = await listLinksOfSession(s, p.sessionId);
     return ok({ links: links.map(linkShape) });
-  },
-
-  async migrateLegacyLinks(s, p) {
-    if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
-    if (!(await getSession(s, p.sessionId))) {
-      await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
-    }
-    const items = Array.isArray(p.links) ? p.links : [];
-    for (const { code, deleteToken } of items.slice(0, 500)) {
-      const l = await getLink(s, code);
-      if (l && l.deleteToken === deleteToken) {
-        l.sessionId = p.sessionId;
-        await s.setJSON(`link/${code}`, l);
-      }
-    }
-    return ok({});
   },
 
   async deleteUrl(s, p) {
