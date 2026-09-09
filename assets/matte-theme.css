@@ -446,6 +446,14 @@ tr.link-data-row.pair-hover td {
 .purge-controls.search-active .search-input { border-left: none !important; }
 .search-input-wrapper.active { width: 240px !important; }
 
+/* No blue focus highlight on the links search input — it keeps its resting
+   border and stays visually fused with the search button pill while focused. */
+.purge-controls .search-input:focus {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
 .search-clear-btn:hover { background: rgba(240, 65, 65, 0.14) !important; color: #f28b82 !important; }
 .search-count { color: #717171 !important; }
 
