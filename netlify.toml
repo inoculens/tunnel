@@ -30,8 +30,11 @@
 #     DOMAIN_PRICE_USD=10  QUOTE_TTL_DAYS=7        (billing defaults)
 #     DISCOUNT_CODES={"WELCOME10":10}               (legacy reusable promos;
 #        prefer managed codes below — env values are masked in the dashboard)
-#     ADMIN_KEY=<long random string, e.g. openssl rand -hex 24>
-#        enables the in-app Promo admin (header: Promo). Codes live in Blobs
+#     ADMIN_KEY=<10 random chars incl. at least one "1", e.g. Ab3x9Q1zTq>
+#        unlocks the hidden in-app Promo admin: open Merge, enter the key as
+#        the session ID. Generated session IDs never contain "1", so the two
+#        namespaces cannot collide (backend still checks session first, so
+#        legacy sessions keep working). Codes live in Blobs
 #        (promo/<CODE>), never in git: single-use by default (maxUses=1 binds
 #        the code to the first redeeming domain), revocable, expirable, with
 #        per-code redemption history. Create many 100% codes freely.
