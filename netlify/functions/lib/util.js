@@ -493,12 +493,31 @@ export function quoteFor(discountPct, price) {
   const due = usd * (1 - pct / 100);
   const amount = (due / price).toFixed(8);
   const ttlDays = Number(process.env.QUOTE_TTL_DAYS || 7);
+  const now = Date.now();
   return {
     amount,
     originalAmount: pct > 0 ? (usd / price).toFixed(8) : undefined,
     discountPercent: pct > 0 ? pct : undefined,
-    expiresAt: new Date(Date.now() + ttlDays * 86400000).toISOString(),
+    expiresAt: new Date(now + ttlDays * 86400000).toISOString(),
+    createdAt: new Date(now).toISOString(),
   };
+}
+
+// ---------- Coverage (subscription) model ----------
+// A custom domain stays usable while "covered". Coverage comes from:
+//  - a confirmed $10 payment  -> paidAt + 1 year (renewals stack on top),
+//  - a redeemed 100% promo    -> until the code's expiry (lifetime if none),
+//  - a redeemed partial promo -> paying the remainder grants paidAt + 1yr,
+//    capped by the code's expiry while the code is still valid.
+// coverageExpiresAt=null + coverageLifetime=true  = indefinite coverage.
+// Anything else without a future coverageExpiresAt = no coverage (pending).
+export const COVERAGE_YEAR_MS = 365 * 86400000;
+
+export function coverageValid(doc) {
+  if (!doc) return false;
+  if (doc.coverageLifetime === true) return true;
+  const t = doc.coverageExpiresAt ? new Date(doc.coverageExpiresAt).getTime() : NaN;
+  return Number.isFinite(t) && t > Date.now();
 }
 
 // ---------- Wallet adapter ----------

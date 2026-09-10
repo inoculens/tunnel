@@ -34,6 +34,8 @@ import {
   deriveAddress,
   nextWalletIndex,
   listAll,
+  coverageValid,
+  COVERAGE_YEAR_MS,
 } from "./lib/util.js";
 
 // Ensure a Cloudflare SaaS custom hostname exists once the domain is
@@ -132,6 +134,27 @@ async function needOwnedDomain(s, domain, sessionId) {
   return doc;
 }
 
+// Coverage bookkeeping, run on every read path (mutates the doc, caller
+// saves when it returns true):
+//  - drops discounts whose code already expired (so renewal quotes price
+//    full again instead of honoring a dead deal),
+//  - demotes lapsed domains back to pending (minting + serving stay gated
+//    on coverage; published links hard-stop via resolve.js too).
+// Lifetime coverage never lapses. Promo uses stay consumed (no infinite
+// discounts via apply/remove loops).
+function refreshCoverage(doc) {
+  let changed = false;
+  if (doc.discount?.expiresAt && new Date(doc.discount.expiresAt).getTime() <= Date.now()) {
+    doc.discount = null;
+    changed = true;
+  }
+  if (!coverageValid(doc) && doc.status === "active") {
+    doc.status = "pending_verification";
+    changed = true;
+  }
+  return changed;
+}
+
 async function domainInfo(doc) {
   const route = routingTarget();
   return {
@@ -140,6 +163,9 @@ async function domainInfo(doc) {
     status: doc.status,
     paymentStatus: doc.paymentStatus,
     isVerified: doc.isVerified,
+    coverageExpiresAt: doc.coverageExpiresAt || null,
+    coverageLifetime: doc.coverageLifetime === true,
+    coverageValid: coverageValid(doc),
     dnsVerification: doc.dnsVerification,
     dnsVerificationToken: doc.verificationToken,
     verificationToken: doc.verificationToken,
@@ -333,15 +359,20 @@ const actions = {
       }
     }
 
-    // Custom domains must be active before they can mint links.
+    // Custom domains must be active AND covered before they can mint links.
     // System host is always allowed; everything else must be an active
-    // domain owned by this session (Cloudflare SaaS provisions TLS).
+    // domain owned by this session (Cloudflare SaaS provisions TLS) whose
+    // coverage (payment year / promo grant) has not lapsed.
     if (host !== systemShortHost()) {
       const doc = await s.get(`domain/${host}`, { type: "json" });
+      if (doc && refreshCoverage(doc)) await s.setJSON(`domain/${host}`, doc);
       const usable =
-        doc && doc.sessionId === sessionId && doc.status === "active";
+        doc && doc.sessionId === sessionId && doc.status === "active" && coverageValid(doc);
       if (!usable) {
-        const e = new Error("permission-denied");
+        const lapsed = doc && doc.sessionId === sessionId && !coverageValid(doc);
+        const e = new Error(lapsed
+          ? "Domain coverage expired — renew the domain (new code or $10/year) to create new links."
+          : "permission-denied");
         e.statusCode = 403;
         e.code = "permission-denied";
         throw e;
@@ -484,7 +515,11 @@ const actions = {
     const out = [];
     for (const b of await listAll(s, "domain/")) {
       const d = await s.get(b.key, { type: "json" });
-      if (d && d.sessionId === p.sessionId) out.push(await domainInfo(d));
+      if (!d || d.sessionId !== p.sessionId) continue;
+      // Keep the list truthful: lapsed coverage demotes here too, so the
+      // dropdown never offers a dead domain as active.
+      if (refreshCoverage(d)) await s.setJSON(`domain/${d.domain}`, d);
+      out.push(await domainInfo(d));
     }
     return ok({ domains: out });
   },
@@ -559,6 +594,7 @@ const actions = {
 
   async getDomainVerificationInfo(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    if (refreshCoverage(doc)) await s.setJSON(`domain/${doc.domain}`, doc);
     // Refresh Cloudflare SaaS status when configured (best effort, never throws).
     if (cfConfig()) {
       const cf = await cfGetCustomHostname(doc.domain);
@@ -595,6 +631,9 @@ const actions = {
     if (live.cfSslStatus) doc.cfSslStatus = live.cfSslStatus;
     // Sticky ownership: once proven, stays proven (matches frontend).
     if (live.cname && live.txt) doc.isVerified = true;
+    // Coverage can lapse independently of DNS: drop dead discounts and
+    // demote before deciding activation below.
+    refreshCoverage(doc);
     // A definitively unroutable domain cannot serve links: drop it back to
     // pending (payment kept) so no new links mint on a dead domain.
     // Re-verify re-activates once it resolves. Unknown (null) never demotes.
@@ -611,11 +650,11 @@ const actions = {
         doc.cfSslStatus = cf.ssl?.status || null;
         doc.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : doc.dnsVerification.sslVerified;
       }
-      // Active requires ownership + payment. TLS (cfSslStatus active) is reported
+      // Active requires ownership + payment + live coverage. TLS (cfSslStatus active) is reported
       // separately so the UI can show "Propagating" without blocking link creation
       // once DNS + payment are done. Links serve as soon as CNAME resolves (HTTP
       // validation completes in minutes); strict TLS gating would strand paid users.
-      doc.status = "active";
+      if (coverageValid(doc)) doc.status = "active";
     }
     await s.setJSON(`domain/${doc.domain}`, doc);
     return ok({
@@ -626,6 +665,9 @@ const actions = {
       cfSslStatus: doc.cfSslStatus || live.cfSslStatus || null,
       status: doc.status,
       paymentStatus: doc.paymentStatus,
+      coverageExpiresAt: doc.coverageExpiresAt || null,
+      coverageLifetime: doc.coverageLifetime === true,
+      coverageValid: coverageValid(doc),
     });
   },
 
@@ -669,19 +711,30 @@ const actions = {
 
   async generatePaymentAddress(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    // Drop dead discounts first so a renewal after code expiry prices full
+    // again (a renewal payment is always allowed — it is how lapsed domains
+    // come back). Never blocks: paying is the way out of expiry.
+    if (refreshCoverage(doc)) await s.setJSON(`domain/${doc.domain}`, doc);
     const dns = doc.dnsVerification || {};
     // Exact substring the frontend matches on — keep stable.
     if (!(dns.cnameValid && dns.txtVerified)) {
       return fail(412, "failed-precondition", "DNS verification required before payment.");
     }
     const now = Date.now();
-    if (!p.forceRefresh && doc.quote && doc.quote.address && new Date(doc.quote.expiresAt).getTime() > now) {
+    // A consumed quote (already paid) is never re-shown: renewals always get
+    // a fresh address, otherwise the user would pay an address the watcher
+    // already credited.
+    const quoteConsumed = !!doc.quote?.paidAt;
+    if (!p.forceRefresh && !quoteConsumed && doc.quote && doc.quote.address && new Date(doc.quote.expiresAt).getTime() > now) {
       return ok({
         amount: doc.quote.amount,
         address: doc.quote.address,
         expiresAt: doc.quote.expiresAt,
         index: doc.quote.index,
         ...(doc.quote.discountPercent ? { discountPercent: doc.quote.discountPercent, originalAmount: doc.quote.originalAmount } : {}),
+        coverageExpiresAt: doc.coverageExpiresAt || null,
+        coverageLifetime: doc.coverageLifetime === true,
+        coverageValid: coverageValid(doc),
       });
     }
     const price = await btcUsdPrice().catch((e) => {
@@ -689,7 +742,7 @@ const actions = {
     });
     const pct = doc.discount ? doc.discount.percent : 0;
     const q = quoteFor(pct, price);
-    let address = doc.quote && doc.quote.address && !p.forceRefresh ? doc.quote.address : null;
+    let address = doc.quote && doc.quote.address && !p.forceRefresh && !quoteConsumed ? doc.quote.address : null;
     if (!address) {
       // Retire the quote being replaced (if any) so late payments to an
       // address the user already saw are still credited by the watcher.
@@ -750,11 +803,12 @@ const actions = {
       await s.setJSON(`domain/${doc.domain}`, doc);
       reverified++;
     }
-    return ok({ amount: doc.quote.amount, address: doc.quote.address, expiresAt: doc.quote.expiresAt, index: doc.quote.index, ...(q.discountPercent ? { discountPercent: q.discountPercent, originalAmount: q.originalAmount } : {}) });
+    return ok({ amount: doc.quote.amount, address: doc.quote.address, expiresAt: doc.quote.expiresAt, index: doc.quote.index, ...(q.discountPercent ? { discountPercent: q.discountPercent, originalAmount: q.originalAmount } : {}), coverageExpiresAt: doc.coverageExpiresAt || null, coverageLifetime: doc.coverageLifetime === true, coverageValid: coverageValid(doc) });
   },
 
   async checkDomainDiscount(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    if (refreshCoverage(doc)) await s.setJSON(`domain/${doc.domain}`, doc);
     if (doc.discount && doc.discount.percent > 0) {
       return ok({
         hasDiscount: true,
@@ -762,9 +816,17 @@ const actions = {
         discountPercent: doc.discount.percent,
         amount: doc.quote ? doc.quote.amount : undefined,
         originalAmount: doc.quote ? doc.quote.originalAmount : undefined,
+        coverageExpiresAt: doc.coverageExpiresAt || null,
+        coverageLifetime: doc.coverageLifetime === true,
+        coverageValid: coverageValid(doc),
       });
     }
-    return ok({ hasDiscount: false });
+    return ok({
+      hasDiscount: false,
+      coverageExpiresAt: doc.coverageExpiresAt || null,
+      coverageLifetime: doc.coverageLifetime === true,
+      coverageValid: coverageValid(doc),
+    });
   },
 
   async adminCreateDiscountCode(s, p, event) {
@@ -842,6 +904,9 @@ const actions = {
           message: "Discount covers the full price — your domain is activated.",
           amount: "0.00000000",
           discountPercent: 100,
+          coverageExpiresAt: doc.coverageExpiresAt || null,
+          coverageLifetime: doc.coverageLifetime === true,
+          coverageValid: coverageValid(doc),
         });
       }
       if (doc.quote && doc.quote.address) {
@@ -853,6 +918,9 @@ const actions = {
           index: doc.quote.index,
           discountPercent: doc.discount.percent,
           originalAmount: doc.quote.originalAmount,
+          coverageExpiresAt: doc.coverageExpiresAt || null,
+          coverageLifetime: doc.coverageLifetime === true,
+          coverageValid: coverageValid(doc),
         });
       }
     }
@@ -876,11 +944,23 @@ const actions = {
     promo.uses = Array.isArray(promo.uses) ? promo.uses : [];
     promo.uses.push({ domain: doc.domain, sessionId: p.sessionId, at: new Date().toISOString() });
     await s.setJSON(`promo/${code}`, promo);
-    doc.discount = { code, percent: pct };
+    // The code's expiry doubles as the domain's coverage end: redeeming pins
+    // it to the domain so later expiry checks know what capped this deal.
+    doc.discount = { code, percent: pct, expiresAt: promo.expiresAt || null };
     if (pct >= 100) {
       doc.paymentStatus = "paid";
       doc.quote = null;
-      if (doc.isVerified) {
+      // Full grant covers until the code's expiry — lifetime when the code
+      // itself never expires. It never shortens coverage already in force
+      // (e.g. a paid year outlasting the code): best coverage wins.
+      if (!promo.expiresAt) {
+        doc.coverageExpiresAt = null;
+        doc.coverageLifetime = true;
+      } else if (!coverageValid(doc) || (doc.coverageExpiresAt && new Date(promo.expiresAt).getTime() > new Date(doc.coverageExpiresAt).getTime())) {
+        doc.coverageExpiresAt = promo.expiresAt;
+        doc.coverageLifetime = false;
+      }
+      if (doc.isVerified && coverageValid(doc)) {
         doc.status = "active";
         await ensureSaaSHostname(doc);
       }
@@ -891,6 +971,9 @@ const actions = {
         message: "Discount covers the full price — your domain is activated.",
         amount: "0.00000000",
         discountPercent: 100,
+        coverageExpiresAt: doc.coverageExpiresAt,
+        coverageLifetime: doc.coverageLifetime,
+        coverageValid: coverageValid(doc),
       });
     }
     // Regenerate quote at the discounted price.
@@ -946,12 +1029,28 @@ const actions = {
       index: doc.quote.index,
       discountPercent: pct,
       originalAmount: q.originalAmount,
+      coverageExpiresAt: doc.coverageExpiresAt || null,
+      coverageLifetime: doc.coverageLifetime === true,
+      coverageValid: coverageValid(doc),
     });
   },
 
   async removeDiscountCode(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
     doc.discount = null;
+    // Coverage follows the money, not the removed deal: a payment within
+    // the last year still covers (recomputed from it); otherwise coverage
+    // lapses and the domain goes pending until renewed. Lifetime grants
+    // (never-expiring 100% codes) are left untouched.
+    if (doc.coverageLifetime !== true) {
+      const paidAt = doc.lastPaymentAt ? new Date(doc.lastPaymentAt).getTime() : NaN;
+      if (Number.isFinite(paidAt) && paidAt + COVERAGE_YEAR_MS > Date.now()) {
+        doc.coverageExpiresAt = new Date(paidAt + COVERAGE_YEAR_MS).toISOString();
+      } else {
+        doc.coverageExpiresAt = null;
+      }
+      if (doc.status === "active" && !coverageValid(doc)) doc.status = "pending_verification";
+    }
     // Void discounted history entries: they priced a deal that no longer
     // exists — otherwise the discounted amount would stay payable forever
     // on a retired address. Full-price entries are untouched (late payments

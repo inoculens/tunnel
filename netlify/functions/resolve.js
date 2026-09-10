@@ -9,7 +9,7 @@
  * Wire-up: netlify/edge-functions/short-domain.js rewrites short-host paths
  * to this function (GET /.netlify/functions/resolve?c=<code>).
  */
-import { store, newClickId, clientIp } from "./lib/util.js";
+import { store, newClickId, clientIp, systemShortHost, coverageValid } from "./lib/util.js";
 
 const HOME = process.env.HOME_URL || "https://tunnel.inoculens.com/";
 
@@ -76,6 +76,19 @@ export async function handler(event) {
   if (!link || !/^https?:\/\//.test(link.original || "")) {
     const dest = `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}`;
     return { statusCode: 302, headers: { Location: dest, "Cache-Control": "no-store" } };
+  }
+
+  // Hard stop on lapsed coverage: links on custom domains whose payment
+  // year / promo grant ran out behave as deleted (the branded 404 copy
+  // already reads "Link Expired"). No click is logged — this was not a
+  // visit. System-host links are unaffected; a missing domain doc fails
+  // open (link deletion cascades, so this should not happen).
+  if (link.domain && link.domain !== systemShortHost()) {
+    const doc = await s.get(`domain/${link.domain}`, { type: "json" }).catch(() => null);
+    if (doc && !coverageValid(doc)) {
+      const dest = `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}`;
+      return { statusCode: 302, headers: { Location: dest, "Cache-Control": "no-store" } };
+    }
   }
 
   // Log click (best effort — never block the redirect on storage errors).

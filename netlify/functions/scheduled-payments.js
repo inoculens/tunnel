@@ -7,7 +7,7 @@
  * Netlify runs this automatically thanks to the `config.schedule` export.
  * No cron service needed. Uses only the public mempool.space API.
  */
-import { store, listAll, cfConfig, cfEnsureCustomHostname } from "./lib/util.js";
+import { store, listAll, cfConfig, cfEnsureCustomHostname, coverageValid, COVERAGE_YEAR_MS } from "./lib/util.js";
 
 export const config = { schedule: "@hourly" };
 
@@ -33,7 +33,31 @@ export async function handler(event) {
   try {
     for (const b of await listAll(s, "domain/")) {
       const d = await s.get(b.key, { type: "json" });
-      if (!d || d.paymentStatus === "paid") continue;
+      if (!d) continue;
+      // Coverage sweep (hourly): lapsed domains drop back to pending and
+      // shed dead discounts, so minting/serving gates stay truthful even if
+      // nobody opens the domain manager. Lifetime coverage never lapses.
+      let swept = false;
+      if (d.discount?.expiresAt && new Date(d.discount.expiresAt).getTime() <= Date.now()) {
+        d.discount = null;
+        swept = true;
+      }
+      if (!coverageValid(d) && d.status === "active") {
+        d.status = "pending_verification";
+        swept = true;
+      }
+      if (swept) await s.setJSON(`domain/${d.domain}`, d);
+      // Balance check candidates: unpaid domains always; paid domains only
+      // when a renewal is actually outstanding — coverage lapsed plus a
+      // fresh, unconsumed quote issued after the last payment. (A consumed
+      // quote's address was already credited; re-checking it would instantly
+      // "re-pay" every renewal.)
+      const unpaid = d.paymentStatus !== "paid";
+      const lastPaidAt = d.lastPaymentAt ? new Date(d.lastPaymentAt).getTime() : 0;
+      const renewalQuote = d.quote?.address && d.quote?.amount && !d.quote?.paidAt
+        && (d.quote.createdAt ? new Date(d.quote.createdAt).getTime() : 0) > lastPaidAt;
+      const renewalDue = d.paymentStatus === "paid" && !coverageValid(d) && renewalQuote;
+      if (!unpaid && !renewalDue) continue;
       // Candidates: the current quote address ALWAYS (even expired — the user
       // saw it and may pay late) + retired quotes. Retired addresses were
       // displayed to this session, so late payments to them must still credit
@@ -57,8 +81,26 @@ export async function handler(event) {
           }
         }
         if (paidBy) {
+          const now = Date.now();
           d.paymentStatus = "paid";
-          if (d.isVerified) d.status = "active";
+          // Coverage: a payment buys a year, stacking onto any time left so
+          // early renewals never lose days. While a discount code is still
+          // valid it caps coverage at the code's expiry (code expiry doubles
+          // as domain expiry); a code that already lapsed before this payment
+          // doesn't void it — the address shown was a good-faith quote.
+          const currentExp = coverageValid(d) ? new Date(d.coverageExpiresAt).getTime() : now;
+          let exp = Math.max(now, currentExp) + COVERAGE_YEAR_MS;
+          if (d.discount?.expiresAt) {
+            const cap = new Date(d.discount.expiresAt).getTime();
+            if (Number.isFinite(cap) && cap > now) exp = Math.min(exp, cap);
+          }
+          // Lifetime coverage is never downgraded by a later payment.
+          if (d.coverageLifetime !== true) {
+            d.coverageExpiresAt = new Date(exp).toISOString();
+            d.coverageLifetime = false;
+          }
+          d.lastPaymentAt = new Date(now).toISOString();
+          if (d.isVerified && coverageValid(d)) d.status = "active";
           d.paidAddress = paidBy.address;
           d.paidAmount = paidBy.amount;
           if (d.quote) d.quote.paidAt = new Date().toISOString();

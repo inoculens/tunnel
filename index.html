@@ -399,6 +399,7 @@
       border-right: none;
       border-radius: 12px 0 0 12px;
       white-space: nowrap;
+      min-width: 0;
       transition: border-color 0.2s;
       box-sizing: border-box;
       cursor: pointer;
@@ -411,6 +412,18 @@
       display: flex;
       align-items: center;
       gap: 8px;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    /* Long custom domains truncate with … instead of forcing the row
+       wider than the card. (Ellipsis lives on the text span — never on
+       .slug-prefix itself, whose absolute dropdown must not be clipped.) */
+    #currentDomain {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
     }
 
     .domain-chevron {
@@ -565,6 +578,9 @@
       border: 1px solid rgba(255, 255, 255, 0.12);
       margin-left: -1px;
       flex-grow: 1;
+      /* Allow shrinking below intrinsic input width in side-by-side mode —
+         without this the field spills past the card to the screen edge. */
+      min-width: 0;
       border-radius: 0 12px 12px 0;
       background: rgba(255, 255, 255, 0.05);
       color: var(--text);
@@ -3254,6 +3270,9 @@
         <div id="verificationStatus" style="display: none; margin-bottom: 16px;">
         </div>
 
+        <div id="coverageStatus" style="display: none; margin-bottom: 16px;">
+        </div>
+
         <div id="routingNote" style="display: none; margin-bottom: 16px; padding: 12px; border-radius: 8px; font-size: 0.85rem; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #f28b82; text-align: center;">⚠️ This domain doesn't resolve to Tunnel edge (no usable address) — browsers can't reach it as configured. If you just created the record, wait a few minutes and Re-verify; otherwise fix the CNAME target.</div>
 
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 16px; text-align: center;">
@@ -3991,6 +4010,9 @@
           const domainVal = domainObj.domain + '/';
           const opt = document.createElement('div');
           opt.className = `domain-option ${selectedDomain === domainVal ? 'selected' : ''}`;
+          // Coverage ending within the renewal window gets an amber nudge
+          // badge (still fully usable + selectable until it actually lapses).
+          const soon = coverageExpiringSoon(domainObj);
           opt.innerHTML = `
             <div class="domain-actions-group">
               <button onclick="event.stopPropagation(); showDomainManager(${escapeJS(domainObj.domain)})"
@@ -3998,7 +4020,7 @@
                        color: var(--accent); padding: 2px 6px; border-radius: 999px; font-size: 0.65rem; cursor: pointer;">
                 Manage
               </button>
-              <span class="domain-status status-active">Active</span>
+              <span class="domain-status ${soon ? 'status-pending' : 'status-active'}">${soon ? 'Expiring soon' : 'Active'}</span>
             </div>
             <span style="flex: 1; white-space: nowrap;">${escapeHTML(domainObj.domain)}/</span>
           `;
@@ -4011,8 +4033,13 @@
             let statusText = 'Pending';
             let statusClass = 'status-pending';
             const isPermanentlyVerified = domainObj.isVerified === true;
+            // Lapsed coverage on a paid domain: needs a new code or $10 renewal.
+            const coverageLapsed = domainObj.paymentStatus === 'paid'
+              && domainObj.coverageLifetime !== true && domainObj.coverageValid !== true;
 
-            if (isPermanentlyVerified) {
+            if (coverageLapsed) {
+              statusText = 'Expired';
+            } else if (isPermanentlyVerified) {
               statusText = 'Verified';
               statusClass = 'status-active';
             } else if (domainObj.paymentStatus === 'paid') {
@@ -4418,6 +4445,12 @@
         // Store the isVerified state globally for use in updateContinueButton
         window.domainIsVerified = domainDoc.isVerified === true;
         window.domainIsActive = domainDoc.status === 'active';
+        window.domainPaymentStatus = domainDoc.paymentStatus || null;
+        window.domainCoverage = {
+          valid: domainDoc.coverageValid === true,
+          lifetime: domainDoc.coverageLifetime === true,
+          expiresAt: domainDoc.coverageExpiresAt || null
+        };
 
         // Ownership TXT
         const txtToken = domainDoc.verificationToken || domainDoc.dnsVerificationToken || '';
@@ -4554,6 +4587,12 @@
         // Store globally for other functions to use
         window.domainIsVerified = isVerified;
         window.domainIsActive = isActive;
+        window.domainPaymentStatus = domainData.paymentStatus || null;
+        window.domainCoverage = {
+          valid: domainData.coverageValid === true,
+          lifetime: domainData.coverageLifetime === true,
+          expiresAt: domainData.coverageExpiresAt || null
+        };
 
         // Update badges - badges now always show current DNS state
         updateStatusUI('cname', !!dns.cnameValid);
@@ -4731,6 +4770,8 @@
             if (spinner) spinner.style.display = 'inline-block';
             if (btnText) btnText.textContent = loadingText;
             continueBtn.style.opacity = '0.7';
+            const covLoading = document.getElementById('coverageStatus');
+            if (covLoading) covLoading.style.display = 'none';
             return;
           }
 
@@ -4743,7 +4784,10 @@
           // SaaS HTTP validation after the CNAME is live — it must NOT block
           // payment (takes minutes in background).
           const isPermanentlyVerified = window.domainIsVerified === true;
-          const isDomainActive = window.domainIsActive === true;
+          // Coverage gates activity too: a stale 'active' flag with lapsed
+          // coverage must behave as expired (renewable), never as done.
+          const coverageOk = !window.domainCoverage || window.domainCoverage.lifetime === true || window.domainCoverage.valid === true;
+          const isDomainActive = window.domainIsActive === true && coverageOk;
           const readyForPayment = ((cnameOk && txtOk) || isPermanentlyVerified) && routableOk;
           const allChecksPass = readyForPayment;
 
@@ -4758,12 +4802,50 @@
             };
           } else {
             continueBtn.disabled = !(allChecksPass || isPermanentlyVerified);
-            btnText.textContent = 'Continue to Payment';
+            // Lapsed but previously paid: this is a renewal, label it so.
+            const needsRenewal = window.domainCoverage && window.domainCoverage.valid !== true
+              && window.domainCoverage.lifetime !== true && window.domainPaymentStatus === 'paid';
+            btnText.textContent = needsRenewal ? 'Renew — $10/year' : 'Continue to Payment';
             continueBtn.style.opacity = continueBtn.disabled ? '0.5' : '1';
             continueBtn.classList.remove('status-active');
             continueBtn.onclick = () => continueToPaymentFromVerification();
           }
+          renderCoverageStatus();
         }
+      }
+
+      // Coverage line under the verification banners: lifetime, covered
+      // until <date>, expiring soon, expired (renew), or not covered yet.
+      // Driven by window.domainCoverage, set from every domain-data sync point.
+      // "Soon" (renewal nudge window) is 30 days before expiry.
+      const COVERAGE_EXPIRY_SOON_MS = 30 * 86400000;
+      function coverageExpiringSoon(d) {
+        if (!d || d.coverageLifetime === true || d.coverageValid !== true || !d.coverageExpiresAt) return false;
+        const t = new Date(d.coverageExpiresAt).getTime();
+        return Number.isFinite(t) && t - Date.now() < COVERAGE_EXPIRY_SOON_MS;
+      }
+      function renderCoverageStatus() {
+        const el = document.getElementById('coverageStatus');
+        if (!el) return;
+        const cov = window.domainCoverage;
+        if (!cov) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        const box = (inner) => `<div style="background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); padding: 10px; border-radius: 8px; text-align: center; font-size: 0.85rem; color: var(--text-muted);">${inner}</div>`;
+        if (cov.lifetime === true) {
+          el.innerHTML = box('Lifetime coverage — no renewal needed.');
+        } else if (cov.valid === true && cov.expiresAt) {
+          let when = '';
+          try { when = new Date(cov.expiresAt).toLocaleDateString(); } catch (e) { when = ''; }
+          if (coverageExpiringSoon(cov)) {
+            el.innerHTML = box(`Coverage ends on <b style="color: #f5a623;">${escapeHTML(when)}</b> — renew anytime, remaining time carries over.`);
+          } else {
+            el.innerHTML = box(`Covered until <b style="color: var(--text);">${escapeHTML(when)}</b>.`);
+          }
+        } else if (window.domainPaymentStatus === 'paid') {
+          el.innerHTML = box('<b style="color: #f28b82;">Coverage expired</b> — renew below to reactivate your links.');
+        } else {
+          el.innerHTML = box('No coverage yet — payment activates the domain ($10/year).');
+        }
+        el.style.display = 'block';
       }
 
       // Update ACME record status (for per-record verification)
@@ -4805,6 +4887,12 @@
         // Sync global flags from authoritative backend response
         window.domainIsVerified = data.isVerified === true;
         window.domainIsActive = (data.status === 'active' || data.paymentStatus === 'paid');
+        window.domainPaymentStatus = data.paymentStatus || null;
+        window.domainCoverage = {
+          valid: data.coverageValid === true,
+          lifetime: data.coverageLifetime === true,
+          expiresAt: data.coverageExpiresAt || null
+        };
 
         // Update main status rows - badges always show reality now
         updateStatusUI('cname', !!checks.cname);
@@ -4994,8 +5082,11 @@
           const isVerified = data.isVerified === true || (data.dnsVerification?.cnameValid && data.dnsVerification?.txtVerified);
 
           if (isVerified) {
-            // SUCCESS: Check if payment is already done or domain is active
-            if (data.status === 'active') {
+            // SUCCESS: Check if payment is already done or domain is active.
+            // Coverage counts: a stale 'active' with lapsed coverage must
+            // still reach the payment step to renew.
+            const coverageOk = data.coverageLifetime === true || data.coverageValid === true;
+            if (data.status === 'active' && coverageOk) {
               showToast('Domain is already active and verified!', 'success');
               closeDomainManager();
               return;
@@ -5717,13 +5808,21 @@
 
             if (info.data && info.data.status === 'active') {
               stopPaymentPolling();
-              // Show success banner
+              // Show success banner, including what the payment bought.
               if (banner) {
                 banner.style.display = 'block';
                 banner.style.background = 'rgba(43,166,64,0.12)';
                 banner.style.borderColor = '#6fcf7f';
                 banner.style.color = '#6fcf7f';
-                banner.textContent = '✅ Payment confirmed! Your domain is now active.';
+                let coverNote = 'Your domain is now active.';
+                if (info.data.coverageLifetime === true) {
+                  coverNote = 'Your domain is now active with lifetime coverage.';
+                } else if (info.data.coverageExpiresAt) {
+                  try {
+                    coverNote = `Your domain is now active — covered until ${new Date(info.data.coverageExpiresAt).toLocaleDateString()}.`;
+                  } catch (e) { /* date parse fallback below */ }
+                }
+                banner.textContent = `✅ Payment confirmed! ${coverNote}`;
               }
               // Refresh domain list
               await loadUserDomains();
@@ -6208,13 +6307,18 @@
             message = "This custom slug is already taken. Please choose a different one.";
           } else if (error.message && error.message.includes('429')) {
             message = "You've made too many attempts. Please wait a moment before trying again, or try disconnecting from your VPN or proxy if you're using one.";
-          } else if (errorCode === 'permission-denied' || error.message === 'permission-denied') {
+          } else if (error.code === 'permission-denied' || errorCode === 'permission-denied' || error.message === 'permission-denied') {
             // Domain is not active - show a clear modal with instructions.
             // showCustomModal resolves true on confirm: open the manager then.
-            message = "Domain not active. Complete verification and payment first.";
+            // A lapsed-coverage domain carries its own backend message and
+            // gets a renewal dialog instead of the first-time setup one.
+            const lapsed = !!error.message && error.message.includes('coverage expired');
+            message = lapsed ? error.message : "Domain not active. Complete verification and payment first.";
             showCustomModal({
-              title: "Domain Not Active",
-              message: "The custom domain you selected is not fully verified or paid. Please complete the following steps:<br><br>1. CNAME your domain to customers.inoculens.com<br>2. Add the TXT ownership record<br>3. Complete payment (SSL provisions automatically)<br><br>Choose Manage Domain to continue verification.",
+              title: lapsed ? "Coverage Expired" : "Domain Not Active",
+              message: lapsed
+                ? "This domain's coverage has lapsed — its links stopped resolving. Renew with a new promo code or the $10/year fee to reactivate everything.<br><br>Choose Manage Domain to renew."
+                : "The custom domain you selected is not fully verified or paid. Please complete the following steps:<br><br>1. CNAME your domain to customers.inoculens.com<br>2. Add the TXT ownership record<br>3. Complete payment (SSL provisions automatically)<br><br>Choose Manage Domain to continue verification.",
               confirmText: "Manage Domain",
               showCancel: true,
               cancelText: "Close"
@@ -7771,6 +7875,7 @@
             <input type="date" id="promoNewExpiry" title="Expiry date (only when Never expires is off)" disabled
               style="flex: 1; min-width: 0; height: 32px; background: transparent; border: none; color: var(--text); font-size: 0.85rem;">
           </div>
+          <p style="margin: 0 0 8px; font-size: 0.75rem; color: var(--text-muted);">Code expiry doubles as domain coverage: once redeemed, the domain stays covered until this date (lifetime for Never expires + 100% off).</p>
         </div>
         <input type="text" id="promoNewNote" placeholder="Note (who is this for?) — optional" maxlength="140"
           style="width: 100%; height: 44px; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px; margin-bottom: 12px; box-sizing: border-box;">
