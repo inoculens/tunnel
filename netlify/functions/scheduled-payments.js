@@ -7,7 +7,7 @@
  * Netlify runs this automatically thanks to the `config.schedule` export.
  * No cron service needed. Uses only the public mempool.space API.
  */
-import { store, listAll, cfConfig, cfEnsureCustomHostname, coverageValid, COVERAGE_YEAR_MS } from "./lib/util.js";
+import { store, listAll, cfConfig, cfEnsureCustomHostname, coverageValid, COVERAGE_YEAR_MS, freshGet } from "./lib/util.js";
 
 export const config = { schedule: "@hourly" };
 
@@ -32,7 +32,7 @@ export async function handler(event) {
   let activated = 0;
   try {
     for (const b of await listAll(s, "domain/")) {
-      const d = await s.get(b.key, { type: "json" });
+      const d = await freshGet(s, b.key, { type: "json" }).catch(() => null);
       if (!d) continue;
       // Coverage sweep (hourly): lapsed domains drop back to pending and
       // shed dead discounts, so minting/serving gates stay truthful even if

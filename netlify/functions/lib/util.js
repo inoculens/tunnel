@@ -36,6 +36,15 @@ export function store(event) {
   // Scheduled functions have no HTTP event, so they rely on explicit env.
   // Regular functions prefer the event-bound environment and only fall back
   // to explicit siteID+token when both are configured (e.g. local dev).
+  // NOTE on consistency: the siteID+token path talks to the Netlify API
+  // origin (strongly consistent). The event-bound path reads from the
+  // edge cache (eventually consistent, up to ~60s drift for updates and
+  // a few seconds even for new keys in practice). The store is therefore
+  // intentionally opened WITHOUT a store-level consistency flag — a global
+  // "strong" would throw BlobsConsistencyError on runtimes whose Lambda
+  // context carries no uncachedEdgeURL. Instead, reads that must see
+  // their own writes use freshGet()/getWithRetry() below (strong-first
+  // with graceful fallback + bounded retries).
   if (siteID && token) {
     try {
       return getStore({ name: "tunnel", siteID, token });
@@ -44,6 +53,54 @@ export function store(event) {
     }
   }
   return getStore("tunnel");
+}
+
+// ---------- Read-your-writes helpers (Netlify Blobs eventual consistency) ----------
+// Background: Blobs edge reads lag writes (a few seconds in practice, up to
+// 60s for updates/deletes). The same browser that just created a session or
+// link can therefore re-read stale state ("Unknown or missing session",
+// empty history) until the edge catches up. These helpers close that gap:
+//  - freshGet: one strong-consistent read when the runtime supports it,
+//    transparently falling back to an eventual read otherwise.
+//  - getWithRetry: bounded re-reads for keys that were JUST written
+//    (session creation, new links/domains). A just-created key that is
+//    still missing is retried for a few seconds before the caller gives up
+//    and reports "not found" — so transient edge lag never surfaces as an
+//    error, while genuinely unknown keys still 404 after the budget.
+
+export function isStrongConsistencyError(e) {
+  if (!e) return false;
+  if (e.name === "BlobsConsistencyError") return true;
+  return /strong consistency|uncachedEdgeURL/i.test(e.message || "");
+}
+
+export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export async function freshGet(s, key, opts = {}) {
+  try {
+    return await s.get(key, { ...opts, consistency: "strong" });
+  } catch (e) {
+    if (isStrongConsistencyError(e)) {
+      return s.get(key, opts);
+    }
+    throw e;
+  }
+}
+
+export async function getWithRetry(s, key, opts = {}, { attempts = 4, delayMs = 900 } = {}) {
+  let last = null;
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await sleep(delayMs);
+    try {
+      const v = await freshGet(s, key, opts);
+      if (v !== null && v !== undefined) return v;
+      last = v;
+    } catch (e) {
+      console.error(`getWithRetry(${key}) attempt ${i + 1}/${attempts} failed:`, e?.message || e);
+      if (i === attempts - 1) throw e;
+    }
+  }
+  return last;
 }
 
 /**

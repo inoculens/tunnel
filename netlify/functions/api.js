@@ -38,6 +38,8 @@ import {
   COVERAGE_YEAR_MS,
   linkKey,
   clicksPrefix,
+  freshGet,
+  getWithRetry,
 } from "./lib/util.js";
 
 // Ensure a Cloudflare SaaS custom hostname exists once the domain is
@@ -64,14 +66,29 @@ async function ensureSaaSHostname(doc) {
 }
 
 // ---------- small data-access helpers ----------
+// Blobs edge reads lag writes by a few seconds in practice: a session or
+// link created moments ago can still read back as missing on the next call
+// from the SAME browser. All direct-key reads below go through freshGet
+// (strong-first with fallback). need* variants additionally retry for a few
+// seconds before reporting "not found", so transient lag never surfaces as
+// "Unknown or missing session" while genuinely unknown keys still 404
+// after the budget. Existence probes (checkSessionExists/validateSession)
+// stay single-shot — retrying a genuinely-new ID would only add latency
+// to every new-session creation.
 
 async function getSession(s, sid) {
   if (!validSessionId(sid)) return null;
-  return s.get(`sessions/${sid}`, { type: "json" });
+  return freshGet(s, `sessions/${sid}`, { type: "json" });
 }
 
 async function needSession(s, sid) {
-  const sess = await getSession(s, sid);
+  if (!validSessionId(sid)) {
+    const e = new Error("Unknown or missing session. Load a valid Session ID.");
+    e.statusCode = 404;
+    e.code = "not-found";
+    throw e;
+  }
+  const sess = await getWithRetry(s, `sessions/${sid}`, { type: "json" }, { attempts: 5, delayMs: 800 });
   if (!sess) {
     const e = new Error("Unknown or missing session. Load a valid Session ID.");
     e.statusCode = 404;
@@ -83,11 +100,17 @@ async function needSession(s, sid) {
 
 async function getLink(s, host, code) {
   if (typeof code !== "string" || !code) return null;
-  return s.get(linkKey(host, code), { type: "json" });
+  return freshGet(s, linkKey(host, code), { type: "json" });
 }
 
 async function needLink(s, host, code) {
-  const link = await getLink(s, host, code);
+  if (typeof code !== "string" || !code) {
+    const e = new Error("Link not found. It may have been deleted.");
+    e.statusCode = 404;
+    e.code = "not-found";
+    throw e;
+  }
+  const link = await getWithRetry(s, linkKey(host, code), { type: "json" }, { attempts: 4, delayMs: 700 });
   if (!link) {
     const e = new Error("Link not found. It may have been deleted.");
     e.statusCode = 404;
@@ -122,7 +145,7 @@ function needToken(link, token) {
 async function getDomain(s, domain) {
   const d = cleanDomain(domain);
   if (!d) return null;
-  return s.get(`domain/${d}`, { type: "json" });
+  return freshGet(s, `domain/${d}`, { type: "json" });
 }
 
 async function needOwnedDomain(s, domain, sessionId) {
@@ -133,7 +156,7 @@ async function needOwnedDomain(s, domain, sessionId) {
     e.code = "invalid-argument";
     throw e;
   }
-  const doc = await s.get(`domain/${d}`, { type: "json" });
+  const doc = await getWithRetry(s, `domain/${d}`, { type: "json" }, { attempts: 4, delayMs: 700 });
   if (!doc) {
     const e = new Error("Domain not found in your account.");
     e.statusCode = 404;
@@ -227,7 +250,7 @@ function linkShape(l) {
 async function listLinksOfSession(s, sid) {
   const found = [];
   for (const b of await listAll(s, "link/")) {
-    const l = await s.get(b.key, { type: "json" });
+    const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
     if (l && l.sessionId === sid) found.push(l);
   }
   found.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -309,7 +332,7 @@ async function addressTakenByOtherDomain(s, ownDomain, address) {
   for (const b of await listAll(s, "domain/")) {
     let d = null;
     try {
-      d = await s.get(b.key, { type: "json" });
+      d = await freshGet(s, b.key, { type: "json" });
     } catch { continue; }
     if (!d || d.domain === ownDomain) continue;
     if (d.quote && d.quote.address === address) return true;
@@ -381,7 +404,7 @@ const actions = {
     // domain owned by this session (Cloudflare SaaS provisions TLS) whose
     // coverage (payment year / promo grant) has not lapsed.
     if (host !== systemShortHost()) {
-      const doc = await s.get(`domain/${host}`, { type: "json" });
+      const doc = await freshGet(s, `domain/${host}`, { type: "json" });
       if (doc && refreshCoverage(doc)) await s.setJSON(`domain/${host}`, doc);
       const usable =
         doc && doc.sessionId === sessionId && doc.status === "active" && coverageValid(doc);
@@ -469,7 +492,7 @@ const actions = {
     needToken(link, p.deleteToken);
     const clicks = [];
     for (const b of await listAll(s, clicksPrefix(host, link.code))) {
-      const c = await s.get(b.key, { type: "json" });
+      const c = await freshGet(s, b.key, { type: "json" }).catch(() => null);
       if (c) clicks.push(c);
     }
     clicks.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -527,7 +550,7 @@ const actions = {
     // no conflicts are possible. Past promo redemptions stay recorded.
     let movedDomains = 0;
     for (const b of await listAll(s, "domain/")) {
-      const d = await s.get(b.key, { type: "json" });
+      const d = await freshGet(s, b.key, { type: "json" }).catch(() => null);
       if (d && d.sessionId === oldSessionId) {
         d.sessionId = newSessionId;
         await s.setJSON(`domain/${d.domain}`, d);
@@ -543,7 +566,7 @@ const actions = {
     await needSession(s, p.sessionId);
     const out = [];
     for (const b of await listAll(s, "domain/")) {
-      const d = await s.get(b.key, { type: "json" });
+      const d = await freshGet(s, b.key, { type: "json" }).catch(() => null);
       if (!d || d.sessionId !== p.sessionId) continue;
       // Keep the list truthful: lapsed coverage demotes here too, so the
       // dropdown never offers a dead domain as active.
@@ -577,7 +600,7 @@ const actions = {
     if (!(await getSession(s, p.sessionId))) {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
-    const existing = await s.get(`domain/${host}`, { type: "json" });
+    const existing = await freshGet(s, `domain/${host}`, { type: "json" });
     if (existing) {
       if (existing.sessionId !== p.sessionId) {
         // Claim flow: any session may attach this name to itself (e.g. the
@@ -707,7 +730,7 @@ const actions = {
     await s.delete(`domain/${doc.domain}`);
     let deletedUrls = 0;
     for (const b of await listAll(s, "link/")) {
-      const l = await s.get(b.key, { type: "json" });
+      const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
       if (l) {
         try {
           if (new URL(l.short).hostname === doc.domain) {
@@ -866,10 +889,10 @@ const actions = {
       code = null;
       for (let i = 0; i < 5 && !code; i++) {
         const c = `TUNNEL-${newCode(6).toUpperCase()}`;
-        if (!(await s.get(`promo/${c}`, { type: "json" }).catch(() => null))) code = c;
+        if (!(await freshGet(s, `promo/${c}`, { type: "json" }).catch(() => null))) code = c;
       }
       if (!code) return fail(503, "unavailable", "Could not mint a unique code, try again.");
-    } else if (await s.get(`promo/${code}`, { type: "json" }).catch(() => null)) {
+    } else if (await freshGet(s, `promo/${code}`, { type: "json" }).catch(() => null)) {
       return fail(409, "already-exists", "That code already exists — delete it first or pick another.");
     }
     const percent = Number.isFinite(Number(p.percent)) ? Math.floor(Number(p.percent)) : 0;
@@ -903,7 +926,7 @@ const actions = {
     await needAdmin(s, p, event);
     const out = [];
     for (const b of await listAll(s, "promo/")) {
-      const promo = await s.get(b.key, { type: "json" }).catch(() => null);
+      const promo = await freshGet(s, b.key, { type: "json" }).catch(() => null);
       if (promo) out.push(promoShape(promo));
     }
     out.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
@@ -954,7 +977,7 @@ const actions = {
       }
     }
     // Managed Blobs promos are the only source of discount codes.
-    const stored = await s.get(`promo/${code}`, { type: "json" }).catch(() => null);
+    const stored = await freshGet(s, `promo/${code}`, { type: "json" }).catch(() => null);
     if (!stored || stored.disabled) {
       return fail(400, "invalid-argument", "Invalid or expired discount code.");
     }

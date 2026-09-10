@@ -3741,6 +3741,41 @@
         return currentLinks.findIndex(l => l && l.code === code && itemDomain(l) === domain);
       }
 
+      // Persist the in-memory list so a reload during the Blobs edge-cache
+      // lag window still shows just-created links (server list catches up
+      // within seconds; see fetchAndRenderSession merge below).
+      function saveLocalHistory() {
+        try { localStorage.setItem('tunnel_history', JSON.stringify(currentLinks)); } catch (e) {}
+      }
+
+      // Merge server truth with local optimistic items the edge list may not
+      // include yet. Server wins on identity conflicts (same domain/code);
+      // local-only items for THIS session are kept on top (newest first) so
+      // just-created links never vanish on a re-sync. Items from other
+      // sessions (stale cache after a session switch) are dropped.
+      function mergeServerLinks(serverLinks, sid) {
+        const server = Array.isArray(serverLinks) ? serverLinks : [];
+        const seen = new Set();
+        for (const it of server) {
+          try { seen.add(itemKey(it)); } catch (e) {}
+        }
+        const localOnly = [];
+        for (const it of (Array.isArray(currentLinks) ? currentLinks : [])) {
+          if (!it) continue;
+          if (sid && it.sessionId && it.sessionId !== sid) continue;
+          let k = '';
+          try { k = itemKey(it); } catch (e) { continue; }
+          if (!seen.has(k)) localOnly.push(it);
+        }
+        return localOnly.concat(server);
+      }
+
+      function isSessionNotFoundError(e) {
+        const msg = String((e && e.message) || '');
+        const code = String((e && e.code) || '');
+        return code === 'not-found' || /unknown or missing session/i.test(msg);
+      }
+
       // Backend-provided money values must look like BTC amounts before they
       // are rendered as HTML. Anything else falls back to plain text.
       function isBtcAmount(v) {
@@ -5300,19 +5335,28 @@
         const sid = getSessionId();
         if (!sid) return;
 
-        try {
-          const getDomainsFn = functions.httpsCallable('getUserDomains');
-          const response = await getDomainsFn({ sessionId: sid });
-          userCustomDomains = response.data.domains || [];
-
-          renderDomainOptions();
-
-        } catch (err) {
-          console.error("Error loading domains:", err);
-          // Also show a toast notification
-          if (typeof showToast === 'function') {
-            showToast('Failed to load custom domains. Please refresh.', 'error');
+        // Same edge-lag window as links: a domain added seconds ago can 404
+        // once before it becomes visible. Retry transient session misses
+        // quietly before bothering the user with a toast.
+        const getDomainsFn = functions.httpsCallable('getUserDomains');
+        let lastErr = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const response = await getDomainsFn({ sessionId: sid });
+            userCustomDomains = response.data.domains || [];
+            renderDomainOptions();
+            return;
+          } catch (err) {
+            lastErr = err;
+            console.warn(`loadUserDomains attempt ${attempt + 1}/3 failed:`, (err && err.message) || err);
+            if (!isSessionNotFoundError(err) || attempt === 2) break;
+            await new Promise((r) => setTimeout(r, 900 * (attempt + 1)));
           }
+        }
+        console.error("Error loading domains:", lastErr);
+        // Also show a toast notification
+        if (typeof showToast === 'function') {
+          showToast('Failed to load custom domains. Please refresh.', 'error');
         }
       }
 
@@ -6011,12 +6055,23 @@
             message: "Validating and fetching your history..."
           });
 
-          // Validate and load
+          // Validate and load (retry once: a session created seconds ago in
+          // another tab can still read back as missing from the edge cache).
           try {
             const validateFn = functions.httpsCallable('validateSession');
-            const res = await validateFn({ sessionId: val });
+            let exists = false;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                const res = await validateFn({ sessionId: val });
+                if (res.data.exists) { exists = true; break; }
+              } catch (e) {
+                console.warn(`validateSession attempt ${attempt + 1}/3 failed:`, (e && e.message) || e);
+                if (attempt === 2) throw e;
+              }
+              if (attempt < 2) await new Promise((r) => setTimeout(r, 900 * (attempt + 1)));
+            }
 
-            if (!res.data.exists) {
+            if (!exists) {
               closeLoadingModal();
               showCustomModal({
                 title: "Session Not Found",
@@ -6133,10 +6188,37 @@
           });
         }
 
+        // Blobs edge reads lag writes by a few seconds: a session/link created
+        // moments ago can 404 or list incompletely on the first attempt even
+        // in the SAME browser (backend already retries too). Retry transient
+        // "session not found" failures for a few seconds before surfacing an
+        // error, so a fresh session never flashes "Failed to sync session".
+        const getLinks = functions.httpsCallable('getLinksBySession');
+        let res = null;
+        let lastErr = null;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          try {
+            res = await getLinks({ sessionId: sid });
+            lastErr = null;
+            break;
+          } catch (e) {
+            lastErr = e;
+            console.warn(`fetchAndRenderSession attempt ${attempt + 1}/4 failed:`, (e && e.message) || e);
+            // Only transient "session not found" is worth retrying — other
+            // errors (permission, network down) fail fast to avoid hanging
+            // the UI behind a spinner for seconds.
+            if (!isSessionNotFoundError(e) || attempt === 3) break;
+            await new Promise((r) => setTimeout(r, 900 * (attempt + 1)));
+          }
+        }
+
         try {
-          const getLinks = functions.httpsCallable('getLinksBySession');
-          const res = await getLinks({ sessionId: sid });
-          currentLinks = res.data.links || [];
+          if (!res) throw lastErr || new Error('Sync failed. Please refresh.');
+          // Merge, don't overwrite: keep local optimistic items the edge
+          // list hasn't picked up yet (just-created links), server wins on
+          // conflicts. Persist so a reload inside the lag window keeps them.
+          currentLinks = mergeServerLinks(res.data.links || [], sid);
+          saveLocalHistory();
 
           // If manual load and no links found
           if (isManualLoad && currentLinks.length === 0) {
@@ -6373,11 +6455,15 @@
           // Only create session in database AFTER successful URL shortening
           await createSessionInDb(sid);
 
-          // Add to local state immediately (optimistic update)
+          // Add to local state immediately (optimistic update). The domain
+          // is stored explicitly so the merge key is stable even before the
+          // server round-trip; the list is persisted so a reload inside the
+          // Blobs edge-lag window still shows this link.
           const newItem = {
             original: urlInput,
             short: safeShort,
             code: shortCode,
+            domain: hostOf(safeShort),
             deleteToken: deleteToken,
             timestamp: Date.now(),
             sessionId: sid,
@@ -6386,6 +6472,7 @@
           };
 
           currentLinks.unshift(newItem);
+          saveLocalHistory();
 
           // Add new link to expanded set so it shows expanded on mobile
           expandedLinks.add(hostOf(safeShort) + '/' + shortCode);
@@ -7447,7 +7534,7 @@
           item.label = trimmedLabel;
 
           // Save to localStorage for offline resilience (best effort)
-          try { localStorage.setItem('tunnel_history', JSON.stringify(currentLinks)); } catch (e) {}
+          saveLocalHistory();
 
           renderHistory(currentLinks);
         } catch (e) {
@@ -7498,6 +7585,7 @@
             const freshIndex = findLinkIndex(code, domain);
             if (freshIndex !== -1) currentLinks.splice(freshIndex, 1);
             expandedLinks.delete(itemKey(item));
+            saveLocalHistory();
             renderHistory(currentLinks);
           } catch (e) {
             closeLoadingModal();
@@ -7591,6 +7679,7 @@
 
             // Keep only the failed links so the user can retry
             currentLinks = remainingLinks;
+            saveLocalHistory();
             renderHistory(currentLinks);
 
             // Show result
