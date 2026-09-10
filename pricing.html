@@ -185,11 +185,12 @@
     }
 
     /* Reserved slot under each CTA so both cards stay identical: the
-       right card spends it on the bitcoin note, the left one on air. */
+       right card spends it on the bitcoin note, the left one on air.
+       Sized to the note row itself so the bottom gap matches the top. */
     .bitcoin-slot {
-      min-height: 40px;
+      min-height: 24px;
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       justify-content: center;
       margin-top: 1rem;
     }
@@ -299,7 +300,7 @@
       <div class="pricing-card premium reveal">
         <div class="badge">Popular</div>
         <div class="tier-name">Custom Domains</div>
-        <div class="price">$10 <span class="unit">Per Year</span></div>
+        <div class="price">$10 <span class="unit">/ Year</span></div>
         <ul class="features">
           <li>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
