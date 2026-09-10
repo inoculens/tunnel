@@ -4164,18 +4164,9 @@
 
       async function showDomainManager(targetDomain = '') {
         if (!requireBackend()) return;
-        // Auto-create session if none exists (same logic as URL creation)
+        // Auto-create session if none exists (same logic as URL creation).
+        // First-time users get a session silently — no prompt.
         if (!getSessionId()) {
-          const confirmed = await showCustomModal({
-            title: "Create a New Session?",
-            message: "You don't have an active session yet. Proceeding will generate a new 10-character Session ID and store your history in our database.<br><br>Do you want to continue?",
-            showCancel: true,
-            confirmText: "Continue",
-            cancelText: "Exit"
-          });
-
-          if (!confirmed) return;
-
           try {
             // Inform the user that a session is being created
             showLoadingModal({
@@ -6297,22 +6288,10 @@
           resultDiv.style.display = 'none';
           document.getElementById('errorBox').style.display = 'none';
 
-          // Get or create session ID only when needed (after validation passes)
+          // Get or create session ID only when needed (after validation passes).
+          // First-time users get a session silently — no prompt.
           let sid = getSessionId();
           if (!sid) {
-            const confirmed = await showCustomModal({
-              title: "Create a New Session?",
-              message: "You don't have an active session yet. Proceeding will generate a new 10-character Session ID and store your history in our database.<br><br>Do you want to continue?",
-              showCancel: true,
-              confirmText: "Continue",
-              cancelText: "Exit"
-            });
-
-            if (!confirmed) {
-              button.disabled = false;
-              button.textContent = 'Shorten URL';
-              return;
-            }
             sid = await generateSessionId();
           }
 
