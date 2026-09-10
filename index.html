@@ -995,7 +995,9 @@
     .history-table-wrapper {
       margin-top: 1rem;
       border-radius: 18px;
-      overflow: hidden;
+      /* Internal scroll as a backstop: page content must never escape
+         the viewport even if a row ever exceeds the card. */
+      overflow-x: auto;
       border: 1px solid var(--border);
       background: rgba(33, 33, 36, 0.55);
       backdrop-filter: blur(24px) saturate(130%);
@@ -1192,15 +1194,16 @@
       background: rgba(255, 255, 255, 0.05);
     }
 
-    /* Hide mobile dropdown containers on desktop */
-    @media (min-width: 769px) {
+    /* Hide mobile link cards on wide desktop — the table needs ~950px
+       to fit, so cards stay until 1024px. */
+    @media (min-width: 1024px) {
       .link-item-container {
         display: none !important;
       }
     }
 
     /* Mobile gradient adjustment */
-    @media (max-width: 768px) {
+    @media (max-width: 1023px) {
       .link-item-row td {
         background: transparent !important;
         padding: 8px 16px 4px;
@@ -1212,7 +1215,7 @@
     }
 
 
-    @media (max-width: 768px) {
+    @media (max-width: 1023px) {
       .label-cell {
         width: auto;
         max-width: 100%;
@@ -1679,7 +1682,7 @@
     }
 
     /* Mobile layout for session controls */
-    @media (max-width: 768px) {
+    @media (max-width: 1023px) {
       .session-controls>div[style*="flex-wrap: wrap"] {
         row-gap: 10px;
       }
@@ -1945,7 +1948,7 @@
       animation: spin 0.8s linear infinite;
     }
 
-    @media (max-width: 768px) {
+    @media (max-width: 1023px) {
       /* body padding already handled in header styles media query */
 
       .container {
@@ -2791,6 +2794,18 @@
        "Never expires" never reflows the row. */
     #promoNewExpiry:disabled { opacity: 0.55; }
     #promoNewExpiry:disabled::-webkit-calendar-picker-indicator { opacity: 0.25; }
+
+    /* Dialogs must never exceed the viewport: the domain manager card
+       carries an inline 380px minimum that would spill off small phones. */
+    @media (max-width: 480px) {
+      #domainManagerOverlay {
+        padding: 12px;
+      }
+      #domainManagerOverlay .modal-card {
+        min-width: 0 !important;
+        width: 100% !important;
+      }
+    }
   </style>
 
   <!-- Structured Data (JSON-LD) for SEO -->
