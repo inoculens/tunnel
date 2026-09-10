@@ -50,8 +50,10 @@
     h1 {
       font-family: 'Lexend Giga', sans-serif;
       font-size: 3rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
       margin-bottom: 1rem;
-      background: linear-gradient(to right, #818cf8, #c084fc);
+      background: linear-gradient(to bottom, #ffffff 30%, #b3b8c2 100%);
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
@@ -72,34 +74,37 @@
     }
 
     .pricing-card {
-      background: var(--card-bg);
-      padding: 3rem;
-      border-radius: 2rem;
+      background: rgba(33, 33, 36, 0.62);
+      backdrop-filter: blur(26px) saturate(130%);
+      -webkit-backdrop-filter: blur(26px) saturate(130%);
       border: 1px solid var(--border);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      padding: 2.25rem;
+      border-radius: 18px;
       display: flex;
       flex-direction: column;
       position: relative;
       overflow: hidden;
-      transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
     }
 
     .pricing-card.premium {
-      border-color: var(--primary);
-      box-shadow: 0 20px 40px -10px rgba(79, 70, 229, 0.3);
+      border-color: rgba(62, 166, 255, 0.4);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(62, 166, 255, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.07);
     }
 
     .pricing-card:hover {
-      transform: translateY(-10px);
+      transform: translateY(-4px);
     }
 
     .badge {
       position: absolute;
       top: 1.5rem;
       right: 1.5rem;
-      background: rgba(79, 70, 229, 0.2);
-      color: var(--accent);
+      background: #f1f1f1;
+      color: #0f0f0f;
       padding: 4px 12px;
-      border-radius: 20px;
+      border-radius: 999px;
       font-size: 0.75rem;
       font-weight: 700;
       text-transform: uppercase;
@@ -109,12 +114,16 @@
     .tier-name {
       font-family: 'Lexend Giga', sans-serif;
       font-size: 1.5rem;
+      font-weight: 700;
       margin-bottom: 1rem;
+      color: var(--text);
     }
 
     .price {
       font-family: 'Lexend Giga', sans-serif;
       font-size: 3rem;
+      font-weight: 700;
+      color: var(--text);
       margin-bottom: 2rem;
       display: flex;
       align-items: baseline;
@@ -123,7 +132,7 @@
 
     .price .unit {
       font-size: 1rem;
-      color: var(--text-muted);
+      color: var(--text-faint);
     }
 
     .features {
@@ -141,32 +150,36 @@
     }
 
     .features li svg {
-      color: var(--success);
+      color: #6fcf7f;
       flex-shrink: 0;
     }
 
     .cta-btn {
       display: inline-block;
       text-align: center;
-      background: var(--primary);
-      color: white;
+      background: #f1f1f1;
+      color: #0f0f0f;
       padding: 16px;
-      border-radius: 12px;
+      border-radius: 999px;
       text-decoration: none;
       font-family: 'Lexend Giga', sans-serif;
       font-size: 0.9rem;
       font-weight: 700;
-      transition: all 0.2s;
+      transition: background 0.15s ease;
     }
 
     .cta-btn.secondary {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text);
+    }
+
+    .cta-btn.secondary:hover {
+      background: rgba(255, 255, 255, 0.14);
     }
 
     .cta-btn:hover {
-      filter: brightness(1.1);
-      transform: scale(1.02);
+      background: #ffffff;
     }
 
     .bitcoin-note {
@@ -211,7 +224,6 @@
       transform: translateY(0);
     }
   </style>
-  <link rel="stylesheet" href="/assets/matte-theme.css" />
 </head>
 
 <body>

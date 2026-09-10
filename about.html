@@ -50,8 +50,9 @@
     .hero h1 {
       font-family: 'Lexend Giga', sans-serif;
       font-size: clamp(2.5rem, 8vw, 4rem);
-      font-weight: 900;
-      background: linear-gradient(to right, var(--accent), var(--accent-secondary));
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(to bottom, #ffffff 30%, #b3b8c2 100%);
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
@@ -75,35 +76,23 @@
     }
 
     .feature-card {
-      background: var(--card-bg);
-      padding: 2.5rem;
-      border-radius: 1.5rem;
+      background: rgba(33, 33, 36, 0.62);
+      backdrop-filter: blur(26px) saturate(130%);
+      -webkit-backdrop-filter: blur(26px) saturate(130%);
+      padding: 2rem;
+      border-radius: 18px;
       border: 1px solid var(--border);
-      transition: all 0.3s ease;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
       position: relative;
       overflow: hidden;
     }
 
     .feature-card:hover {
-      transform: translateY(-5px);
-      border-color: var(--primary);
-      box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.5);
-    }
-
-    .feature-card::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 4px;
-      background: linear-gradient(to right, var(--accent), var(--accent-secondary));
-      opacity: 0;
-      transition: opacity 0.3s;
-    }
-
-    .feature-card:hover::before {
-      opacity: 1;
+      transform: translateY(-3px);
+      border-color: rgba(255, 255, 255, 0.16);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+      background: rgba(40, 40, 44, 0.68);
     }
 
     .feature-icon {
@@ -115,6 +104,7 @@
     .feature-card h3 {
       font-family: 'Lexend Giga', sans-serif;
       font-size: 1.25rem;
+      font-weight: 700;
       margin-bottom: 1rem;
       color: var(--text);
     }
@@ -126,12 +116,14 @@
 
     /* Content Section */
     .content-section {
-      background: rgba(30, 41, 59, 0.5);
+      background: rgba(33, 33, 36, 0.62);
+      backdrop-filter: blur(26px) saturate(130%);
+      -webkit-backdrop-filter: blur(26px) saturate(130%);
       border: 1px solid var(--border);
-      border-radius: 2rem;
+      border-radius: 18px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.06);
       padding: 4rem;
       margin-bottom: 4rem;
-      backdrop-filter: blur(10px);
     }
 
     .content-section h2 {
@@ -166,14 +158,14 @@
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      background: rgba(247, 147, 26, 0.1);
-      color: #f7931a;
+      background: rgba(245, 166, 35, 0.1);
+      color: #f5a623;
       padding: 8px 16px;
       border-radius: 999px;
       font-weight: 700;
       font-size: 0.85rem;
       margin-top: 1.5rem;
-      border: 1px solid rgba(247, 147, 26, 0.2);
+      border: 1px solid rgba(245, 166, 35, 0.3);
     }
 
     .btc-icon {
@@ -200,7 +192,6 @@
         text-decoration: underline;
     }
   </style>
-  <link rel="stylesheet" href="/assets/matte-theme.css" />
 </head>
 
 <body>

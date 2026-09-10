@@ -39,14 +39,17 @@
   </style>
   <style>
     :root {
-      --primary: #4f46e5;
-      --primary-hover: #4338ca;
-      --bg: #0f172a;
-      --card-bg: #1e293b;
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
-      --border: #334155;
-      --link-bg: rgba(79, 70, 229, 0.1);
+      --primary: #e8eaed;
+      --primary-hover: #ffffff;
+      --primary-ink: #0f0f0f;
+      --accent: #3ea6ff;
+      --bg: #0f0f0f;
+      --card-bg: rgba(33, 33, 36, 0.62);
+      --text: #f1f1f1;
+      --text-muted: #aaaaaa;
+      --text-faint: #717171;
+      --border: rgba(255, 255, 255, 0.09);
+      color-scheme: dark;
     }
 
     * {
@@ -55,7 +58,9 @@
 
     body {
       font-family: 'DM Sans', 'Mulish', sans-serif;
-      background: var(--bg);
+      background:
+        radial-gradient(1100px 500px at 50% -180px, rgba(255, 255, 255, 0.055), transparent 60%),
+        #0f0f0f;
       color: var(--text);
       display: flex;
       flex-direction: column;
@@ -65,17 +70,21 @@
       margin: 0;
       min-height: 100vh;
       text-align: center;
+      -webkit-font-smoothing: antialiased;
     }
 
     .container {
       width: 100%;
       max-width: 600px;
-      background: var(--card-bg);
+      background: rgba(33, 33, 36, 0.62);
+      backdrop-filter: blur(26px) saturate(130%);
+      -webkit-backdrop-filter: blur(26px) saturate(130%);
       padding: 3rem 2rem;
-      border-radius: 1.5rem;
+      border-radius: 18px;
       border: 1px solid var(--border);
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+      position: relative;
+      z-index: 1;
     }
 
     .icon {
@@ -109,8 +118,9 @@
     h1 {
       font-family: 'Lexend Giga', sans-serif;
       font-size: 2.25rem;
-      font-weight: 800;
-      background: linear-gradient(to right, #818cf8, #c084fc);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(to bottom, #ffffff 30%, #b3b8c2 100%);
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
@@ -131,40 +141,38 @@
       align-items: center;
       justify-content: center;
       background: var(--primary);
-      color: white;
+      color: var(--primary-ink);
       padding: 0.75rem 2rem;
-      border-radius: 0.75rem;
+      border-radius: 999px;
       font-weight: 600;
       text-decoration: none;
-      transition: all 0.2s;
+      transition: background 0.15s ease;
       border: none;
       cursor: pointer;
-      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      box-shadow: none;
     }
 
     .btn:hover {
       background: var(--primary-hover);
-      transform: translateY(-2px);
-      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
     }
 
     .btn:active {
-      transform: translateY(0);
+      transform: scale(0.98);
     }
 
     .failed-link-box {
-      background: var(--link-bg);
-      border: 1px solid rgba(79, 70, 229, 0.3);
-      color: #818cf8;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border);
+      color: #d7d7d7;
       padding: 8px 16px;
-      border-radius: 0.75rem;
+      border-radius: 999px;
       font-family: 'DM Sans', 'Mulish', sans-serif;
       font-size: 1rem;
       font-weight: 700;
       margin: 1.5rem 0;
       display: inline-block;
       word-break: break-all;
-      box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+      box-shadow: none;
     }
 
     @media (max-width: 480px) {
@@ -177,7 +185,6 @@
       }
     }
   </style>
-  <link rel="stylesheet" href="/assets/matte-theme.css" />
 </head>
 
 <body>
