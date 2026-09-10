@@ -5325,7 +5325,7 @@
 
         // Same edge-lag window as links: a domain added seconds ago can 404
         // once before it becomes visible. Retry transient session misses
-        // quietly before bothering the user with a toast.
+        // quietly (short waits) before bothering the user with a toast.
         const getDomainsFn = functions.httpsCallable('getUserDomains');
         let lastErr = null;
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -5338,7 +5338,7 @@
             lastErr = err;
             console.warn(`loadUserDomains attempt ${attempt + 1}/3 failed:`, (err && err.message) || err);
             if (!isSessionNotFoundError(err) || attempt === 2) break;
-            await new Promise((r) => setTimeout(r, 900 * (attempt + 1)));
+            await new Promise((r) => setTimeout(r, attempt === 0 ? 400 : 700));
           }
         }
         console.error("Error loading domains:", lastErr);
@@ -6048,15 +6048,15 @@
           try {
             const validateFn = functions.httpsCallable('validateSession');
             let exists = false;
-            for (let attempt = 0; attempt < 3; attempt++) {
+            for (let attempt = 0; attempt < 2; attempt++) {
               try {
                 const res = await validateFn({ sessionId: val });
                 if (res.data.exists) { exists = true; break; }
               } catch (e) {
-                console.warn(`validateSession attempt ${attempt + 1}/3 failed:`, (e && e.message) || e);
-                if (attempt === 2) throw e;
+                console.warn(`validateSession attempt ${attempt + 1}/2 failed:`, (e && e.message) || e);
+                if (attempt === 1) throw e;
               }
-              if (attempt < 2) await new Promise((r) => setTimeout(r, 900 * (attempt + 1)));
+              if (attempt < 1) await new Promise((r) => setTimeout(r, 500));
             }
 
             if (!exists) {
@@ -6103,6 +6103,22 @@
         if (sid) copyText(sid, null);
       }
 
+      // Idempotent boot-loader dismissal (also called early by the instant
+      // cached paint; the initApp finally-block calls it again as a no-op).
+      function dismissBootLoader() {
+        window.__tunnelBooted = true;
+        const initialLoader = document.getElementById('initialLoadingScreen');
+        if (initialLoader) {
+          initialLoader.style.opacity = '0';
+          initialLoader.style.visibility = 'hidden';
+          // Remove the class that prevents scrolling
+          document.body.classList.remove('initial-loading');
+          setTimeout(() => { try { initialLoader.remove(); } catch (e) {} }, 500);
+        } else {
+          document.body.classList.remove('initial-loading');
+        }
+      }
+
       // Initialize on load
       initApp();
 
@@ -6131,25 +6147,33 @@
           let sid = getSessionId();
 
           if (sid) {
-            await fetchAndRenderSession(sid, false, true); // pass true for initial load to avoid double modals if possible
-            // Load user's custom domains to populate the dropdown
-            await loadUserDomains();
+            // Instant paint: render last-known history immediately so the
+            // screen feels instant, then revalidate in the background. The
+            // boot loader is dismissed as soon as cached content is on
+            // screen instead of waiting for the network round-trip.
+            const cached = (Array.isArray(currentLinks) ? currentLinks : []).filter(
+              (l) => l && (!l.sessionId || l.sessionId === sid)
+            );
+            if (cached.length) {
+              currentLinks = cached;
+              try { renderHistory(currentLinks); } catch (e) { console.warn('cached paint failed:', e); }
+              dismissBootLoader();
+            }
+            // Links + domains are independent — fetch in parallel instead of
+            // serially (one round-trip instead of two).
+            await Promise.all([
+              fetchAndRenderSession(sid, false, true), // true = initial load, no modal
+              loadUserDomains(),
+            ]);
           } else {
             renderEmptyState();
           }
         } catch (err) {
           console.error("Critical error during initApp:", err);
         } finally {
-          // Hide the initial loading screen smoothly
-          window.__tunnelBooted = true;
-          const initialLoader = document.getElementById('initialLoadingScreen');
-          if (initialLoader) {
-            initialLoader.style.opacity = '0';
-            initialLoader.style.visibility = 'hidden';
-            // Remove the class that prevents scrolling
-            document.body.classList.remove('initial-loading');
-            setTimeout(() => initialLoader.remove(), 500);
-          }
+          // Hide the initial loading screen smoothly (no-op if the instant
+          // paint above already dismissed it).
+          dismissBootLoader();
           // Deep link from pricing ("Register Domain"): open the custom
           // domain dialog exactly as if the + button had been pressed —
           // including the new-session dialog when there is no session yet.
@@ -6179,24 +6203,25 @@
         // Blobs edge reads lag writes by a few seconds: a session/link created
         // moments ago can 404 or list incompletely on the first attempt even
         // in the SAME browser (backend already retries too). Retry transient
-        // "session not found" failures for a few seconds before surfacing an
-        // error, so a fresh session never flashes "Failed to sync session".
+        // "session not found" failures briefly before surfacing an error, so
+        // a fresh session never flashes "Failed to sync session" — while
+        // genuine failures still surface fast (short waits, few attempts).
         const getLinks = functions.httpsCallable('getLinksBySession');
         let res = null;
         let lastErr = null;
-        for (let attempt = 0; attempt < 4; attempt++) {
+        for (let attempt = 0; attempt < 3; attempt++) {
           try {
             res = await getLinks({ sessionId: sid });
             lastErr = null;
             break;
           } catch (e) {
             lastErr = e;
-            console.warn(`fetchAndRenderSession attempt ${attempt + 1}/4 failed:`, (e && e.message) || e);
+            console.warn(`fetchAndRenderSession attempt ${attempt + 1}/3 failed:`, (e && e.message) || e);
             // Only transient "session not found" is worth retrying — other
             // errors (permission, network down) fail fast to avoid hanging
             // the UI behind a spinner for seconds.
-            if (!isSessionNotFoundError(e) || attempt === 3) break;
-            await new Promise((r) => setTimeout(r, 900 * (attempt + 1)));
+            if (!isSessionNotFoundError(e) || attempt === 2) break;
+            await new Promise((r) => setTimeout(r, attempt === 0 ? 450 : 800));
           }
         }
 
@@ -6440,8 +6465,10 @@
             throw new Error('Backend returned an invalid short URL. Please try again.');
           }
 
-          // Only create session in database AFTER successful URL shortening
-          await createSessionInDb(sid);
+          // The backend already created the session implicitly with the
+          // shorten call above; this is a redundant idempotent confirmation.
+          // Fire-and-forget so shortening never waits an extra round-trip.
+          try { createSessionInDb(sid); } catch (e) {}
 
           // Add to local state immediately (optimistic update). The domain
           // is stored explicitly so the merge key is stable even before the
@@ -7777,7 +7804,7 @@
               if (mergedCount > 0) {
                 const target = prevCount + mergedCount;
                 for (let i = 0; i < 3 && currentLinks.length < target; i++) {
-                  await new Promise((r) => setTimeout(r, 2000));
+                  await new Promise((r) => setTimeout(r, 1200));
                   await fetchAndRenderSession(currentSid);
                 }
               }

@@ -40,6 +40,7 @@ import {
   clicksPrefix,
   freshGet,
   getWithRetry,
+  mapWithConcurrency,
 } from "./lib/util.js";
 
 // Ensure a Cloudflare SaaS custom hostname exists once the domain is
@@ -69,12 +70,13 @@ async function ensureSaaSHostname(doc) {
 // Blobs edge reads lag writes by a few seconds in practice: a session or
 // link created moments ago can still read back as missing on the next call
 // from the SAME browser. All direct-key reads below go through freshGet
-// (strong-first with fallback). need* variants additionally retry for a few
-// seconds before reporting "not found", so transient lag never surfaces as
+// (fast eventual read first, one strong re-read only on a miss — happy path
+// costs exactly one fast read). need* variants additionally retry briefly
+// before reporting "not found", so transient lag never surfaces as
 // "Unknown or missing session" while genuinely unknown keys still 404
-// after the budget. Existence probes (checkSessionExists/validateSession)
-// stay single-shot — retrying a genuinely-new ID would only add latency
-// to every new-session creation.
+// quickly (sub-second budget; the frontend's own retry covers longer lags).
+// Existence probes (checkSessionExists/validateSession) stay single-shot —
+// retrying a genuinely-new ID would only add latency to every creation.
 
 async function getSession(s, sid) {
   if (!validSessionId(sid)) return null;
@@ -88,7 +90,7 @@ async function needSession(s, sid) {
     e.code = "not-found";
     throw e;
   }
-  const sess = await getWithRetry(s, `sessions/${sid}`, { type: "json" }, { attempts: 5, delayMs: 800 });
+  const sess = await getWithRetry(s, `sessions/${sid}`, { type: "json" }, { attempts: 3, delayMs: 350 });
   if (!sess) {
     const e = new Error("Unknown or missing session. Load a valid Session ID.");
     e.statusCode = 404;
@@ -110,7 +112,7 @@ async function needLink(s, host, code) {
     e.code = "not-found";
     throw e;
   }
-  const link = await getWithRetry(s, linkKey(host, code), { type: "json" }, { attempts: 4, delayMs: 700 });
+  const link = await getWithRetry(s, linkKey(host, code), { type: "json" }, { attempts: 3, delayMs: 350 });
   if (!link) {
     const e = new Error("Link not found. It may have been deleted.");
     e.statusCode = 404;
@@ -156,7 +158,7 @@ async function needOwnedDomain(s, domain, sessionId) {
     e.code = "invalid-argument";
     throw e;
   }
-  const doc = await getWithRetry(s, `domain/${d}`, { type: "json" }, { attempts: 4, delayMs: 700 });
+  const doc = await getWithRetry(s, `domain/${d}`, { type: "json" }, { attempts: 3, delayMs: 350 });
   if (!doc) {
     const e = new Error("Domain not found in your account.");
     e.statusCode = 404;
@@ -248,19 +250,21 @@ function linkShape(l) {
 }
 
 async function listLinksOfSession(s, sid) {
-  const found = [];
-  for (const b of await listAll(s, "link/")) {
-    const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
-    if (l && l.sessionId === sid) found.push(l);
-  }
+  // Fetch in parallel batches: a sequential per-key await pays a full
+  // round-trip per link (N x RTT), which dominates home-screen load time as
+  // the store grows. Batches of ~12 keep it fast without bursting.
+  const blobs = await listAll(s, "link/");
+  const docs = await mapWithConcurrency(blobs, 12, (b) =>
+    freshGet(s, b.key, { type: "json" }).catch(() => null)
+  );
+  const found = docs.filter((l) => l && l.sessionId === sid);
   found.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   return found;
 }
 
 async function deleteClickKeys(s, host, code) {
-  for (const b of await listAll(s, clicksPrefix(host, code))) {
-    await s.delete(b.key);
-  }
+  const blobs = await listAll(s, clicksPrefix(host, code));
+  await mapWithConcurrency(blobs, 12, (b) => s.delete(b.key));
 }
 
 // ---------- managed promo codes (single-use, Blobs-backed) ----------
@@ -329,11 +333,11 @@ function promoShape(p) {
 // harmless, and we always take a fresh index anyway.
 async function addressTakenByOtherDomain(s, ownDomain, address) {
   if (!address) return false;
-  for (const b of await listAll(s, "domain/")) {
-    let d = null;
-    try {
-      d = await freshGet(s, b.key, { type: "json" });
-    } catch { continue; }
+  const blobs = await listAll(s, "domain/");
+  const docs = await mapWithConcurrency(blobs, 12, (b) =>
+    freshGet(s, b.key, { type: "json" }).catch(() => null)
+  );
+  for (const d of docs) {
     if (!d || d.domain === ownDomain) continue;
     if (d.quote && d.quote.address === address) return true;
     if (Array.isArray(d.quoteHistory) && d.quoteHistory.some((h) => h && h.address === address)) return true;
@@ -490,11 +494,11 @@ const actions = {
     const host = needLinkHost(p);
     const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
-    const clicks = [];
-    for (const b of await listAll(s, clicksPrefix(host, link.code))) {
-      const c = await freshGet(s, b.key, { type: "json" }).catch(() => null);
-      if (c) clicks.push(c);
-    }
+    const blobs = await listAll(s, clicksPrefix(host, link.code));
+    const docs = await mapWithConcurrency(blobs, 12, (b) =>
+      freshGet(s, b.key, { type: "json" }).catch(() => null)
+    );
+    const clicks = docs.filter(Boolean);
     clicks.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     return ok({ clickCount: link.clickCount || 0, clicks });
   },
@@ -531,10 +535,9 @@ const actions = {
     if (!validSessionId(oldSessionId) || !validSessionId(newSessionId) || oldSessionId === newSessionId) {
       return fail(400, "invalid-argument", "Invalid session pair.");
     }
-    await needSession(s, oldSessionId);
-    await needSession(s, newSessionId);
+    await Promise.all([needSession(s, oldSessionId), needSession(s, newSessionId)]);
     const links = await listLinksOfSession(s, oldSessionId);
-    for (const l of links) {
+    await mapWithConcurrency(links, 12, (l) => {
       l.sessionId = newSessionId;
       // Keys are (host, code): derive the host from the stored doc, falling
       // back to the link URL itself so the key can never go missing.
@@ -543,36 +546,38 @@ const actions = {
         try { lh = new URL(l.short).hostname; } catch { lh = ""; }
         l.domain = lh;
       }
-      await s.setJSON(linkKey(lh, l.code), l);
-    }
+      return s.setJSON(linkKey(lh, l.code), l);
+    });
     // Custom domains belong to the session too: move them along so a merge
     // transfers everything (links + domains). Hostnames are unique docs, so
     // no conflicts are possible. Past promo redemptions stay recorded.
-    let movedDomains = 0;
-    for (const b of await listAll(s, "domain/")) {
-      const d = await freshGet(s, b.key, { type: "json" }).catch(() => null);
-      if (d && d.sessionId === oldSessionId) {
-        d.sessionId = newSessionId;
-        await s.setJSON(`domain/${d.domain}`, d);
-        movedDomains++;
-      }
-    }
-    return ok({ success: true, count: links.length, domains: movedDomains });
+    const domainBlobs = await listAll(s, "domain/");
+    const domainDocs = await mapWithConcurrency(domainBlobs, 12, (b) =>
+      freshGet(s, b.key, { type: "json" }).catch(() => null)
+    );
+    const toMove = domainDocs.filter((d) => d && d.sessionId === oldSessionId);
+    await mapWithConcurrency(toMove, 12, (d) => {
+      d.sessionId = newSessionId;
+      return s.setJSON(`domain/${d.domain}`, d);
+    });
+    return ok({ success: true, count: links.length, domains: toMove.length });
   },
 
   // ----- custom domains -----
 
   async getUserDomains(s, p) {
     await needSession(s, p.sessionId);
-    const out = [];
-    for (const b of await listAll(s, "domain/")) {
-      const d = await freshGet(s, b.key, { type: "json" }).catch(() => null);
-      if (!d || d.sessionId !== p.sessionId) continue;
-      // Keep the list truthful: lapsed coverage demotes here too, so the
-      // dropdown never offers a dead domain as active.
+    const blobs = await listAll(s, "domain/");
+    const docs = await mapWithConcurrency(blobs, 12, (b) =>
+      freshGet(s, b.key, { type: "json" }).catch(() => null)
+    );
+    const mine = docs.filter((d) => d && d.sessionId === p.sessionId);
+    // Keep the list truthful: lapsed coverage demotes here too, so the
+    // dropdown never offers a dead domain as active.
+    const out = await mapWithConcurrency(mine, 6, async (d) => {
       if (refreshCoverage(d)) await s.setJSON(`domain/${d.domain}`, d);
-      out.push(await domainInfo(d));
-    }
+      return domainInfo(d);
+    });
     return ok({ domains: out });
   },
 
@@ -728,19 +733,20 @@ const actions = {
     // Remove Cloudflare SaaS hostname first (best effort) so certs are cleaned up.
     if (cfConfig()) await cfDeleteCustomHostname(doc.domain);
     await s.delete(`domain/${doc.domain}`);
-    let deletedUrls = 0;
-    for (const b of await listAll(s, "link/")) {
-      const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
-      if (l) {
-        try {
-          if (new URL(l.short).hostname === doc.domain) {
-            await s.delete(b.key);
-            deletedUrls++;
-          }
-        } catch { /* ignore malformed */ }
-      }
-    }
-    return ok({ deletedUrls });
+    const linkBlobs = await listAll(s, "link/");
+    const linkDocs = await mapWithConcurrency(linkBlobs, 12, (b) =>
+      freshGet(s, b.key, { type: "json" }).catch(() => null)
+    );
+    const doomed = linkDocs.filter((l) => {
+      if (!l) return false;
+      try {
+        return new URL(l.short).hostname === doc.domain;
+      } catch { return false; }
+    });
+    await mapWithConcurrency(doomed, 12, (l) =>
+      s.delete(linkKey(l.domain || doc.domain, l.code))
+    );
+    return ok({ deletedUrls: doomed.length });
   },
 
   // ----- billing (Bitcoin) -----
@@ -924,11 +930,11 @@ const actions = {
 
   async adminListDiscountCodes(s, p, event) {
     await needAdmin(s, p, event);
-    const out = [];
-    for (const b of await listAll(s, "promo/")) {
-      const promo = await freshGet(s, b.key, { type: "json" }).catch(() => null);
-      if (promo) out.push(promoShape(promo));
-    }
+    const blobs = await listAll(s, "promo/");
+    const docs = await mapWithConcurrency(blobs, 12, (b) =>
+      freshGet(s, b.key, { type: "json" }).catch(() => null)
+    );
+    const out = docs.filter(Boolean).map(promoShape);
     out.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
     return ok({ codes: out });
   },

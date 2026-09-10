@@ -88,8 +88,9 @@ export async function handler(event) {
 
   // A link clicked seconds after creation can still be missing from the
   // edge cache — retry briefly before calling it unknown (same read-your-
-  // writes gap as the app's session sync).
-  const link = await getWithRetry(s, linkKey(host, code), { type: "json" }, { attempts: 4, delayMs: 700 }).catch(() => null);
+  // writes gap as the app's session sync). Budget stays sub-second so
+  // mistyped codes still 404 quickly.
+  const link = await getWithRetry(s, linkKey(host, code), { type: "json" }, { attempts: 3, delayMs: 300 }).catch(() => null);
   if (!link || !/^https?:\/\//.test(link.original || "")) {
     const dest = `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}`;
     return { statusCode: 302, headers: { Location: dest, "Cache-Control": "no-store" } };

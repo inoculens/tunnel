@@ -59,14 +59,16 @@ export function store(event) {
 // Background: Blobs edge reads lag writes (a few seconds in practice, up to
 // 60s for updates/deletes). The same browser that just created a session or
 // link can therefore re-read stale state ("Unknown or missing session",
-// empty history) until the edge catches up. These helpers close that gap:
-//  - freshGet: one strong-consistent read when the runtime supports it,
-//    transparently falling back to an eventual read otherwise.
-//  - getWithRetry: bounded re-reads for keys that were JUST written
-//    (session creation, new links/domains). A just-created key that is
-//    still missing is retried for a few seconds before the caller gives up
-//    and reports "not found" — so transient edge lag never surfaces as an
-//    error, while genuinely unknown keys still 404 after the budget.
+// empty history) until the edge catches up. These helpers close that gap
+// WITHOUT slowing the happy path:
+//  - freshGet: fast eventual read first (edge-cached, same speed as a plain
+//    s.get). Only when the key reads MISSING does it try one strong-
+//    consistent read (origin, slower but fresh). Found keys cost exactly one
+//    fast read — identical latency to before.
+//  - getWithRetry: bounded re-reads for keys that were JUST written. First
+//    attempt is immediate; later attempts wait briefly. Total worst-case
+//    budget is kept under ~1s so genuinely unknown keys still 404 quickly,
+//    while the frontend's own retry covers longer lag windows.
 
 export function isStrongConsistencyError(e) {
   if (!e) return false;
@@ -77,17 +79,19 @@ export function isStrongConsistencyError(e) {
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function freshGet(s, key, opts = {}) {
+  const v = await s.get(key, opts);
+  if (v !== null && v !== undefined) return v;
+  // Missing on the fast path — may be edge lag on a just-written key.
+  // One strong read (origin) before concluding it is really absent.
   try {
     return await s.get(key, { ...opts, consistency: "strong" });
   } catch (e) {
-    if (isStrongConsistencyError(e)) {
-      return s.get(key, opts);
-    }
+    if (isStrongConsistencyError(e)) return v;
     throw e;
   }
 }
 
-export async function getWithRetry(s, key, opts = {}, { attempts = 4, delayMs = 900 } = {}) {
+export async function getWithRetry(s, key, opts = {}, { attempts = 3, delayMs = 350 } = {}) {
   let last = null;
   for (let i = 0; i < attempts; i++) {
     if (i > 0) await sleep(delayMs);
@@ -101,6 +105,21 @@ export async function getWithRetry(s, key, opts = {}, { attempts = 4, delayMs = 
     }
   }
   return last;
+}
+
+// Run async work over items with bounded parallelism: sequential await in a
+// for-loop pays a full round-trip per item (N x RTT), while unbounded
+// Promise.all can burst hundreds of requests at once. Batches of ~12 keep
+// list scans (links/domains/clicks) fast without hammering the store.
+export async function mapWithConcurrency(items, limit, fn) {
+  const out = new Array(items.length);
+  const n = Math.max(1, Math.floor(limit) || 1);
+  for (let i = 0; i < items.length; i += n) {
+    const chunk = items.slice(i, i + n);
+    const res = await Promise.all(chunk.map((it, j) => fn(it, i + j)));
+    for (let j = 0; j < res.length; j++) out[i + j] = res[j];
+  }
+  return out;
 }
 
 /**
