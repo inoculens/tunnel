@@ -197,11 +197,17 @@
   </div>
 
   <script>
-    // Extract the short code from query param or path and display it
+    // Extract the short code from query param or path and display it.
+    // The resolver passes the visited short domain as ?h= (s.inoculens.com
+    // or the user's custom domain) — that is what must be shown, NOT this
+    // page's own host (tunnel.inoculens.com, where the page merely lives).
+    // ?h= is validated as a plain hostname and rendered via textContent, so
+    // a crafted value can never inject markup; invalid values fall back to
+    // the current host, then the system default.
     window.addEventListener('DOMContentLoaded', () => {
       const urlParams = new URLSearchParams(window.location.search);
       let code = urlParams.get('c');
-      
+
       if (!code) {
         const path = window.location.pathname;
         const parts = path.split('/');
@@ -209,7 +215,11 @@
         code = parts[parts.length - 1] || parts[parts.length - 2] || 'unknown';
       }
 
-      const host = window.location.host || 's.inoculens.com';
+      const HOST_RE = /^(?=.{1,253}$)[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+      const rawH = (urlParams.get('h') || '').trim().toLowerCase().split(':')[0];
+      const host = HOST_RE.test(rawH)
+        ? rawH
+        : (window.location.host || 's.inoculens.com');
 
       if (code && code !== '404' && code !== '404.html' && code !== 'index.html' && code !== 'unknown') {
         document.getElementById('linkBox').textContent = host + '/' + code;

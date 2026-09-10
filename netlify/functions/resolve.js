@@ -8,7 +8,9 @@
  * Android App Links): when the app is installed the OS takes the user there
  * directly; when it isn't, the browser simply loads the page. That is the
  * fallback — no Tunnel-branded stopover in between, ever.
- * Unknown/expired codes → 302 to the branded /404 page (keeps ?c= for display).
+ * Unknown/expired codes → 302 to the branded /404 page (keeps ?c= and ?h=
+ * for display, so the page shows the short domain actually visited —
+ * s.inoculens.com or the user's custom domain — never tunnel.inoculens.com).
  *
  * Wire-up: netlify/edge-functions/short-domain.js rewrites short-host paths
  * to this function (GET /.netlify/functions/resolve?c=<code>).
@@ -47,10 +49,15 @@ export async function handler(event) {
   // edge cache — retry briefly before calling it unknown (same read-your-
   // writes gap as the app's session sync). Budget stays sub-second so
   // mistyped codes still 404 quickly.
+  // Where to send unknown/expired codes: the branded 404 page, carrying the
+  // visited short domain (?h=) so it displays e.g. s.inoculens.com/abc — not
+  // tunnel.inoculens.com/abc, which is just where the page happens to live.
+  const notFoundDest =
+    `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}` +
+    `&h=${encodeURIComponent(host)}`;
   const link = await getWithRetry(s, linkKey(host, code), { type: "json" }, { attempts: 3, delayMs: 300 }).catch(() => null);
   if (!link || !/^https?:\/\//.test(link.original || "")) {
-    const dest = `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}`;
-    return { statusCode: 302, headers: { Location: dest, "Cache-Control": "no-store" } };
+    return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
   }
 
   // Hard stop on lapsed coverage: links on custom domains whose payment
@@ -61,8 +68,7 @@ export async function handler(event) {
   if (link.domain && link.domain !== systemShortHost()) {
     const doc = await freshGet(s, `domain/${link.domain}`, { type: "json" }).catch(() => null);
     if (doc && !coverageValid(doc)) {
-      const dest = `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}`;
-      return { statusCode: 302, headers: { Location: dest, "Cache-Control": "no-store" } };
+      return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
     }
   }
 
