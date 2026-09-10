@@ -12,7 +12,11 @@ import { store, listAll, cfConfig, cfEnsureCustomHostname, coverageValid, COVERA
 export const config = { schedule: "@hourly" };
 
 function toSats(btcAmount) {
-  return Math.round(Number(btcAmount) * 1e8);
+  // String-split to avoid float error: "0.00000001" -> 1n, never 0 from 1e-8 math.
+  const parts = String(btcAmount).split(".");
+  const whole = parts[0] || "0";
+  const frac = (parts[1] || "").padEnd(8, "0").slice(0, 8);
+  return Number(BigInt(whole === "" ? "0" : whole) * 100000000n + BigInt(frac === "" ? "0" : frac));
 }
 
 async function addressBalanceSats(address) {
@@ -54,8 +58,10 @@ export async function handler(event) {
       // "re-pay" every renewal.)
       const unpaid = d.paymentStatus !== "paid";
       const lastPaidAt = d.lastPaymentAt ? new Date(d.lastPaymentAt).getTime() : 0;
-      const renewalQuote = d.quote?.address && d.quote?.amount && !d.quote?.paidAt
-        && (d.quote.createdAt ? new Date(d.quote.createdAt).getTime() : 0) > lastPaidAt;
+      // Legacy quotes without createdAt still count as renewal candidates
+      // (otherwise old domains stall forever).
+      const quoteAt = d.quote?.createdAt ? new Date(d.quote.createdAt).getTime() : (d.quote?.address ? Infinity : 0);
+      const renewalQuote = d.quote?.address && d.quote?.amount && !d.quote?.paidAt && quoteAt > lastPaidAt;
       const renewalDue = d.paymentStatus === "paid" && !coverageValid(d) && renewalQuote;
       if (!unpaid && !renewalDue) continue;
       // Candidates: the current quote address ALWAYS (even expired — the user

@@ -165,13 +165,20 @@ export function fail(statusCode, code, message) {
 }
 
 // ---------- Validation ----------
-
-export const SESSION_RE = /^[a-zA-Z0-9\-_!]{10}$/;
+// Strict split (no legacy): sessions are exactly 10 alphanumerics without "1"
+// and without specials. Admin keys are exactly 10 chars, always contain "1",
+// specials "@#$" allowed (never valid as session, so auto-routes to admin).
+export const SESSION_RE = /^[A-Za-z023456789]{10}$/;
+export const ADMIN_RE = /^[A-Za-z0-9\-_!@#$]{10}$/;
 export const CODE_RE = /^[A-Za-z0-9_-]{3,64}$/;
 export const HOST_RE = /^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*\.[A-Za-z]{2,}$/;
 
 export function validSessionId(v) {
-  return typeof v === "string" && SESSION_RE.test(v);
+  return typeof v === "string" && SESSION_RE.test(v) && !v.includes("1");
+}
+
+export function validAdminKey(v) {
+  return typeof v === "string" && ADMIN_RE.test(v) && v.includes("1");
 }
 
 export function validSlug(v) {
@@ -204,9 +211,16 @@ const CODE_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234
 const TOKEN_ALPHABET = CODE_ALPHABET + "-_";
 
 function randFrom(alphabet, n) {
-  const buf = randomBytes(n);
+  // Rejection sampling: avoids modulo bias from `byte % len`.
+  const len = alphabet.length;
+  const max = 256 - (256 % len);
   let out = "";
-  for (let i = 0; i < n; i++) out += alphabet[buf[i] % alphabet.length];
+  while (out.length < n) {
+    const buf = randomBytes(n * 2);
+    for (let i = 0; i < buf.length && out.length < n; i++) {
+      if (buf[i] < max) out += alphabet[buf[i] % len];
+    }
+  }
   return out;
 }
 
@@ -232,14 +246,32 @@ export function detectPlatform(url) {
   return null;
 }
 
-// ---------- Client IP (truncated for privacy) ----------
+// ---------- Client IP (trusted first, truncated for privacy) ----------
+// Trust order: Netlify infra headers first (not client-spoofable),
+// X-Forwarded-For LAST (client-controlled). For XFF fallback take the LAST
+// entry (closest to LB), not the first (attacker-controlled).
+
+export function trustedRawIp(event) {
+  const h = event.headers || {};
+  const lowered = {};
+  for (const [k, v] of Object.entries(h)) lowered[String(k).toLowerCase()] = v;
+  const pick = (v) => String(v || "").split(",")[0].trim();
+  const pickLast = (v) => {
+    const parts = String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "";
+  };
+  return (
+    pick(lowered["x-nf-client-connection-ip"]) ||
+    pick(lowered["client-ip"]) ||
+    pick(lowered["cf-connecting-ip"]) ||
+    pick(lowered["x-bb-ip"]) ||
+    pickLast(lowered["x-forwarded-for"]) ||
+    "unknown"
+  );
+}
 
 export function clientIp(event) {
-  const h = event.headers || {};
-  const raw =
-    (h["x-forwarded-for"] || "").split(",")[0].trim() ||
-    h["client-ip"] ||
-    "unknown";
+  const raw = trustedRawIp(event);
   if (raw.includes(":") && raw.includes(".")) return raw; // unexpected mix, keep
   if (raw.includes(":")) {
     // IPv6 → /64
@@ -544,12 +576,28 @@ export async function verifyDns(domain, token) {
   return checks;
 }
 
-// ---------- Bitcoin pricing ----------
+// ---------- Bitcoin pricing (live only, never hardcoded fallback) ----------
+// Tries free providers in order. Any success = live price. All fail = throw
+// 503 and UI asks user to refresh/retry. BTC_USD_FALLBACK is intentionally
+// ignored (a stale $65k default can misprice by thousands).
+
+async function fetchWithTimeout(url, ms, opts = {}) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
 
 export async function btcUsdPrice() {
+  const errors = [];
+  // 1. CoinGecko (no key)
   try {
-    const res = await fetch(
-      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+    const res = await fetchWithTimeout(
+      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+      2500
     );
     if (!res.ok) throw new Error(`CoinGecko ${res.status}`);
     const data = await res.json();
@@ -557,18 +605,42 @@ export async function btcUsdPrice() {
     if (Number.isFinite(price) && price > 0) return price;
     throw new Error("bad price");
   } catch (e) {
-    const fb = Number(process.env.BTC_USD_FALLBACK);
-    if (Number.isFinite(fb) && fb > 0) return fb;
-    throw new Error("Bitcoin price unavailable, try again later.");
+    errors.push(`coingecko:${e?.message || e}`);
   }
+  // 2. Coinbase spot (no key)
+  try {
+    const res = await fetchWithTimeout("https://api.coinbase.com/v2/prices/BTC-USD/spot", 2500);
+    if (!res.ok) throw new Error(`Coinbase ${res.status}`);
+    const data = await res.json();
+    const price = Number(data?.data?.amount);
+    if (Number.isFinite(price) && price > 0) return price;
+    throw new Error("bad price");
+  } catch (e) {
+    errors.push(`coinbase:${e?.message || e}`);
+  }
+  // 3. Bitstamp ticker (no key)
+  try {
+    const res = await fetchWithTimeout("https://www.bitstamp.net/api/v2/ticker/btcusd/", 2500);
+    if (!res.ok) throw new Error(`Bitstamp ${res.status}`);
+    const data = await res.json();
+    const price = Number(data?.last);
+    if (Number.isFinite(price) && price > 0) return price;
+    throw new Error("bad price");
+  } catch (e) {
+    errors.push(`bitstamp:${e?.message || e}`);
+  }
+  console.error(`btcUsdPrice all providers failed: ${errors.join(" | ")}`);
+  throw new Error("Bitcoin price unavailable, refresh and try again later.");
 }
 
 export function quoteFor(discountPct, price) {
-  const usd = Number(process.env.DOMAIN_PRICE_USD || 10);
+  const rawUsd = Number(process.env.DOMAIN_PRICE_USD || 10);
+  const usd = Number.isFinite(rawUsd) && rawUsd > 0 ? rawUsd : 10;
   const pct = Math.min(Math.max(Number(discountPct) || 0, 0), 100);
   const due = usd * (1 - pct / 100);
   const amount = (due / price).toFixed(8);
-  const ttlDays = Number(process.env.QUOTE_TTL_DAYS || 7);
+  const rawTtl = Number(process.env.QUOTE_TTL_DAYS || 7);
+  const ttlDays = Number.isFinite(rawTtl) && rawTtl >= 1 && rawTtl <= 30 ? rawTtl : 7;
   const now = Date.now();
   return {
     amount,
@@ -577,6 +649,134 @@ export function quoteFor(discountPct, price) {
     expiresAt: new Date(now + ttlDays * 86400000).toISOString(),
     createdAt: new Date(now).toISOString(),
   };
+}
+
+// ---------- URL safety (Safe Browsing proactive at mint) ----------
+// Cache: safety/<sha256(host+path)> -> { safe, reason, at }. TTL 24h default.
+// Fail-open with log when key missing/timeout (don't break youtubers), but
+// flagged-unsafe always blocks mint.
+
+export function safetyCacheKey(url) {
+  try {
+    const u = new URL(String(url));
+    const norm = `${u.hostname.toLowerCase()}${u.pathname}${u.search}`.slice(0, 500);
+    // Node crypto dynamic to keep edge bundlers happy; fallback to raw.
+    return `safety/${encodeURIComponent(norm).slice(0, 120)}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function checkUrlSafety(s, url) {
+  const key = process.env.SAFE_BROWSING_API_KEY || null;
+  if (!key) return { safe: true, degraded: true, reason: "no-key" };
+  const cacheKey = safetyCacheKey(url);
+  const ttlH = Number(process.env.SAFETY_CACHE_TTL_HOURS || 24);
+  const ttlMs = (Number.isFinite(ttlH) && ttlH > 0 ? ttlH : 24) * 3600000;
+  if (cacheKey) {
+    try {
+      const cached = await s.get(cacheKey, { type: "json" });
+      if (cached && cached.at && Date.now() - new Date(cached.at).getTime() < ttlMs) {
+        return cached;
+      }
+    } catch { /* miss -> live check */ }
+  }
+  const verdict = await liveSafetyCheck(String(url), key).catch((e) => ({
+    safe: true,
+    degraded: true,
+    reason: `check-failed:${e?.message || e}`,
+  }));
+  if (cacheKey) {
+    try {
+      await s.setJSON(cacheKey, { ...verdict, at: new Date().toISOString() });
+    } catch (e) {
+      console.error("safety cache save failed:", e?.message || e);
+    }
+  }
+  if (verdict.degraded) console.warn(`safety degraded for ${url}: ${verdict.reason}`);
+  return verdict;
+}
+
+async function liveSafetyCheck(url, apiKey) {
+  const body = {
+    client: { clientId: "inoculens-tunnel", clientVersion: "1.0" },
+    threatInfo: {
+      threatTypes: ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION"],
+      platformTypes: ["ANY_PLATFORM"],
+      threatEntryTypes: ["URL"],
+      threatEntries: [{ url }],
+    },
+  };
+  const res = await fetchWithTimeout(
+    `https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${encodeURIComponent(apiKey)}`,
+    Number(process.env.SAFETY_TIMEOUT_MS || 2000),
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+  );
+  if (!res.ok) throw new Error(`safebrowsing ${res.status}`);
+  const data = await res.json();
+  const matches = Array.isArray(data?.matches) ? data.matches : [];
+  if (matches.length) {
+    return { safe: false, reason: String(matches[0]?.threatType || "UNSAFE") };
+  }
+  return { safe: true, reason: "clean" };
+}
+
+// ---------- Ledger helpers (forever, sharded counts, throttled logging) ----------
+
+export function countDayKey(host, code, when = Date.now()) {
+  const d = new Date(when);
+  const day = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  return `counts/${cleanDomain(host) || "unknown"}/${code}/${day}`;
+}
+
+export async function bumpDayCount(s, host, code, n = 1) {
+  const key = countDayKey(host, code);
+  try {
+    const cur = (await s.get(key, { type: "json" })) || { count: 0 };
+    cur.count = (Number(cur.count) || 0) + n;
+    await s.setJSON(key, cur);
+  } catch (e) {
+    console.error(`bumpDayCount failed:`, e?.message || e);
+  }
+}
+
+// Per-IP-per-link-per-minute logging bucket (redirect never blocked).
+// Returns true if detail doc should be stored. Same IP looping 50k/min gets
+// counted but not 50k docs. Distinct IPs each get full budget.
+export async function shouldStoreClickDetail(s, host, code, rawIp) {
+  const limit = Number(process.env.RESOLVE_LOG_PER_IP_MIN || 30);
+  const lim = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 200) : 30;
+  try {
+    const { createHash } = await import("node:crypto");
+    const ipHash = createHash("sha256").update(String(rawIp || "unknown")).digest("hex").slice(0, 16);
+    const win = Math.floor(Date.now() / 60000);
+    const key = `rl-resolve/${cleanDomain(host) || "unknown"}/${code}/${ipHash}/${win}`;
+    const cur = (await s.get(key, { type: "json" })) || { count: 0 };
+    cur.count = (Number(cur.count) || 0) + 1;
+    await s.setJSON(key, cur);
+    return cur.count <= lim;
+  } catch {
+    return true;
+  }
+}
+
+// Per-session link quota (system + custom combined).
+export async function sessionLinkCount(s, sid) {
+  try {
+    const meta = await s.get(`sessions/${sid}/meta`, { type: "json" });
+    if (meta && Number.isFinite(Number(meta.linkCount))) return Number(meta.linkCount);
+  } catch { /* fall through to scan */ }
+  return null;
+}
+
+export async function bumpSessionLinkCount(s, sid, delta) {
+  try {
+    const meta = (await s.get(`sessions/${sid}/meta`, { type: "json" })) || { linkCount: 0 };
+    meta.linkCount = Math.max(0, (Number(meta.linkCount) || 0) + delta);
+    await s.setJSON(`sessions/${sid}/meta`, meta);
+  } catch (e) {
+    console.error("bumpSessionLinkCount failed:", e?.message || e);
+  }
 }
 
 // ---------- Coverage (subscription) model ----------
@@ -693,7 +893,18 @@ export async function deriveAddress(index) {
       throw err;
     }
   }
-  if (process.env.MANUAL_BTC_ADDRESS) return process.env.MANUAL_BTC_ADDRESS;
+  // MANUAL_BTC_ADDRESS is local-testing only (single reused address).
+  // Refuse it on prod hosts to prevent accidental reuse draining privacy.
+  if (process.env.MANUAL_BTC_ADDRESS) {
+    const prodHosts = new Set(["s.inoculens.com", "tunnel.inoculens.com"]);
+    if (prodHosts.has(systemShortHost())) {
+      const err = new Error("MANUAL_BTC_ADDRESS is testing-only and refused in production. Set BTC_XPUB.");
+      err.statusCode = 412;
+      err.code = "failed-precondition";
+      throw err;
+    }
+    return process.env.MANUAL_BTC_ADDRESS;
+  }
   const err = new Error(
     "Bitcoin payments are not configured on this deployment (no BTC_XPUB). Contact support."
   );

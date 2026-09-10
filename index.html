@@ -3451,8 +3451,12 @@
             <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center;">
               <p style="font-size: 0.75rem; color: #f5a623;">⚡ Payment is automatically detected. Your domain activates
                 within minutes of blockchain confirmation.</p>
-              <button class="modal-btn modal-btn-ok" onclick="updateQuote(true)"
-                style="height: 32px; font-size: 0.75rem; width: auto; padding: 0 12px; flex-shrink: 0; margin-left: 8px;">Refresh</button>
+              <div style="display: flex; gap: 8px; flex-shrink: 0; margin-left: 8px;">
+                <button class="modal-btn modal-btn-ok" id="checkPayBtn" onclick="checkPaymentNow()"
+                  style="height: 32px; font-size: 0.75rem; width: auto; padding: 0 12px;">I've paid — Check now</button>
+                <button class="modal-btn modal-btn-ok" onclick="updateQuote(true)"
+                  style="height: 32px; font-size: 0.75rem; width: auto; padding: 0 12px;">Refresh</button>
+              </div>
             </div>
             <div id="paymentStatusBanner"
               style="display: none; margin-top: 12px; padding: 10px 14px; background: rgba(43,166,64,0.12); border: 1px solid rgba(43,166,64,0.4); border-radius: 8px; color: #6fcf7f; font-size: 0.85rem; text-align: center; font-weight: 500;">
@@ -3823,42 +3827,42 @@
         }
       }
 
-      // Cryptographically strong random int in [0, max). Falls back to
-      // Math.random only where WebCrypto is unavailable (non-secure contexts).
+      // Cryptographically strong random int in [0, max) with rejection
+      // sampling (no modulo bias). Refuses insecure-context fallback:
+      // sessions are passwords, weak entropy is worse than failing.
       function randInt(max) {
         try {
           if (window.crypto && window.crypto.getRandomValues) {
-            const buf = new Uint32Array(1);
-            window.crypto.getRandomValues(buf);
-            return buf[0] % max;
+            const range = 256 - (256 % max);
+            while (true) {
+              const buf = new Uint8Array(1);
+              window.crypto.getRandomValues(buf);
+              if (buf[0] < range) return buf[0] % max;
+            }
           }
         } catch (e) {}
-        return Math.floor(Math.random() * max);
+        throw new Error('Secure random unavailable — use HTTPS.');
+      }
+
+      // Strict split (no legacy): sessions are exactly 10 alphanumerics
+      // without "1" and without specials. Admin keys are exactly 10 chars,
+      // always contain "1", specials "@#$" allowed (never valid as session).
+      const SESSION_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ023456789';
+      const SESSION_REGEX_STRICT = /^[A-Za-z023456789]{10}$/;
+      const ADMIN_REGEX_STRICT = /^[A-Za-z0-9\-_!@#$]{10}$/;
+      function validAdminKeyFrontend(v) {
+        return typeof v === 'string' && ADMIN_REGEX_STRICT.test(v) && v.includes('1');
       }
 
       async function generateSessionId() {
-        // NOTE: digit '1' is deliberately excluded — admin keys are 10-char
-        // strings containing at least one '1', so generated session IDs can
-        // never collide with (or be mistaken for) the promo admin key.
-        // Validation still accepts legacy '1'-containing sessions.
-        const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ023456789';
-        const specials = '-_!';
         let result = '';
         let attempts = 0;
         const maxAttempts = 10; // Bounded: each attempt is a billed backend call
 
         while (attempts < maxAttempts) {
           result = '';
-          let specialCount = 0;
-
           for (let i = 0; i < SESSION_ID_LENGTH; i++) {
-            // 10% chance of special char if limit not reached
-            if (randInt(10) === 0 && specialCount < 3) {
-              result += specials.charAt(randInt(specials.length));
-              specialCount++;
-            } else {
-              result += chars.charAt(randInt(chars.length));
-            }
+            result += SESSION_CHARS.charAt(randInt(SESSION_CHARS.length));
           }
 
           // Check if this session ID already exists in the sessions collection
@@ -3872,17 +3876,13 @@
           attempts++;
         }
 
-        // Fallback: MUST still satisfy the exact-10-char invariant (load/merge
-        // validation rejects anything else). Mix time entropy with fresh
-        // randomness so concurrent fallbacks don't collide. Time-base36 can
-        // contain '1', which is banned (see above) — swap those out.
-        const fallbackAlphabet = chars + '-_';
-        let suffix = Date.now().toString(36).replace(/[^a-z0-9]/gi, '').replace(/1/g, 'x');
+        // Fallback: same strict alphabet, time-mixed (no "1", no specials).
+        let suffix = Date.now().toString(36).replace(/[^a-z0-9]/gi, '').replace(/1/g, 'x').replace(/[^A-Za-z023456789]/g, 'x');
         let out = '';
         for (let i = 0; i < SESSION_ID_LENGTH; i++) {
-          out += (i < suffix.length && randInt(2) === 0)
+          out += (i < suffix.length && suffix[i] && SESSION_CHARS.includes(suffix[i]) && randInt(2) === 0)
             ? suffix[i]
-            : fallbackAlphabet.charAt(randInt(fallbackAlphabet.length));
+            : SESSION_CHARS.charAt(randInt(SESSION_CHARS.length));
         }
         // Return WITHOUT creating in database - session will be created after successful shortening
         return out;
@@ -4515,11 +4515,17 @@
             return;
           }
 
-          // Claim the domain: attaches it to this session (idempotent for our
-          // own domains; re-claims names held by other sessions as inert
-          // pending entries that must re-prove DNS ownership before any use).
+          // Claim the domain: own domains idempotent; names held by other
+          // sessions become inert pending claims (no transfer until DNS proof
+          // via verifyClaimedDomainDns, which also merges links+stats).
           const addFn = functions.httpsCallable('addCustomDomain');
-          await addFn({ domain: pendingDomain, type: 'managed', sessionId: getSessionId() });
+          const addRes = await addFn({ domain: pendingDomain, type: 'managed', sessionId: getSessionId() });
+          if (addRes.data && addRes.data.pendingClaim) {
+            btn.classList.remove('loading');
+            btn.disabled = false;
+            showPendingClaimModal(addRes.data);
+            return;
+          }
 
           // Reload domains so we have latest data
           await loadUserDomains();
@@ -4554,6 +4560,13 @@
           const addFn = functions.httpsCallable('addCustomDomain');
           const res = await addFn({ sessionId: getSessionId(), domain: pendingDomain });
           const data = res.data || {};
+          if (data.pendingClaim) {
+            btn.classList.remove('loading');
+            btn.disabled = false;
+            btn.textContent = 'Continue';
+            showPendingClaimModal(data);
+            return;
+          }
 
           // Set up the verification UI with the returned data
           setVerificationUI({
@@ -4572,6 +4585,41 @@
           btn.classList.remove('loading');
           btn.disabled = false;
           btn.textContent = 'Continue';
+        }
+      }
+
+      // Secure reclaim UI: pending claim needs DNS proof before transfer.
+      // On success links+stats move as if created here (clicks/ keyed by host).
+      function showPendingClaimModal(data) {
+        const txt = (data.instructions && data.instructions.txt) || data.pendingToken || '';
+        const cname = (data.instructions && data.instructions.cnameTarget) || 'customers.inoculens.com';
+        showCustomModal({
+          title: "Domain held by another session",
+          message: `This name is attached to a different session. To reclaim it (plus its links + stats), prove DNS control:<br><br>CNAME <strong>${escapeHTML(pendingDomain)}</strong> → <strong>${escapeHTML(cname)}</strong><br>TXT <strong>verification.${escapeHTML(pendingDomain)}</strong> → <strong>${escapeHTML(txt)}</strong><br><br>Old owner keeps full rights until you verify. <strong>s.inoculens.com</strong> links never move.`,
+          showCancel: true,
+          confirmText: "Verify Claim",
+          cancelText: "Cancel"
+        }).then(async (ok) => {
+          if (ok) verifyPendingClaim();
+        });
+      }
+      async function verifyPendingClaim() {
+        if (!pendingDomain || !getSessionId()) return;
+        showLoadingModal({ title: "Verifying Claim", message: "Checking DNS + moving history..." });
+        try {
+          const fn = functions.httpsCallable('verifyClaimedDomainDns');
+          const res = await fn({ domain: pendingDomain, sessionId: getSessionId() });
+          closeLoadingModal();
+          if (res.data && res.data.success) {
+            await loadUserDomains();
+            await fetchAndRenderSession(getSessionId());
+            showCustomModal({ title: "Reclaimed", message: `Domain <strong>${escapeHTML(pendingDomain)}</strong> + its links moved here.` });
+          } else {
+            showCustomModal({ title: "Not yet", message: "DNS proof not found yet (CNAME + TXT). Wait for propagation and try Verify Claim again." });
+          }
+        } catch (e) {
+          closeLoadingModal();
+          showCustomModal({ title: "Error", message: escapeHTML(e.message || 'Verify failed') });
         }
       }
 
@@ -5535,9 +5583,44 @@
             // invalid, price feed down) instead of swallowing it — otherwise
             // neither the user nor support can tell what failed.
             const detail = (err && err.message) ? `: ${err.message}` : '';
-            loadingState.innerHTML = `<span style="color: #f04141;">Failed to generate payment address${escapeHTML(detail)}. Please close and try again.</span>`;
-            showCustomModal({ title: "Error", message: `Failed to generate payment address${escapeHTML(detail)}. Please try again.` });
+            loadingState.innerHTML = `<span style="color: #f04141;">Failed to generate payment address${escapeHTML(detail)}. Refresh and try again later.</span>`;
+            showCustomModal({ title: "Error", message: `Failed to generate payment address${escapeHTML(detail)}. Refresh and try again later.` });
           }
+        }
+      }
+
+      // Instant on-demand check (no admin token): same balance logic as the
+      // hourly watcher but scoped to this domain. Hourly covers closed-tab.
+      async function checkPaymentNow() {
+        const btn = document.getElementById('checkPayBtn');
+        const banner = document.getElementById('paymentStatusBanner');
+        if (!pendingDomain || !getSessionId()) return;
+        try {
+          if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+          if (banner) { banner.style.display = 'block'; banner.textContent = 'Checking blockchain…'; }
+          const fn = functions.httpsCallable('checkPaymentNow');
+          const res = await fn({ domain: pendingDomain, sessionId: getSessionId() });
+          if (res.data && res.data.paid) {
+            if (banner) {
+              banner.style.display = 'block';
+              banner.style.background = 'rgba(43,166,64,0.12)';
+              banner.style.borderColor = '#6fcf7f';
+              banner.style.color = '#6fcf7f';
+              banner.textContent = '✅ Payment confirmed! Your domain is now active.';
+            }
+            await loadUserDomains();
+            setTimeout(() => closeDomainManager(), 2000);
+          } else {
+            if (banner) {
+              banner.style.display = 'block';
+              banner.textContent = 'Not yet seen on-chain. Keep this tab open and try again in a minute.';
+            }
+          }
+        } catch (e) {
+          console.error('checkPaymentNow:', e);
+          showToast(e.message || 'Check failed', 'error');
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = "I've paid — Check now"; }
         }
       }
 
@@ -5735,7 +5818,7 @@
         try { return sessionStorage.getItem('tunnel_admin_key') || ''; } catch (e) { return ''; }
       }
       function hasPromoAccess() {
-        return promoAdminKey().length >= 8;
+        return validAdminKeyFrontend(promoAdminKey());
       }
       function promoLock() {
         try { sessionStorage.removeItem('tunnel_admin_key'); } catch (e) {}
@@ -5744,6 +5827,10 @@
         showToast('Promo admin locked.', 'info');
       }
       function openPromoAdmin() {
+        if (!hasPromoAccess()) {
+          showToast('Promo admin locked — unlock via Merge with admin key.', 'error');
+          return;
+        }
         const overlay = document.getElementById('promoAdminOverlay');
         if (!overlay) return;
         overlay.style.display = 'flex';
@@ -6028,11 +6115,11 @@
 
         if (sid && sid.trim()) {
           const val = sid.trim();
-          const sessionRegex = /^[a-zA-Z0-9\-_!]{10}$/;
-          if (!sessionRegex.test(val) || val.length !== SESSION_ID_LENGTH) {
+          const sessionRegex = /^[A-Za-z023456789]{10}$/;
+          if (!sessionRegex.test(val) || val.length !== SESSION_ID_LENGTH || val.includes('1')) {
             showCustomModal({
               title: "Invalid Format",
-              message: `Session IDs must be ${SESSION_ID_LENGTH} characters long and contain only letters, numbers, and - _ !`
+              message: `Session IDs must be ${SESSION_ID_LENGTH} characters, letters and numbers only (no 1, no specials).`
             });
             return;
           }
@@ -6542,6 +6629,8 @@
 
           if (errorCode === 'ERR_INVALID_URL') {
             message = "The URL you provided is invalid. Please make sure it starts with http:// or https://";
+          } else if (errorCode === 'ERR_UNSAFE_URL') {
+            message = "This URL is flagged as unsafe (phishing/malware) and can't be shortened.";
           } else if (errorCode === 'ERR_SLUG_TAKEN') {
             message = "This slug is already taken on this domain. Please choose a different one (the same slug can still be used on your other domains).";
           } else if (error.message && error.message.includes('429')) {
@@ -7103,7 +7192,7 @@
 
         try {
           const getStats = functions.httpsCallable('getClickStats');
-          const res = await getStats({ shortCode: item.code, domain: itemDomain(item), deleteToken: item.deleteToken });
+          const res = await getStats({ shortCode: item.code, domain: itemDomain(item), deleteToken: item.deleteToken, limit: 200, offset: 0 });
 
           totalCount.textContent = res.data.clickCount;
 
@@ -7150,6 +7239,10 @@
             </div>
           `;
           });
+          if (res.data.hasMore) {
+            const total = Number(res.data.total) || res.data.clicks.length;
+            html += `<div style="padding:16px; text-align:center; color:var(--text-muted); font-size:0.8rem;">Showing latest ${res.data.clicks.length} of ${total} — ledger keeps every click forever, use search/pagination for older.</div>`;
+          }
           list.innerHTML = html;
 
         } catch (error) {
@@ -7738,15 +7831,14 @@
 
           if (!requireBackend()) return;
 
-          // Hidden admin path: the promo admin key may contain ANY characters
-          // (letters, digits incl. '1', specials) and any length >= 8, so it
-          // must never be gated on the session-ID format below. Session IDs
-          // generated by this app never contain '1' while the admin key
-          // always does, so the namespaces cannot collide — and lookup order
-          // is session-first anyway, so pre-change sessions that happen to
-          // contain '1' still merge normally. Only truly unknown IDs fall
-          // through to the admin-key attempt.
+          // Hidden admin path: sessions are strict alphanumeric-no-1 (10),
+          // admins are exactly 10 chars always containing "1" (specials
+          // "@#$" allowed, never valid as session). Disjoint namespaces, no
+          // collisions. Session-format input tries session first, then admin
+          // (covers session-alphabet admins containing 1). Anything else can
+          // only be an admin attempt.
           async function tryAdminUnlock(key) {
+            if (!validAdminKeyFrontend(key)) return false;
             try {
               const adminFn = functions.httpsCallable('adminListDiscountCodes');
               await adminFn({ adminKey: key });
@@ -7759,14 +7851,14 @@
             return true;
           }
 
-          // Validate session format (exactly 10 chars, session alphabet).
+          // Validate session format (exactly 10 chars, strict alphabet).
           // Anything else can only be an admin-key attempt, never a session.
-          const sessionRegex = /^[a-zA-Z0-9\-_!]{10}$/;
-          if (!sessionRegex.test(otherSid) || otherSid.length !== SESSION_ID_LENGTH) {
-            if (otherSid.length >= 8 && await tryAdminUnlock(otherSid)) return;
+          const sessionRegex = /^[A-Za-z023456789]{10}$/;
+          if (!sessionRegex.test(otherSid) || otherSid.length !== SESSION_ID_LENGTH || otherSid.includes('1')) {
+            if (await tryAdminUnlock(otherSid)) return;
             showCustomModal({
               title: "Invalid Format",
-              message: "Session IDs must be exactly 10 characters long and contain only letters, numbers, and - _ !"
+              message: "Session IDs must be exactly 10 characters, letters and numbers only (no 1, no specials)."
             });
             return;
           }

@@ -15,7 +15,7 @@
  * Wire-up: netlify/edge-functions/short-domain.js rewrites short-host paths
  * to this function (GET /.netlify/functions/resolve?c=<code>).
  */
-import { store, newClickId, clientIp, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry } from "./lib/util.js";
+import { store, newClickId, clientIp, trustedRawIp, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, bumpDayCount } from "./lib/util.js";
 
 const HOME = process.env.HOME_URL || "https://tunnel.inoculens.com/";
 
@@ -72,16 +72,31 @@ export async function handler(event) {
     }
   }
 
-  // Log click (best effort — never block the redirect on storage errors).
+  // Ledger-forever logging (best effort — never block redirect).
+  // Always 302. Same-IP loops still redirect but only bump the daily counter
+  // past the per-minute detail budget (distinct IPs each get full budget, so
+  // viral + dumb repeats are fully stored).
   try {
-    const id = newClickId();
-    await s.setJSON(`${clicksPrefix(host, link.code)}${id}`, {
-      id,
-      timestamp: Date.now(),
-      ip: clientIp(event),
-    });
+    const rawIp = trustedRawIp(event);
+    const storeDetail = await shouldStoreClickDetail(s, host, link.code, rawIp);
+    if (storeDetail) {
+      const id = newClickId();
+      await s.setJSON(`${clicksPrefix(host, link.code)}${id}`, {
+        id,
+        timestamp: Date.now(),
+        ip: clientIp(event),
+      });
+    } else {
+      await s.setJSON(`${clicksPrefix(host, link.code)}flood-${Date.now().toString(36)}`, {
+        id: `flood-${Date.now().toString(36)}`,
+        timestamp: Date.now(),
+        ip: clientIp(event),
+        flood: true,
+      }).catch(() => {});
+    }
     link.clickCount = (link.clickCount || 0) + 1;
     await s.setJSON(linkKey(host, link.code), link);
+    await bumpDayCount(s, host, link.code, 1);
   } catch (e) {
     console.error("click log failed:", e);
   }

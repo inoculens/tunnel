@@ -9,6 +9,7 @@ import {
   ok,
   fail,
   validSessionId,
+  validAdminKey,
   validSlug,
   cleanDomain,
   validHttpUrl,
@@ -16,6 +17,7 @@ import {
   newToken,
   detectPlatform,
   clientIp,
+  trustedRawIp,
   checkRate,
   verifyDns,
   routingTarget,
@@ -31,6 +33,12 @@ import {
   cfDeleteCustomHostname,
   btcUsdPrice,
   quoteFor,
+  checkUrlSafety,
+  countDayKey,
+  bumpDayCount,
+  shouldStoreClickDetail,
+  sessionLinkCount,
+  bumpSessionLinkCount,
   deriveAddress,
   nextWalletIndex,
   listAll,
@@ -195,8 +203,10 @@ function refreshCoverage(doc) {
   return changed;
 }
 
-async function domainInfo(doc) {
+async function domainInfo(doc, viewerSessionId = null) {
   const route = routingTarget();
+  const pending = doc.pendingClaim || null;
+  const pendingMine = !!(pending && viewerSessionId && pending.sessionId === viewerSessionId);
   return {
     domain: doc.domain,
     id: doc.domain,
@@ -209,6 +219,11 @@ async function domainInfo(doc) {
     dnsVerification: doc.dnsVerification,
     dnsVerificationToken: doc.verificationToken,
     verificationToken: doc.verificationToken,
+    pendingClaim: pendingMine
+      ? { byYou: true, at: pending.at || null }
+      : pending
+        ? { byYou: false, at: pending.at || null }
+        : null,
     sslVerification: {
       cnameTarget: doc.sslTarget,
       status: doc.cfSslStatus || (doc.dnsVerification?.sslVerified ? "active" : "pending"),
@@ -290,8 +305,8 @@ function cleanPromoCode(raw) {
 
 async function needAdmin(s, p, event) {
   const key = process.env.ADMIN_KEY;
-  if (!key) {
-    const e = new Error("Promo admin is not configured on this deployment (no ADMIN_KEY).");
+  if (!key || typeof key !== "string" || key.length !== 10 || !key.includes("1")) {
+    const e = new Error("Promo admin is misconfigured on this deployment (ADMIN_KEY must be 10 chars containing 1).");
     e.statusCode = 412;
     e.code = "failed-precondition";
     throw e;
@@ -303,12 +318,20 @@ async function needAdmin(s, p, event) {
     e.code = "resource-exhausted";
     throw e;
   }
-  if (typeof p.adminKey !== "string" || p.adminKey.length < 8 || p.adminKey !== key) {
+  if (!validAdminKey(p.adminKey) || p.adminKey !== key) {
     const e = new Error("Invalid admin key.");
     e.statusCode = 403;
     e.code = "permission-denied";
     throw e;
   }
+  try {
+    const s2 = store(event);
+    await s2.setJSON(`admin-log/${new Date().toISOString()}-${Math.random().toString(36).slice(2, 8)}`, {
+      at: new Date().toISOString(),
+      action: "admin-auth",
+      ip,
+    }).catch(() => {});
+  } catch { /* best effort */ }
 }
 
 function promoShape(p) {
@@ -370,6 +393,42 @@ const actions = {
       e.statusCode = 400;
       e.code = "invalid-argument";
       throw e;
+    }
+    // Proactive safety at mint (silent for clean URLs).
+    try {
+      const verdict = await checkUrlSafety(s, String(originalUrl));
+      if (verdict && verdict.safe === false) {
+        const e = new Error("ERR_UNSAFE_URL");
+        e.statusCode = 400;
+        e.code = "invalid-argument";
+        throw e;
+      }
+    } catch (e) {
+      if (e && e.message === "ERR_UNSAFE_URL") throw e;
+      console.error("safety check failed open:", e?.message || e);
+    }
+    // Per-session quota (default 500). Count doc preferred, scan fallback.
+    try {
+      const quota = Number(process.env.LINK_QUOTA_SYSTEM || 500);
+      const q = Number.isFinite(quota) && quota > 0 ? Math.min(quota, 5000) : 500;
+      let count = await sessionLinkCount(s, sessionId);
+      if (count === null) {
+        const blobs = await listAll(s, "link/");
+        const docs = await mapWithConcurrency(blobs, 12, (b) =>
+          freshGet(s, b.key, { type: "json" }).catch(() => null)
+        );
+        count = docs.filter((l) => l && l.sessionId === sessionId).length;
+        try { await s.setJSON(`sessions/${sessionId}/meta`, { linkCount: count }); } catch { /* ignore */ }
+      }
+      if (count >= q) {
+        const e = new Error(`Link quota reached (${q}). Delete old links to create more.`);
+        e.statusCode = 429;
+        e.code = "resource-exhausted";
+        throw e;
+      }
+    } catch (e) {
+      if (e && e.code === "resource-exhausted") throw e;
+      console.error("quota check failed open:", e?.message || e);
     }
     const host = cleanDomain(domain) || systemShortHost();
 
@@ -441,6 +500,12 @@ const actions = {
       createdAt: Date.now(),
     };
     await s.setJSON(linkKey(host, code), link);
+    await bumpSessionLinkCount(s, sessionId, 1);
+    try {
+      await s.setJSON(`admin-log/${new Date().toISOString()}-shorten`, {
+        at: new Date().toISOString(), host, code, sessionId,
+      }).catch(() => {});
+    } catch { /* best effort */ }
     return ok({
       shortenedUrl: link.short,
       deleteToken: link.deleteToken,
@@ -475,7 +540,13 @@ const actions = {
     const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
     await s.delete(linkKey(host, link.code));
+    // Delete by alternate legacy key too (domain field mismatch).
+    try {
+      const alt = new URL(link.short).hostname.toLowerCase();
+      if (alt && alt !== host.toLowerCase()) await s.delete(linkKey(alt, link.code));
+    } catch { /* ignore */ }
     await deleteClickKeys(s, host, link.code);
+    await bumpSessionLinkCount(s, link.sessionId, -1);
     return ok({});
   },
 
@@ -494,13 +565,35 @@ const actions = {
     const host = needLinkHost(p);
     const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
+    const limitRaw = Number(p.limit || 200);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 1000) : 200;
+    const offsetRaw = Number(p.offset || 0);
+    const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? Math.floor(offsetRaw) : 0;
     const blobs = await listAll(s, clicksPrefix(host, link.code));
-    const docs = await mapWithConcurrency(blobs, 12, (b) =>
+    // Sort by key (click IDs start with timestamp36) to avoid fetching all
+    // bodies just to order. Fetch only the requested window.
+    const sorted = [...blobs].sort((a, b) => String(b.key || "").localeCompare(String(a.key || "")));
+    const total = sorted.length;
+    const window = sorted.slice(offset, offset + limit);
+    const docs = await mapWithConcurrency(window, 12, (b) =>
       freshGet(s, b.key, { type: "json" }).catch(() => null)
     );
     const clicks = docs.filter(Boolean);
     clicks.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    return ok({ clickCount: link.clickCount || 0, clicks });
+    // Daily shard totals for graph (best effort, bounded).
+    let daily = [];
+    try {
+      const dayBlobs = await listAll(s, `counts/${(host || "").toLowerCase()}/${link.code}/`);
+      const dayDocs = await mapWithConcurrency(dayBlobs.slice(-90), 6, (b) =>
+        freshGet(s, b.key, { type: "json" }).catch(() => null)
+      );
+      daily = dayBlobs.slice(-90).map((b, i) => ({
+        day: String(b.key || "").split("/").pop(),
+        count: Number(dayDocs[i]?.count) || 0,
+      })).filter((d) => d.day);
+      daily.sort((a, b) => String(a.day).localeCompare(String(b.day)));
+    } catch { /* ignore */ }
+    return ok({ clickCount: link.clickCount || 0, total, clicks, daily, hasMore: offset + limit < total });
   },
 
   async deleteAllClicks(s, p) {
@@ -517,10 +610,17 @@ const actions = {
     const host = needLinkHost(p);
     const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
-    await s.delete(`${clicksPrefix(host, link.code)}${p.clickId}`);
+    if (!p.clickId || typeof p.clickId !== "string") {
+      return fail(400, "invalid-argument", "Missing click ID.");
+    }
+    const key = `${clicksPrefix(host, link.code)}${p.clickId}`;
+    const existing = await freshGet(s, key, { type: "json" }).catch(() => null);
+    if (!existing) return ok({ deleted: false });
+    await s.delete(key);
     link.clickCount = Math.max(0, (link.clickCount || 1) - 1);
     await s.setJSON(linkKey(host, link.code), link);
-    return ok({});
+    try { await bumpDayCount(s, host, link.code, -1); } catch { /* ignore */ }
+    return ok({ deleted: true });
   },
 
   async mergeSessions(s, p, event) {
@@ -558,8 +658,14 @@ const actions = {
     const toMove = domainDocs.filter((d) => d && d.sessionId === oldSessionId);
     await mapWithConcurrency(toMove, 12, (d) => {
       d.sessionId = newSessionId;
+      // A merge moves the whole account: clear any pending claim the source
+      // filed elsewhere (it was theirs, now it moves with them).
       return s.setJSON(`domain/${d.domain}`, d);
     });
+    try {
+      await bumpSessionLinkCount(s, newSessionId, links.length);
+      await bumpSessionLinkCount(s, oldSessionId, -links.length);
+    } catch { /* best effort */ }
     return ok({ success: true, count: links.length, domains: toMove.length });
   },
 
@@ -576,7 +682,7 @@ const actions = {
     // dropdown never offers a dead domain as active.
     const out = await mapWithConcurrency(mine, 6, async (d) => {
       if (refreshCoverage(d)) await s.setJSON(`domain/${d.domain}`, d);
-      return domainInfo(d);
+      return domainInfo(d, p.sessionId);
     });
     return ok({ domains: out });
   },
@@ -608,25 +714,33 @@ const actions = {
     const existing = await freshGet(s, `domain/${host}`, { type: "json" });
     if (existing) {
       if (existing.sessionId !== p.sessionId) {
-        // Claim flow: any session may attach this name to itself (e.g. the
-        // owner lost their Session ID), but the claim starts INERT — fresh
-        // TXT token, verification flags cleared, demoted to pending. Use
-        // (shortenUrl) stays gated on sessionId + active status, so the
-        // domain cannot serve under any circumstances until THIS session
-        // proves ownership: the new token must appear at
-        // verification.<domain> in live DNS (verifyCustomDomainDns), which
-        // only someone controlling the domain's DNS can arrange. Payment /
-        // quote state carries over (it prices the domain, not the session)
-        // and re-activates automatically once the new owner verifies.
-        existing.sessionId = p.sessionId;
-        existing.status = "pending_verification";
-        existing.isVerified = false;
-        existing.verificationToken = newToken(32);
-        existing.dnsVerification = { cnameValid: false, txtVerified: false, sslVerified: false };
+        // Secure reclaim: ownership NEVER transfers here. A pending claim is
+        // recorded (last claim wins) with its own TXT token. Old owner keeps
+        // full rights (mint/delete/manage) until claimant proves DNS via
+        // verifyClaimedDomainDns. Claimant gets zero destructive rights until
+        // then — no delete, no mint, no payment. Links move only on verified
+        // transfer (with stats, since clicks/ are host/code keyed).
+        existing.pendingClaim = {
+          sessionId: p.sessionId,
+          token: newToken(32),
+          at: new Date().toISOString(),
+        };
         await s.setJSON(`domain/${host}`, existing);
-        return ok(await domainInfo(existing));
+        const route = routingTarget();
+        return ok({
+          ...(await domainInfo(existing, p.sessionId)),
+          pendingClaim: true,
+          pendingToken: existing.pendingClaim.token,
+          instructions: {
+            cnameTarget: route,
+            recordName: host,
+            txtHost: `verification.${host}`,
+            txt: existing.pendingClaim.token,
+            routingTarget: route,
+          },
+        });
       }
-      return ok(await domainInfo(existing)); // idempotent re-entry
+      return ok(await domainInfo(existing, p.sessionId)); // idempotent re-entry
     }
     const delegation = sslDelegationTarget();
     const doc = {
@@ -662,7 +776,114 @@ const actions = {
         await s.setJSON(`domain/${doc.domain}`, doc);
       }
     }
-    return ok({ ...(await domainInfo(doc)), paymentStatus: doc.paymentStatus });
+    return ok({ ...(await domainInfo(doc, p.sessionId)), paymentStatus: doc.paymentStatus });
+  },
+
+  // Pending-claim status for the claimant (not owner): returns pending TXT
+  // instructions without leaking payment/quote state.
+  async getClaimVerificationInfo(s, p) {
+    if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
+    const host = cleanDomain(p.domain);
+    if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
+    const doc = await freshGet(s, `domain/${host}`, { type: "json" });
+    if (!doc || !doc.pendingClaim || doc.pendingClaim.sessionId !== p.sessionId) {
+      return fail(404, "not-found", "No pending claim for this session.");
+    }
+    const route = routingTarget();
+    return ok({
+      domain: doc.domain,
+      pendingClaim: true,
+      at: doc.pendingClaim.at || null,
+      instructions: {
+        cnameTarget: route,
+        recordName: doc.domain,
+        txtHost: `verification.${doc.domain}`,
+        txt: doc.pendingClaim.token,
+        routingTarget: route,
+      },
+    });
+  },
+
+  // Verified transfer: claimant proves DNS for PENDING token, then ownership
+  // + all links (with stats, clicks/ are host/code keyed) move as if created
+  // in the new session. s.* links never move (not a session merge).
+  async verifyClaimedDomainDns(s, p) {
+    if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
+    const host = cleanDomain(p.domain);
+    if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
+    const doc = await getWithRetry(s, `domain/${host}`, { type: "json" }, { attempts: 3, delayMs: 350 });
+    if (!doc || !doc.pendingClaim || doc.pendingClaim.sessionId !== p.sessionId) {
+      return fail(404, "not-found", "No pending claim for this session.");
+    }
+    if (!(await getSession(s, p.sessionId))) {
+      await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
+    }
+    const live = await verifyDns(doc.domain, doc.pendingClaim.token).catch(() => ({
+      cname: false, txt: false, ssl: false, routable: null,
+    }));
+    if (!(live.cname && live.txt)) {
+      return ok({
+        success: false,
+        isVerified: false,
+        checks: { cname: !!live.cname, txt: !!live.txt, routable: live.routable ?? null },
+        status: doc.status,
+      });
+    }
+    // Transfer ownership.
+    const fromSid = doc.sessionId;
+    doc.sessionId = p.sessionId;
+    doc.verificationToken = doc.pendingClaim.token;
+    doc.pendingClaim = null;
+    doc.isVerified = true;
+    doc.dnsVerification = {
+      cnameValid: true,
+      txtVerified: true,
+      sslVerified: !!live.ssl,
+      routable: live.routable ?? null,
+    };
+    refreshCoverage(doc);
+    if (doc.isVerified && doc.paymentStatus === "paid" && coverageValid(doc)) {
+      doc.status = "active";
+      await ensureSaaSHostname(doc);
+    } else if (doc.status === "active" && !coverageValid(doc)) {
+      doc.status = "pending_verification";
+    } else if (doc.isVerified && doc.paymentStatus === "paid" && coverageValid(doc)) {
+      doc.status = "active";
+    }
+    await s.setJSON(`domain/${doc.domain}`, doc);
+    // Move links (history + stats follow: clicks/ keyed by host/code).
+    try {
+      const blobs = await listAll(s, "link/");
+      const docs = await mapWithConcurrency(blobs, 12, (b) =>
+        freshGet(s, b.key, { type: "json" }).catch(() => null)
+      );
+      const mine = docs.filter((l) => {
+        if (!l) return false;
+        const h = (l.domain || "").toLowerCase();
+        if (h === doc.domain) return true;
+        try { return new URL(l.short).hostname.toLowerCase() === doc.domain; } catch { return false; }
+      });
+      await mapWithConcurrency(mine, 12, (l) => {
+        l.sessionId = p.sessionId;
+        if (!l.domain) {
+          try { l.domain = new URL(l.short).hostname.toLowerCase(); } catch { /* keep */ }
+        }
+        return s.setJSON(linkKey(l.domain || doc.domain, l.code), l);
+      });
+      await bumpSessionLinkCount(s, p.sessionId, mine.length);
+      if (fromSid) await bumpSessionLinkCount(s, fromSid, -mine.length);
+    } catch (e) {
+      console.error(`claim link move failed for ${doc.domain}:`, e?.message || e);
+    }
+    return ok({
+      success: true,
+      isVerified: true,
+      status: doc.status,
+      paymentStatus: doc.paymentStatus,
+      coverageExpiresAt: doc.coverageExpiresAt || null,
+      coverageLifetime: doc.coverageLifetime === true,
+      coverageValid: coverageValid(doc),
+    });
   },
 
   async verifyCustomDomainDns(s, p) {
@@ -737,15 +958,29 @@ const actions = {
     const linkDocs = await mapWithConcurrency(linkBlobs, 12, (b) =>
       freshGet(s, b.key, { type: "json" }).catch(() => null)
     );
-    const doomed = linkDocs.filter((l) => {
-      if (!l) return false;
-      try {
-        return new URL(l.short).hostname === doc.domain;
-      } catch { return false; }
-    });
-    await mapWithConcurrency(doomed, 12, (l) =>
-      s.delete(linkKey(l.domain || doc.domain, l.code))
-    );
+    const target = doc.domain.toLowerCase();
+    const doomed = [];
+    const seen = new Set();
+    for (const l of linkDocs) {
+      if (!l || !l.code) continue;
+      let match = false;
+      if ((l.domain || "").toLowerCase() === target) match = true;
+      if (!match) {
+        try { if (new URL(l.short).hostname.toLowerCase() === target) match = true; } catch { /* no */ }
+      }
+      if (!match) continue;
+      // Delete by BOTH possible keys (legacy docs may have mismatched domain field).
+      const keys = new Set([linkKey(l.domain || doc.domain, l.code)]);
+      try { keys.add(linkKey(new URL(l.short).hostname, l.code)); } catch { /* ignore */ }
+      for (const k of keys) {
+        if (!seen.has(k)) { seen.add(k); doomed.push({ link: l, key: k }); }
+      }
+    }
+    await mapWithConcurrency(doomed, 12, (d) => s.delete(d.key));
+    try {
+      const uniqCodes = new Set(doomed.map((d) => d.link.code));
+      await bumpSessionLinkCount(s, p.sessionId, -uniqCodes.size);
+    } catch { /* best effort */ }
     return ok({ deletedUrls: doomed.length });
   },
 
@@ -817,7 +1052,7 @@ const actions = {
             // discounted amount can never stay payable after removal.
             ...(doc.quote.discountPercent ? { discountPercent: doc.quote.discountPercent } : {}),
           });
-          if (doc.quoteHistory.length > 20) doc.quoteHistory = doc.quoteHistory.slice(-20);
+          if (doc.quoteHistory.length > 50) doc.quoteHistory = doc.quoteHistory.slice(-50);
         }
       }
       let idx = await nextWalletIndex(s);
@@ -996,11 +1231,18 @@ const actions = {
     }
     const pct = stored.percent;
     const promo = stored;
+    // Snapshot for race rollback (loser restores previous deal).
+    const prevDiscount = doc.discount ? { ...doc.discount } : null;
+    const prevPayment = doc.paymentStatus;
+    const prevExp = doc.coverageExpiresAt || null;
+    const prevLife = doc.coverageLifetime === true;
+    const prevQuote = doc.quote ? { ...doc.quote } : null;
     // Reserve the single-use BEFORE applying: if the doc save below ever
     // failed, the use stays burned (conservative — a code can never stretch
     // to maxUses+1 through retries).
     promo.uses = Array.isArray(promo.uses) ? promo.uses : [];
-    promo.uses.push({ domain: doc.domain, sessionId: p.sessionId, at: new Date().toISOString() });
+    const myUse = { domain: doc.domain, sessionId: p.sessionId, at: new Date().toISOString() };
+    promo.uses.push(myUse);
     await s.setJSON(`promo/${code}`, promo);
     // The code's expiry doubles as the domain's coverage end: redeeming pins
     // it to the domain so later expiry checks know what capped this deal.
@@ -1023,6 +1265,34 @@ const actions = {
         await ensureSaaSHostname(doc);
       }
       await s.setJSON(`domain/${doc.domain}`, doc);
+      // Post-save overshoot check (concurrent redeems): keep earliest maxUses,
+      // loser rolls back and fails. Closes single-use double-spend race.
+      try {
+        const fresh = await freshGet(s, `promo/${code}`, { type: "json" }).catch(() => null);
+        const max = (fresh && fresh.maxUses) || promo.maxUses || 1;
+        if (fresh && Array.isArray(fresh.uses) && fresh.uses.length > max) {
+          const sorted = [...fresh.uses].sort(
+            (a, b) => String(a?.at || "").localeCompare(String(b?.at || "")) ||
+              String(a?.domain || "").localeCompare(String(b?.domain || ""))
+          );
+          const kept = sorted.slice(0, max);
+          const won = kept.some((u) => u && u.domain === doc.domain && u.sessionId === p.sessionId);
+          fresh.uses = kept;
+          await s.setJSON(`promo/${code}`, fresh);
+          if (!won) {
+            doc.discount = prevDiscount;
+            doc.paymentStatus = prevPayment;
+            doc.coverageExpiresAt = prevExp;
+            doc.coverageLifetime = prevLife;
+            doc.quote = prevQuote;
+            if (doc.status === "active" && !coverageValid(doc)) doc.status = "pending_verification";
+            await s.setJSON(`domain/${doc.domain}`, doc);
+            return fail(400, "invalid-argument", "This code has already been redeemed.");
+          }
+        }
+      } catch (e) {
+        console.error(`promo overshoot check failed for ${code}:`, e?.message || e);
+      }
       return ok({
         isFullDiscount: true,
         discounted: true,
@@ -1072,12 +1342,35 @@ const actions = {
       console.warn(`post-save address clash on index ${doc.quote.index} for ${doc.domain}, re-issuing`);
       doc.quoteHistory = Array.isArray(doc.quoteHistory) ? doc.quoteHistory : [];
       doc.quoteHistory.push({ ...doc.quote, supersededAt: new Date().toISOString() });
-      if (doc.quoteHistory.length > 20) doc.quoteHistory = doc.quoteHistory.slice(-20);
+      if (doc.quoteHistory.length > 50) doc.quoteHistory = doc.quoteHistory.slice(-50);
       const idx = await nextWalletIndex(s);
       const fresh = await deriveAddress(idx);
       doc.quote = { ...q, address: fresh, index: idx };
       await s.setJSON(`domain/${doc.domain}`, doc);
       reverified++;
+    }
+    // Promo overshoot check (same as full-discount branch).
+    try {
+      const fresh = await freshGet(s, `promo/${code}`, { type: "json" }).catch(() => null);
+      const max = (fresh && fresh.maxUses) || promo.maxUses || 1;
+      if (fresh && Array.isArray(fresh.uses) && fresh.uses.length > max) {
+        const sorted = [...fresh.uses].sort(
+          (a, b) => String(a?.at || "").localeCompare(String(b?.at || "")) ||
+            String(a?.domain || "").localeCompare(String(b?.domain || ""))
+        );
+        const kept = sorted.slice(0, max);
+        const won = kept.some((u) => u && u.domain === doc.domain && u.sessionId === p.sessionId);
+        fresh.uses = kept;
+        await s.setJSON(`promo/${code}`, fresh);
+        if (!won) {
+          doc.discount = prevDiscount;
+          doc.quote = prevQuote;
+          await s.setJSON(`domain/${doc.domain}`, doc);
+          return fail(400, "invalid-argument", "This code has already been redeemed.");
+        }
+      }
+    } catch (e) {
+      console.error(`promo overshoot check failed for ${code}:`, e?.message || e);
     }
     return ok({
       discounted: true,
@@ -1133,6 +1426,86 @@ const actions = {
     // code stays consumed, otherwise apply/remove would loop into infinite
     // discounts. The domain simply returns to full price.
     return ok({});
+  },
+
+  // Instant on-demand payment check (no admin token): owner clicks
+  // "I've paid — Check now". Same balance logic as the hourly watcher but
+  // scoped to this domain only. Rate-limited to avoid mempool hammering.
+  async checkPaymentNow(s, p, event) {
+    const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "checkpay", `${ip}:${doc.domain}`, 2))) {
+      const e = new Error("Checking too often — wait 30s and try again.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
+    const candidates = [];
+    if (doc.quote?.address && doc.quote?.amount) {
+      candidates.push({ address: doc.quote.address, amount: doc.quote.amount, current: true });
+    }
+    for (const h of Array.isArray(doc.quoteHistory) ? doc.quoteHistory : []) {
+      if (h?.address && h?.amount) candidates.push({ address: h.address, amount: h.amount, current: false });
+    }
+    if (!candidates.length) return ok({ paid: false, reason: "no-quote" });
+    const toSatsStr = (v) => {
+      const parts = String(v).split(".");
+      const whole = parts[0] || "0";
+      const frac = (parts[1] || "").padEnd(8, "0").slice(0, 8);
+      return BigInt(whole === "" ? "0" : whole) * 100000000n + BigInt(frac === "" ? "0" : frac);
+    };
+    try {
+      for (const c of candidates) {
+        const res = await fetch(`https://mempool.space/api/address/${encodeURIComponent(c.address)}`);
+        if (!res.ok) continue;
+        const data = await res.json().catch(() => null);
+        const stats = data?.chain_stats || {};
+        const bal = BigInt(Number(stats.funded_txo_sum) || 0) - BigInt(Number(stats.spent_txo_sum) || 0);
+        if (bal >= toSatsStr(c.amount)) {
+          const now = Date.now();
+          doc.paymentStatus = "paid";
+          const currentExp = coverageValid(doc) ? new Date(doc.coverageExpiresAt).getTime() : now;
+          let exp = Math.max(now, currentExp) + COVERAGE_YEAR_MS;
+          if (doc.discount?.expiresAt) {
+            const cap = new Date(doc.discount.expiresAt).getTime();
+            if (Number.isFinite(cap) && cap > now) exp = Math.min(exp, cap);
+          }
+          if (doc.coverageLifetime !== true) {
+            doc.coverageExpiresAt = new Date(exp).toISOString();
+            doc.coverageLifetime = false;
+          }
+          doc.lastPaymentAt = new Date(now).toISOString();
+          if (doc.isVerified && coverageValid(doc)) doc.status = "active";
+          doc.paidAddress = c.address;
+          doc.paidAmount = c.amount;
+          if (doc.quote) doc.quote.paidAt = new Date().toISOString();
+          if (cfConfig() && doc.isVerified) {
+            try {
+              const cf = await cfEnsureCustomHostname(doc.domain);
+              if (cf) {
+                doc.cfHostnameId = cf.id || null;
+                doc.cfHostnameStatus = cf.status || null;
+                doc.cfSslStatus = cf.ssl?.status || null;
+              }
+            } catch (e) {
+              console.error(`SaaS ensure failed for ${doc.domain}:`, e?.message || e);
+            }
+          }
+          await s.setJSON(`domain/${doc.domain}`, doc);
+          return ok({
+            paid: true,
+            status: doc.status,
+            coverageExpiresAt: doc.coverageExpiresAt || null,
+            coverageLifetime: doc.coverageLifetime === true,
+            coverageValid: coverageValid(doc),
+          });
+        }
+      }
+    } catch (e) {
+      console.error(`checkPaymentNow failed for ${doc.domain}:`, e?.message || e);
+      return fail(503, "unavailable", "Balance check failed, try again.");
+    }
+    return ok({ paid: false, status: doc.status, coverageValid: coverageValid(doc) });
   },
 
   async getBtcPrice() {
