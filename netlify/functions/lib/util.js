@@ -520,6 +520,18 @@ export function coverageValid(doc) {
   return Number.isFinite(t) && t > Date.now();
 }
 
+// ---------- Scoped link keys ----------
+// Slugs are unique PER root domain, not globally: s.inoculens.com/slug1 and
+// custom.com/slug1 coexist. Storage keys (and click-log prefixes) therefore
+// always pair the normalized host with the code.
+export function linkKey(host, code) {
+  return `link/${cleanDomain(host) || "unknown"}/${code}`;
+}
+
+export function clicksPrefix(host, code) {
+  return `clicks/${cleanDomain(host) || "unknown"}/${code}/`;
+}
+
 // ---------- Wallet adapter ----------
 // Real payment addresses need an HD wallet XPUB plus derivation libraries
 // (see package.json: bitcoinjs-lib, bip32, @noble/secp256k1 via ecc-noble.js)

@@ -3704,11 +3704,24 @@
         return fallback || '#';
       }
 
-      // Canonical lookup: links are identified by code, never by positional
-      // index (indexes shift under search/filter/pagination).
-      function findLinkIndex(code) {
+      // Canonical lookup: links are identified by (root domain, slug) —
+      // the same slug may exist on several domains, so code alone is
+      // never enough. itemDomain falls back to parsing item.short so
+      // cached entries without .domain still resolve. Indexes shift under
+      // search/filter/pagination, so lookups are by identity, never index.
+      function hostOf(shortUrl) {
+        try { return new URL(String(shortUrl)).hostname.toLowerCase(); } catch (e) { return ''; }
+      }
+      function itemDomain(item) {
+        return (item && item.domain) || (item && hostOf(item.short)) || '';
+      }
+      function itemKey(item) {
+        return itemDomain(item) + '/' + (item ? item.code : '');
+      }
+      function findLinkIndex(code, domain) {
         if (!code) return -1;
-        return currentLinks.findIndex(l => l && l.code === code);
+        if (!domain) return currentLinks.findIndex(l => l && l.code === code);
+        return currentLinks.findIndex(l => l && l.code === code && itemDomain(l) === domain);
       }
 
       // Backend-provided money values must look like BTC amounts before they
@@ -6336,7 +6349,7 @@
           currentLinks.unshift(newItem);
 
           // Add new link to expanded set so it shows expanded on mobile
-          expandedLinks.add(shortCode);
+          expandedLinks.add(hostOf(safeShort) + '/' + shortCode);
 
           // Update rate limit timestamp
           lastLinkCreationTime = Date.now();
@@ -6389,7 +6402,7 @@
           if (errorCode === 'ERR_INVALID_URL') {
             message = "The URL you provided is invalid. Please make sure it starts with http:// or https://";
           } else if (errorCode === 'ERR_SLUG_TAKEN') {
-            message = "This custom slug is already taken. Please choose a different one.";
+            message = "This slug is already taken on this domain. Please choose a different one (the same slug can still be used on your other domains).";
           } else if (error.message && error.message.includes('429')) {
             message = "You've made too many attempts. Please wait a moment before trying again, or try disconnecting from your VPN or proxy if you're using one.";
           } else if (error.code === 'permission-denied' || errorCode === 'permission-denied' || error.message === 'permission-denied') {
@@ -6739,23 +6752,27 @@
           const jsOriginal = escapeJS(item.original);
           const jsShort = escapeJS(item.short);
           const codeJs = escapeJS(item.code);
-          const codeAttr = escapeAttr(item.code);
+          // Composite DOM identity (domain/slug): duplicate slugs on other
+          // domains must not share element ids. escapeAttr keeps it safe in
+          // id="..." attributes; lookups use CSS.escape / getElementById.
+          const jsDomain = escapeJS(itemDomain(item));
+          const keyAttr = escapeAttr(itemKey(item));
           const safeShortHref = escapeAttr(safeHref(item.short));
           const itemLabel = item.label || '';
           const hasLabel = itemLabel.length > 0;
           const labelDisplay = hasLabel
-            ? `<span id="label-${codeAttr}" class="link-label">${escapeHTML(itemLabel)}</span>`
-            : `<span id="label-${codeAttr}" class="label-placeholder">Add label...</span>`;
+            ? `<span id="label-${keyAttr}" class="link-label">${escapeHTML(itemLabel)}</span>`
+            : `<span id="label-${keyAttr}" class="label-placeholder">Add label...</span>`;
           const mobileLabelDisplay = hasLabel
-            ? `<span id="mobile-label-${codeAttr}" class="link-label">${escapeHTML(itemLabel)}</span>`
-            : `<span id="mobile-label-${codeAttr}" class="label-placeholder">Add label...</span>`;
-          const editButton = `<button class="label-edit-btn" onclick="event.stopPropagation(); editLabel(${codeJs}, false)" title="Edit Label">
+            ? `<span id="mobile-label-${keyAttr}" class="link-label">${escapeHTML(itemLabel)}</span>`
+            : `<span id="mobile-label-${keyAttr}" class="label-placeholder">Add label...</span>`;
+          const editButton = `<button class="label-edit-btn" onclick="event.stopPropagation(); editLabel(${codeJs}, false, ${jsDomain})" title="Edit Label">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
               </svg>
             </button>`;
-          const mobileEditButton = `<button class="label-edit-btn" onclick="event.stopPropagation(); editLabel(${codeJs}, true)" title="Edit Label">
+          const mobileEditButton = `<button class="label-edit-btn" onclick="event.stopPropagation(); editLabel(${codeJs}, true, ${jsDomain})" title="Edit Label">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
@@ -6765,7 +6782,7 @@
           // Desktop table row structure (lookups are by code, never by index:
           // indexes shift under search/filter/pagination)
           html += `
-            <tr id="row-${codeAttr}" class="link-item-row">
+            <tr id="row-${keyAttr}" class="link-item-row">
               <td data-label="Label" colspan="4">
                 <div class="label-cell">
                   ${editButton}
@@ -6773,30 +6790,30 @@
                 </div>
               </td>
             </tr>
-            <tr id="row-${codeAttr}-data" class="link-data-row">
+            <tr id="row-${keyAttr}-data" class="link-data-row">
               <td data-label="Original Link"><div class="history-original" title="${escapeAttr(item.original)}">${escapeHTML(item.original)}</div></td>
               <td data-label="Short Link"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a></td>
               <td data-label="Clicks">
                 <div class="click-count-wrapper">
-                  <span id="clicks-${codeAttr}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
-                  <button class="btn-small btn-copy-small" onclick="viewStats(${codeJs})">Full Stats</button>
+                  <span id="clicks-${keyAttr}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
+                  <button class="btn-small btn-copy-small" onclick="viewStats(${codeJs}, ${jsDomain})">Full Stats</button>
                 </div>
               </td>
               <td data-label="Actions">
                 <div class="action-btns">
                   <button class="btn-small btn-copy-small" onclick="copyText(${jsShort}, this)" title="Copy Short Link">📋 Short</button>
                   <button class="btn-small btn-copy-original" onclick="copyText(${jsOriginal}, this)" title="Copy Original Link">🔗 Original</button>
-                  <button class="btn-small btn-delete-small" onclick="deleteLink(${codeJs})" title="Delete for everyone">🔥 Delete</button>
+                  <button class="btn-small btn-delete-small" onclick="deleteLink(${codeJs}, ${jsDomain})" title="Delete for everyone">🔥 Delete</button>
                 </div>
               </td>
             </tr>
           `;
 
           // Mobile dropdown structure
-          const isExpanded = expandedLinks.has(item.code);
+          const isExpanded = expandedLinks.has(itemKey(item));
           mobileHtml += `
-            <div id="mobile-link-${codeAttr}" class="link-item-container${isExpanded ? ' expanded' : ''}">
-              <div class="link-item-header" onclick="toggleMobileLink(${codeJs})">
+            <div id="mobile-link-${keyAttr}" class="link-item-container${isExpanded ? ' expanded' : ''}">
+              <div class="link-item-header" onclick="toggleMobileLink(${codeJs}, ${jsDomain})">
                 <div class="label-cell">
                   ${mobileEditButton}
                   ${mobileLabelDisplay}
@@ -6819,8 +6836,8 @@
                 <div class="data-row">
                   <span class="data-label">Clicks</span>
                   <div class="click-count-wrapper" style="margin-top: 8px;">
-                    <span id="m-clicks-${codeAttr}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
-                    <button class="btn-small btn-copy-small" onclick="viewStats(${codeJs})">Full Stats</button>
+                    <span id="m-clicks-${keyAttr}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
+                    <button class="btn-small btn-copy-small" onclick="viewStats(${codeJs}, ${jsDomain})">Full Stats</button>
                   </div>
                 </div>
                 <div class="data-row">
@@ -6828,7 +6845,7 @@
                   <div class="action-btns">
                     <button class="btn-small btn-copy-small" onclick="copyText(${jsShort}, this)" title="Copy Short Link">📋 Short</button>
                     <button class="btn-small btn-copy-original" onclick="copyText(${jsOriginal}, this)" title="Copy Original Link">🔗 Original</button>
-                    <button class="btn-small btn-delete-small" onclick="deleteLink(${codeJs})" title="Delete for everyone">🔥 Delete</button>
+                    <button class="btn-small btn-delete-small" onclick="deleteLink(${codeJs}, ${jsDomain})" title="Delete for everyone">🔥 Delete</button>
                   </div>
                 </div>
               </div>
@@ -6897,14 +6914,15 @@
 
       // --- STATS & ACTIONS ---
 
-      async function viewStats(code) {
-        const index = findLinkIndex(code);
+      async function viewStats(code, domain = '') {
+        const index = findLinkIndex(code, domain);
         if (index === -1) {
           showCustomModal({ title: "Not Found", message: "That link is no longer in your history. Refresh the list and try again." });
           return;
         }
         const item = currentLinks[index];
         window.currentStatsCode = code;
+        window.currentStatsDomain = itemDomain(item);
 
         const overlay = document.getElementById('statsOverlay');
         overlay.style.display = 'flex';
@@ -6915,9 +6933,9 @@
       }
 
       async function refreshStatsView() {
-        // Re-resolve by code every time: indexes shift under search/filter/
+        // Re-resolve by (domain, code) every time: indexes shift under search/filter/
         // pagination and currentLinks can be replaced by a re-sync.
-        const item = currentLinks[findLinkIndex(window.currentStatsCode)];
+        const item = currentLinks[findLinkIndex(window.currentStatsCode, window.currentStatsDomain)];
         const list = document.getElementById('clicksList');
         const totalCount = document.getElementById('totalClicksCount');
         const statsUrl = document.getElementById('statsUrl');
@@ -6944,17 +6962,18 @@
 
         try {
           const getStats = functions.httpsCallable('getClickStats');
-          const res = await getStats({ shortCode: item.code, deleteToken: item.deleteToken });
+          const res = await getStats({ shortCode: item.code, domain: itemDomain(item), deleteToken: item.deleteToken });
 
           totalCount.textContent = res.data.clickCount;
 
           // Update local memory count as well (desktop + mobile badges).
           // NOTE: getElementById takes the literal DOM id, so use the raw
-          // code here (rendering used escapeAttr, which decodes back to this).
+          // composite key here (rendering used escapeAttr, which decodes back).
           item.clickCount = res.data.clickCount;
-          const listEl = document.getElementById('clicks-' + item.code);
+          const domKey = itemKey(item);
+          const listEl = document.getElementById('clicks-' + domKey);
           if (listEl) listEl.textContent = res.data.clickCount;
-          const mobileListEl = document.getElementById('m-clicks-' + item.code);
+          const mobileListEl = document.getElementById('m-clicks-' + domKey);
           if (mobileListEl) mobileListEl.textContent = res.data.clickCount;
 
           if (res.data.clicks.length === 0) {
@@ -6986,7 +7005,7 @@
                 <div class="click-time font-bold">${escapeHTML(dateStr)}</div>
                 <div class="click-ip">${escapeHTML(click.ip)}</div>
               </div>
-              <button class="click-delete" onclick="removeClickEntry(${escapeJS(item.code)}, ${escapeJS(click.id)})" title="Delete entry">🗑️</button>
+              <button class="click-delete" onclick="removeClickEntry(${escapeJS(item.code)}, ${escapeJS(click.id)}, ${escapeJS(itemDomain(item))})" title="Delete entry">🗑️</button>
             </div>
           `;
           });
@@ -7029,7 +7048,7 @@
         // Per-operation lock: purging stats must not block link deletion etc.
         if (!acquireOp('stats')) return;
 
-        const item = currentLinks[findLinkIndex(window.currentStatsCode)];
+        const item = currentLinks[findLinkIndex(window.currentStatsCode, window.currentStatsDomain)];
         const purgeBtn = document.getElementById('purgeAllClicksBtn');
 
         if (!item) {
@@ -7077,7 +7096,7 @@
 
             try {
               const purgeFn = functions.httpsCallable('deleteAllClicks');
-              await purgeFn({ shortCode: item.code, deleteToken: item.deleteToken });
+              await purgeFn({ shortCode: item.code, domain: itemDomain(item), deleteToken: item.deleteToken });
 
               // Close loading modal first
               closeLoadingModal();
@@ -7115,11 +7134,11 @@
         }
       }
 
-      async function removeClickEntry(shortCode, clickId) {
+      async function removeClickEntry(shortCode, clickId, domain = '') {
         // Per-operation lock (see opLocks)
         if (!acquireOp('entry')) return;
 
-        const item = currentLinks[findLinkIndex(shortCode)];
+        const item = currentLinks[findLinkIndex(shortCode, domain)];
         if (!item) {
           releaseOp('entry');
           showCustomModal({ title: "Not Found", message: "That link is no longer in your history." });
@@ -7145,7 +7164,7 @@
 
             try {
               const deleteEntry = functions.httpsCallable('deleteClickEntry');
-              await deleteEntry({ shortCode, clickId, deleteToken: item.deleteToken });
+              await deleteEntry({ shortCode, domain: itemDomain(item), clickId, deleteToken: item.deleteToken });
 
               // Close loading modal first
               closeLoadingModal();
@@ -7156,7 +7175,7 @@
                 message: "Click record has been deleted successfully.",
                 showCancel: false
               });
-              viewStats(shortCode);
+              viewStats(shortCode, itemDomain(item));
             } catch (e) {
               // Close loading modal first
               closeLoadingModal();
@@ -7169,7 +7188,7 @@
               });
               if (retryResult) {
                 retryOperation = true;
-                removeClickEntry(shortCode, clickId); // Retry the operation
+                removeClickEntry(shortCode, clickId, domain); // Retry the operation
               }
             }
           }
@@ -7181,39 +7200,43 @@
       }
 
       // --- MOBILE DROPDOWN TOGGLE ---
-      function toggleMobileLink(code) {
-        const container = document.getElementById(`mobile-link-${code}`);
+      function toggleMobileLink(code, domain) {
+        const key = (domain || '') + '/' + code;
+        const container = document.getElementById(`mobile-link-${key}`);
         if (container) {
           container.classList.toggle('expanded');
 
           // Track expanded state in memory
           if (container.classList.contains('expanded')) {
-            expandedLinks.add(code);
+            expandedLinks.add(key);
           } else {
-            expandedLinks.delete(code);
+            expandedLinks.delete(key);
           }
         }
       }
 
       // --- LABEL EDIT ---
-      function editLabel(code, isMobile = false) {
+      function editLabel(code, isMobile = false, domain = '') {
         try {
-          const index = findLinkIndex(code);
+          const index = findLinkIndex(code, domain);
           if (index === -1) {
             showCustomModal({ title: "Not Found", message: "That link is no longer in your history." });
             return;
           }
           // Get the appropriate label span ID based on whether it's mobile or desktop
           // (getElementById takes the literal id; selectors below use CSS.escape)
-          const labelId = isMobile ? `mobile-label-${code}` : `label-${code}`;
+          // Composite identity: the same slug may exist on other domains.
+          const linkDomain = domain || itemDomain(currentLinks[index]);
+          const key = linkDomain + '/' + code;
+          const labelId = isMobile ? `mobile-label-${key}` : `label-${key}`;
           const labelSpan = document.getElementById(labelId);
           if (!labelSpan) {
             console.error('Label span not found:', labelId);
             return;
           }
           const currentLabel = currentLinks[index]?.label || '';
-          const rowSel = '#row-' + CSS.escape(code);
-          const mobileSel = '#mobile-link-' + CSS.escape(code);
+          const rowSel = '#row-' + CSS.escape(key);
+          const mobileSel = '#mobile-link-' + CSS.escape(key);
 
           // Replace pen icon with checkmark button in desktop table
           const editBtn = document.querySelector(`${rowSel} .label-edit-btn`);
@@ -7226,7 +7249,7 @@
             editBtn.onclick = async function () {
               const input = document.querySelector(`${rowSel} .label-input`);
               if (input) {
-                await saveLabel(code, input.value);
+                await saveLabel(code, input.value, linkDomain);
               }
             };
           }
@@ -7244,7 +7267,7 @@
               e.stopPropagation();
               const input = document.querySelector(`${mobileSel} .label-input`);
               if (input) {
-                await saveLabel(code, input.value);
+                await saveLabel(code, input.value, linkDomain);
               }
             };
           }
@@ -7284,7 +7307,7 @@
           // Handle enter key and blur to save
           input.addEventListener('keydown', async function (e) {
             if (e.key === 'Enter') {
-              await saveLabel(code, input.value);
+              await saveLabel(code, input.value, linkDomain);
             } else if (e.key === 'Escape') {
               isCancelled = true;
               renderHistory(currentLinks); // Cancel and re-render
@@ -7292,7 +7315,7 @@
           });
 
           input.addEventListener('blur', async function () {
-            if (!isCancelled) await saveLabel(code, input.value);
+            if (!isCancelled) await saveLabel(code, input.value, linkDomain);
           });
 
           // Replace the label span with input
@@ -7304,9 +7327,9 @@
         }
       }
 
-      async function saveLabel(code, newLabel) {
+      async function saveLabel(code, newLabel, domain = '') {
         const trimmedLabel = String(newLabel).trim();
-        const index = findLinkIndex(code);
+        const index = findLinkIndex(code, domain);
         const item = index === -1 ? null : currentLinks[index];
 
         if (!item) {
@@ -7325,8 +7348,10 @@
         }
 
         // Show loading state - replace the label cell content with spinner (Desktop)
-        const rowSel = '#row-' + CSS.escape(code);
-        const mobileSel = '#mobile-link-' + CSS.escape(code);
+        // Composite DOM ids (domain/slug) so duplicate slugs never collide.
+        const domKey = itemDomain(item) + '/' + code;
+        const rowSel = '#row-' + CSS.escape(domKey);
+        const mobileSel = '#mobile-link-' + CSS.escape(domKey);
         const labelCell = document.querySelector(`${rowSel} .label-cell`);
         const editBtn = document.querySelector(`${rowSel} .label-edit-btn`);
 
@@ -7364,16 +7389,17 @@
         }
 
         // Ensure mobile dropdown stays expanded during save
-        const mobileContainer = document.getElementById(`mobile-link-${code}`);
+        const mobileContainer = document.getElementById(`mobile-link-${domKey}`);
         if (mobileContainer && !mobileContainer.classList.contains('expanded')) {
           mobileContainer.classList.add('expanded');
-          expandedLinks.add(code);
+          expandedLinks.add(domKey);
         }
 
         try {
           const updateLabelFn = functions.httpsCallable('updateLinkLabel');
           await updateLabelFn({
             shortCode: code,
+            domain: itemDomain(item),
             deleteToken: item.deleteToken,
             label: trimmedLabel
           });
@@ -7393,11 +7419,11 @@
       }
 
       // --- GLOBAL DELETE --- (No more local purge)
-      async function deleteLink(code) {
+      async function deleteLink(code, domain = '') {
         // Per-operation lock (see opLocks)
         if (!acquireOp('link')) return;
 
-        const index = findLinkIndex(code);
+        const index = findLinkIndex(code, domain);
         const item = index === -1 ? null : currentLinks[index];
         if (!item) {
           releaseOp('link');
@@ -7423,15 +7449,16 @@
             const deleteFn = functions.httpsCallable('deleteUrl');
             await deleteFn({
               shortCode: item.code,
+              domain: itemDomain(item),
               deleteToken: item.deleteToken
             });
 
             closeLoadingModal();
 
             // Remove from local list (re-resolve: list may have shifted)
-            const freshIndex = findLinkIndex(code);
+            const freshIndex = findLinkIndex(code, domain);
             if (freshIndex !== -1) currentLinks.splice(freshIndex, 1);
-            expandedLinks.delete(code);
+            expandedLinks.delete(itemKey(item));
             renderHistory(currentLinks);
           } catch (e) {
             closeLoadingModal();
@@ -7499,6 +7526,7 @@
                   const deleteFn = functions.httpsCallable('deleteUrl');
                   await deleteFn({
                     shortCode: item.code,
+                    domain: itemDomain(item),
                     deleteToken: item.deleteToken
                   });
                   successCount++;

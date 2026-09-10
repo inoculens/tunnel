@@ -13,6 +13,11 @@
  * https://s.inoculens.com/<code>). Any non-app hostname hitting this site
  * directly is likewise treated as a short-link host below.
  *
+ * Slugs repeat across root domains, so the resolver needs the serving host
+ * (?h=, set below). The SaaS Worker MUST forward the original custom host
+ * (X-Forwarded-Host header, else ?h=) when proxying — otherwise proxied
+ * custom-domain links arrive as s.inoculens.com and miss their scoped slug.
+ *
  * This edge function is the sole "/" handler for short domains.
  */
 const APP_HOSTS = new Set(["tunnel.inoculens.com"]);
@@ -51,8 +56,11 @@ export default async (request, context) => {
   }
 
   const extra = url.search ? `&${url.search.slice(1)}` : "";
+  // Forward the serving host explicitly: slugs are scoped per root domain,
+  // so the resolver must know WHICH domain's <code> this is (proxied
+  // custom-domain traffic may otherwise arrive as s.inoculens.com).
   return context.rewrite(
-    `/.netlify/functions/resolve?c=${encodeURIComponent(first)}${extra}`
+    `/.netlify/functions/resolve?c=${encodeURIComponent(first)}&h=${encodeURIComponent(host)}${extra}`
   );
 };
 

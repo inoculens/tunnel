@@ -9,7 +9,7 @@
  * Wire-up: netlify/edge-functions/short-domain.js rewrites short-host paths
  * to this function (GET /.netlify/functions/resolve?c=<code>).
  */
-import { store, newClickId, clientIp, systemShortHost, coverageValid } from "./lib/util.js";
+import { store, newClickId, clientIp, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix } from "./lib/util.js";
 
 const HOME = process.env.HOME_URL || "https://tunnel.inoculens.com/";
 
@@ -72,7 +72,21 @@ export async function handler(event) {
     return { statusCode: 302, headers: { Location: HOME, "Cache-Control": "no-store" } };
   }
 
-  const link = await s.get(`link/${code}`, { type: "json" }).catch(() => null);
+  // Slugs repeat across root domains, so the serving host is part of the
+  // identity. The edge router passes it as ?h=; SaaS Worker proxies must
+  // forward the original host (X-Forwarded-Host) or the lookup 404s.
+  // Direct hits fall back to the request Host header.
+  const headers = event.headers || {};
+  const lowered = {};
+  for (const [k, v] of Object.entries(headers)) lowered[String(k).toLowerCase()] = v;
+  const fwd = (lowered["x-forwarded-host"] || lowered["x-original-host"] || "").toString().split(",")[0].trim();
+  const rawHost = (qs.h || fwd || lowered.host || "").toString().split(",")[0].trim().split(":")[0];
+  const host = cleanDomain(rawHost);
+  if (!host) {
+    return { statusCode: 302, headers: { Location: HOME, "Cache-Control": "no-store" } };
+  }
+
+  const link = await s.get(linkKey(host, code), { type: "json" }).catch(() => null);
   if (!link || !/^https?:\/\//.test(link.original || "")) {
     const dest = `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}`;
     return { statusCode: 302, headers: { Location: dest, "Cache-Control": "no-store" } };
@@ -94,13 +108,13 @@ export async function handler(event) {
   // Log click (best effort — never block the redirect on storage errors).
   try {
     const id = newClickId();
-    await s.setJSON(`clicks/${link.code}/${id}`, {
+    await s.setJSON(`${clicksPrefix(host, link.code)}${id}`, {
       id,
       timestamp: Date.now(),
       ip: clientIp(event),
     });
     link.clickCount = (link.clickCount || 0) + 1;
-    await s.setJSON(`link/${link.code}`, link);
+    await s.setJSON(linkKey(host, link.code), link);
   } catch (e) {
     console.error("click log failed:", e);
   }

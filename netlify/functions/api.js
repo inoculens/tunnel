@@ -36,6 +36,8 @@ import {
   listAll,
   coverageValid,
   COVERAGE_YEAR_MS,
+  linkKey,
+  clicksPrefix,
 } from "./lib/util.js";
 
 // Ensure a Cloudflare SaaS custom hostname exists once the domain is
@@ -79,13 +81,13 @@ async function needSession(s, sid) {
   return sess;
 }
 
-async function getLink(s, code) {
+async function getLink(s, host, code) {
   if (typeof code !== "string" || !code) return null;
-  return s.get(`link/${code}`, { type: "json" });
+  return s.get(linkKey(host, code), { type: "json" });
 }
 
-async function needLink(s, code) {
-  const link = await getLink(s, code);
+async function needLink(s, host, code) {
+  const link = await getLink(s, host, code);
   if (!link) {
     const e = new Error("Link not found. It may have been deleted.");
     e.statusCode = 404;
@@ -93,6 +95,19 @@ async function needLink(s, code) {
     throw e;
   }
   return link;
+}
+
+// Every link mutation/read takes the root domain alongside the slug:
+// slugs repeat across domains, so (host, code) is the identity.
+function needLinkHost(p) {
+  const d = cleanDomain(p.domain);
+  if (!d) {
+    const e = new Error("Missing domain for this link.");
+    e.statusCode = 400;
+    e.code = "invalid-argument";
+    throw e;
+  }
+  return d;
 }
 
 function needToken(link, token) {
@@ -199,6 +214,7 @@ function linkShape(l) {
     original: l.original,
     short: l.short,
     code: l.code,
+    domain: l.domain,
     deleteToken: l.deleteToken,
     timestamp: l.createdAt,
     sessionId: l.sessionId,
@@ -218,8 +234,8 @@ async function listLinksOfSession(s, sid) {
   return found;
 }
 
-async function deleteClickKeys(s, code) {
-  for (const b of await listAll(s, `clicks/${code}/`)) {
+async function deleteClickKeys(s, host, code) {
+  for (const b of await listAll(s, clicksPrefix(host, code))) {
     await s.delete(b.key);
   }
 }
@@ -338,7 +354,8 @@ const actions = {
         e.code = "invalid-argument";
         throw e;
       }
-      if (await getLink(s, customSlug)) {
+      // Scoped uniqueness: the same slug may live on other root domains.
+      if (await getLink(s, host, customSlug)) {
         const e = new Error("ERR_SLUG_TAKEN");
         e.statusCode = 409;
         e.code = "already-exists";
@@ -349,7 +366,7 @@ const actions = {
       code = null;
       for (let i = 0; i < 10 && !code; i++) {
         const c = newCode(8);
-        if (!(await getLink(s, c))) code = c;
+        if (!(await getLink(s, host, c))) code = c;
       }
       if (!code) {
         const e = new Error("Could not allocate a short code, try again.");
@@ -396,7 +413,7 @@ const actions = {
       platform: detectPlatform(originalUrl),
       createdAt: Date.now(),
     };
-    await s.setJSON(`link/${code}`, link);
+    await s.setJSON(linkKey(host, code), link);
     return ok({
       shortenedUrl: link.short,
       deleteToken: link.deleteToken,
@@ -427,28 +444,31 @@ const actions = {
   },
 
   async deleteUrl(s, p) {
-    const link = await needLink(s, p.shortCode);
+    const host = needLinkHost(p);
+    const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
-    await s.delete(`link/${link.code}`);
-    await deleteClickKeys(s, link.code);
+    await s.delete(linkKey(host, link.code));
+    await deleteClickKeys(s, host, link.code);
     return ok({});
   },
 
   async updateLinkLabel(s, p) {
-    const link = await needLink(s, p.shortCode);
+    const host = needLinkHost(p);
+    const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
     link.label = String(p.label || "").slice(0, 60);
-    await s.setJSON(`link/${link.code}`, link);
+    await s.setJSON(linkKey(host, link.code), link);
     return ok({});
   },
 
   // ----- stats -----
 
   async getClickStats(s, p) {
-    const link = await needLink(s, p.shortCode);
+    const host = needLinkHost(p);
+    const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
     const clicks = [];
-    for (const b of await listAll(s, `clicks/${link.code}/`)) {
+    for (const b of await listAll(s, clicksPrefix(host, link.code))) {
       const c = await s.get(b.key, { type: "json" });
       if (c) clicks.push(c);
     }
@@ -457,20 +477,22 @@ const actions = {
   },
 
   async deleteAllClicks(s, p) {
-    const link = await needLink(s, p.shortCode);
+    const host = needLinkHost(p);
+    const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
-    await deleteClickKeys(s, link.code);
+    await deleteClickKeys(s, host, link.code);
     link.clickCount = 0;
-    await s.setJSON(`link/${link.code}`, link);
+    await s.setJSON(linkKey(host, link.code), link);
     return ok({});
   },
 
   async deleteClickEntry(s, p) {
-    const link = await needLink(s, p.shortCode);
+    const host = needLinkHost(p);
+    const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
-    await s.delete(`clicks/${link.code}/${p.clickId}`);
+    await s.delete(`${clicksPrefix(host, link.code)}${p.clickId}`);
     link.clickCount = Math.max(0, (link.clickCount || 1) - 1);
-    await s.setJSON(`link/${link.code}`, link);
+    await s.setJSON(linkKey(host, link.code), link);
     return ok({});
   },
 
@@ -491,7 +513,14 @@ const actions = {
     const links = await listLinksOfSession(s, oldSessionId);
     for (const l of links) {
       l.sessionId = newSessionId;
-      await s.setJSON(`link/${l.code}`, l);
+      // Keys are (host, code): derive the host from the stored doc, falling
+      // back to the link URL itself so the key can never go missing.
+      let lh = l.domain;
+      if (!lh) {
+        try { lh = new URL(l.short).hostname; } catch { lh = ""; }
+        l.domain = lh;
+      }
+      await s.setJSON(linkKey(lh, l.code), l);
     }
     // Custom domains belong to the session too: move them along so a merge
     // transfers everything (links + domains). Hostnames are unique docs, so
