@@ -249,6 +249,9 @@
       backdrop-filter: blur(16px) saturate(130%);
       -webkit-backdrop-filter: blur(16px) saturate(130%);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      /* Width eased from JS (measured pixels) so the pill glides between
+         texts instead of snapping — same feel as the expanding search. */
+      transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     .marquee-text {
@@ -925,21 +928,40 @@
       opacity: 1;
     }
 
-    /* Platform Detection Badge */
+    /* Deep-link island: a compact pill docked under the URL field that
+       drops out of it like a notification island when a supported app
+       link is pasted. */
     .platform-detector {
       display: none;
       align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      margin-top: 0.75rem;
-      border-radius: 12px;
+      justify-content: center;
+      gap: 10px;
+      width: fit-content;
+      max-width: 100%;
+      margin: 10px auto 0;
+      padding: 7px 8px 7px 9px;
+      border-radius: 999px;
+      background: rgba(24, 24, 27, 0.72);
+      backdrop-filter: blur(20px) saturate(130%);
+      -webkit-backdrop-filter: blur(20px) saturate(130%);
+      border: 1px solid var(--border);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07);
       font-size: 0.82rem;
       font-weight: 500;
-      border: 1px solid var(--border);
-      background: rgba(255, 255, 255, 0.05);
       color: #d7d7d7;
-      transition: all 0.3s ease;
-      animation: slideIn 0.3s ease;
+      animation: islandIn 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+    }
+
+    @keyframes islandIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px) scale(0.92);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
     }
 
     @keyframes slideIn {
@@ -958,38 +980,70 @@
       display: flex;
     }
 
-    .platform-detector.youtube,
-    .platform-detector.instagram,
-    .platform-detector.facebook,
-    .platform-detector.twitter,
-    .platform-detector.x,
-    .platform-detector.tiktok,
-    .platform-detector.linkedin {
-      background: rgba(255, 255, 255, 0.05);
-      border-color: var(--border);
-      color: #d7d7d7;
+    /* Faint brand tint per platform that has a logo; the rest stay neutral. */
+    .platform-detector.youtube {
+      border-color: rgba(255, 0, 0, 0.28);
+    }
+
+    .platform-detector.instagram {
+      border-color: rgba(225, 48, 108, 0.32);
+    }
+
+    .platform-detector.facebook {
+      border-color: rgba(24, 119, 242, 0.32);
     }
 
     .platform-icon {
-      font-size: 1.25rem;
+      width: 26px;
+      height: 26px;
+      flex-shrink: 0;
       display: flex;
       align-items: center;
       justify-content: center;
+      font-size: 1.15rem;
+    }
+
+    .platform-icon img {
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      object-fit: cover;
+      display: block;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: #000;
     }
 
     .platform-text {
-      flex: 1;
+      white-space: nowrap;
+      color: #e6e6e6;
     }
 
     .platform-badge {
-      padding: 2px 8px;
+      padding: 4px 10px;
       border-radius: 999px;
-      font-size: 0.7rem;
+      font-size: 0.68rem;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      background: rgba(255, 255, 255, 0.1);
-      color: var(--text);
+      background: rgba(43, 166, 64, 0.14);
+      color: var(--success-text);
+      flex-shrink: 0;
+    }
+
+    @media (max-width: 480px) {
+      .platform-detector {
+        font-size: 0.76rem;
+        gap: 8px;
+        padding: 7px 12px;
+        flex-wrap: wrap;
+        row-gap: 4px;
+        border-radius: 20px;
+      }
+
+      .platform-text {
+        white-space: normal;
+        text-align: center;
+      }
     }
 
     .history-table-wrapper {
@@ -2906,18 +2960,54 @@
         ];
         let currentIndex = 0;
         const marqueeText = document.getElementById('marqueeText');
+        const marqueeBox = marqueeText ? marqueeText.parentElement : null;
         const isMobile = window.matchMedia('(max-width: 500px)').matches;
         const animDuration = isMobile ? 600 : 800;
         const holdDuration = 3000;
+        // Horizontal chrome around the text (padding + border), measured
+        // once so the eased width can be computed in exact pixels.
+        const marqueePadX = (marqueeBox && !isMobile)
+          ? marqueeBox.offsetWidth - marqueeText.offsetWidth
+          : 0;
+
+        function marqueeTargetWidth() {
+          if (!marqueeBox) return 0;
+          const full = marqueeText.scrollWidth + marqueePadX;
+          const cap = marqueeBox.parentElement ? marqueeBox.parentElement.clientWidth : full;
+          return Math.max(0, Math.min(full, cap));
+        }
 
         function raceIn() {
+          // Freeze the pill at its current width, swap the text, then ease
+          // to the new width in pixels (CSS cannot ease to fit-content).
+          if (!isMobile && marqueeBox) {
+            marqueeBox.style.transition = 'none';
+            marqueeBox.style.width = marqueeBox.offsetWidth + 'px';
+          }
           marqueeText.textContent = texts[currentIndex];
           marqueeText.className = 'marquee-text racing-in';
-          
+
+          if (!isMobile && marqueeBox) {
+            const target = marqueeTargetWidth();
+            if (Math.abs(target - marqueeBox.offsetWidth) > 1) {
+              void marqueeBox.offsetWidth; // reflow so the change eases
+              marqueeBox.style.transition = '';
+              marqueeBox.style.width = target + 'px';
+              marqueeBox.addEventListener('transitionend', function release(e) {
+                if (e.propertyName !== 'width') return;
+                marqueeBox.removeEventListener('transitionend', release);
+                marqueeBox.style.width = '';
+              });
+            } else {
+              marqueeBox.style.transition = '';
+              marqueeBox.style.width = '';
+            }
+          }
+
           // After race in completes, hold
           setTimeout(function() {
             marqueeText.className = 'marquee-text holding';
-            
+
             // After hold duration, race out
             setTimeout(raceOut, holdDuration);
           }, animDuration);
@@ -3306,18 +3396,7 @@
 
       <div id="addDomainStepPayment" style="display: none;">
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"
-            style="flex-shrink: 0;">
-            <path
-              d="M11.5 2C6.25 2 2 6.25 2 11.5C2 16.75 6.25 21 11.5 21C16.75 21 21 16.75 21 11.5C21 6.25 16.75 2 11.5 2Z"
-              fill="#F7931A" opacity="0.2" />
-            <path
-              d="M14.5 8.5C14.5 7.12 13.38 6 12 6H9V13H12C13.38 13 14.5 11.88 14.5 10.5C14.5 9.8 14.22 9.16 13.76 8.7C14.22 8.24 14.5 7.6 14.5 6.9V8.5ZM12 8C12.55 8 13 8.45 13 9C13 9.55 12.55 10 12 10H11V8H12ZM11 11H12C12.55 11 13 11.45 13 12C13 12.55 12.55 13 12 13H11V11Z"
-              fill="#F7931A" />
-            <path
-              d="M10 6H8V18H10V13H12C13.65 13 15 11.65 15 10C15 9.13 14.63 8.35 14.04 7.79C14.64 7.23 15 6.41 15 5.5C15 3.57 13.43 2 11.5 2V4C12.33 4 13 4.67 13 5.5C13 6.33 12.33 7 11.5 7H10V6Z"
-              fill="#F7931A" opacity="0.5" />
-          </svg>
+          <img src="/visuals/Bitcoin_Logo.png" alt="Bitcoin" width="22" height="22" style="flex-shrink: 0;">
           <h3 style="margin: 0; font-size: 1rem;">Pay with Bitcoin</h3>
         </div>
         <p class="modal-message" style="font-size: 0.9rem; margin-bottom: 16px;">
@@ -6037,6 +6116,7 @@
         youtube: {
           name: 'YouTube',
           icon: '▶️',
+          logo: '/visuals/Youtube_Logo.png',
           pattern: /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\//i,
           appScheme: 'vnd.youtube:',
           universalLink: 'https://www.youtube.com/redirect?',
@@ -6045,6 +6125,7 @@
         instagram: {
           name: 'Instagram',
           icon: '📸',
+          logo: '/visuals/Instagram_Logo.png',
           pattern: /^(https?:\/\/)?(www\.)?instagram\.com\//i,
           appScheme: 'instagram:',
           universalLink: 'https://www.instagram.com/_n',
@@ -6053,6 +6134,7 @@
         facebook: {
           name: 'Facebook',
           icon: '📘',
+          logo: '/visuals/Facebook_Logo.png',
           pattern: /^(https?:\/\/)?(www\.)?(facebook\.com|fb\.?com)\//i,
           appScheme: 'fb://',
           universalLink: 'https://www.facebook.com/',
@@ -6061,6 +6143,7 @@
         twitter: {
           name: 'X (Twitter)',
           icon: '𝕏',
+          logo: '/visuals/X_Logo.png',
           pattern: /^(https?:\/\/)?(www\.)?(twitter\.com|x\.com)\//i,
           appScheme: 'twitter://',
           universalLink: 'https://twitter.com/',
@@ -6069,6 +6152,7 @@
         tiktok: {
           name: 'TikTok',
           icon: '🎵',
+          logo: '/visuals/Tiktok_Logo.png',
           pattern: /^(https?:\/\/)?(www\.)?tiktok\.com\//i,
           appScheme: 'tiktok://',
           universalLink: 'https://www.tiktok.com/',
@@ -6077,6 +6161,7 @@
         linkedin: {
           name: 'LinkedIn',
           icon: '💼',
+          logo: '/visuals/Linkedin_Logo.png',
           pattern: /^(https?:\/\/)?(www\.)?linkedin\.com\//i,
           appScheme: 'linkedin://',
           universalLink: 'https://www.linkedin.com/',
@@ -6129,7 +6214,11 @@
 
           if (platform) {
             detector.className = 'platform-detector visible ' + platform.className;
-            if (iconEl) iconEl.textContent = platform.icon;
+            // Brand logo when provided, otherwise the emoji fallback icon.
+            // Static trusted strings only — never user input.
+            if (iconEl) iconEl.innerHTML = platform.logo
+              ? '<img src="' + platform.logo + '" alt="' + platform.name + ' logo">'
+              : platform.icon;
             if (textEl) textEl.textContent = `This link will open in the ${platform.name} app`;
             if (badgeEl) badgeEl.textContent = 'Deep Link';
             return platform;

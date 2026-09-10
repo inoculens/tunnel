@@ -155,7 +155,9 @@
     }
 
     .cta-btn {
-      display: inline-block;
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
       text-align: center;
       background: #f1f1f1;
       color: #0f0f0f;
@@ -182,8 +184,18 @@
       background: #ffffff;
     }
 
-    .bitcoin-note {
+    /* Reserved slot under each CTA so both cards stay identical: the
+       right card spends it on the bitcoin note, the left one on air. */
+    .bitcoin-slot {
+      min-height: 40px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
       margin-top: 1rem;
+    }
+
+    .bitcoin-note {
+      margin-top: 0;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -192,10 +204,10 @@
       color: var(--text-muted);
     }
 
-    .bitcoin-note svg {
+    .bitcoin-note img {
       width: 20px;
       height: 20px;
-      filter: drop-shadow(0 0 8px rgba(247, 147, 26, 0.4));
+      filter: drop-shadow(0 0 8px rgba(245, 166, 35, 0.45));
     }
 
 
@@ -280,6 +292,7 @@
           </li>
         </ul>
         <a href="/" class="cta-btn">Start Shortening</a>
+        <div class="bitcoin-slot" aria-hidden="true"></div>
       </div>
 
       <!-- Custom Domain Tier -->
@@ -306,12 +319,11 @@
           </li>
         </ul>
         <a href="/" class="cta-btn">Register Domain</a>
-        <div class="bitcoin-note">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" fill="#F7931A"/>
-            <path d="M15.1111 8.88889C15.5238 8.88889 15.8571 8.55556 15.8571 8.14286C15.8571 7.73016 15.5238 7.39683 15.1111 7.39683H13.619V6.20635C13.619 5.79365 13.2857 5.46032 12.873 5.46032C12.4603 5.46032 12.127 5.79365 12.127 6.20635V7.39683H10.6349V6.20635C10.6349 5.79365 10.3016 5.46032 9.88889 5.46032C9.47619 5.46032 9.14286 5.79365 9.14286 6.20635V7.39683H8.39683C7.98413 7.39683 7.65079 7.73016 7.65079 8.14286C7.65079 8.55556 7.98413 8.88889 8.39683 8.88889V14.1111C7.98413 14.1111 7.65079 14.4444 7.65079 14.8571C7.65079 15.2698 7.98413 15.6032 8.39683 15.6032H9.14286V16.7937C9.14286 17.2063 9.47619 17.5397 9.88889 17.5397C10.3016 17.5397 10.6349 17.2063 10.6349 16.7937V15.6032H12.127V16.7937C12.127 17.2063 12.4603 17.5397 12.873 17.5397C13.2857 17.5397 13.619 17.2063 13.619 16.7937V15.6032H15.1111C15.5238 15.6032 15.8571 15.2698 15.8571 14.8571C15.8571 14.4444 15.5238 14.1111 15.1111 14.1111H14.3651C14.3651 14.1111 14.3651 13.9206 14.3651 13.9206C14.8889 13.6984 15.254 13.1905 15.254 12.5873C15.254 12.0159 14.9365 11.5397 14.4762 11.3016C14.8254 11.0635 15.0635 10.6667 15.0635 10.2063C15.0635 9.61905 14.6825 9.127 14.1587 8.95238C14.1587 8.95238 14.3651 8.88889 15.1111 8.88889ZM10.6349 14.1111V11.873H12.873C13.4921 11.873 14.0159 12.3968 14.0159 13.0159C14.0159 13.6349 13.4921 14.1587 12.873 14.1587H10.6349V14.1111ZM10.6349 10.4603V8.88889H12.873C13.2857 8.88889 13.619 9.22222 13.619 9.63492C13.619 10.0476 13.2857 10.4286 12.873 10.4286L10.6349 10.4603Z" fill="white"/>
-          </svg>
-          Account settled in Bitcoin
+        <div class="bitcoin-slot">
+          <div class="bitcoin-note">
+            <img src="/visuals/Bitcoin_Logo.png" alt="Bitcoin" width="20" height="20">
+            Account settled in Bitcoin
+          </div>
         </div>
       </div>
     </div>
