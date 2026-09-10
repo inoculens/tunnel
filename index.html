@@ -993,6 +993,10 @@
       border-color: rgba(24, 119, 242, 0.32);
     }
 
+    .platform-detector.linkedin {
+      border-color: rgba(0, 119, 181, 0.35);
+    }
+
     .platform-icon {
       width: 26px;
       height: 26px;
@@ -1001,6 +1005,8 @@
       align-items: center;
       justify-content: center;
       font-size: 1.15rem;
+      overflow: hidden;
+      border-radius: 8px;
     }
 
     .platform-icon img {
@@ -1010,7 +1016,18 @@
       object-fit: cover;
       display: block;
       border: 1px solid rgba(255, 255, 255, 0.12);
-      background: #000;
+    }
+
+    /* Facebook / X / LinkedIn uploads carry transparent padding around
+       the glyph (which read as black bars) — zoom them to edge-to-edge
+       like the YouTube mark. TikTok and YouTube already fill. */
+    .platform-detector.facebook .platform-icon img,
+    .platform-detector.linkedin .platform-icon img {
+      transform: scale(1.14);
+    }
+
+    .platform-detector.x .platform-icon img {
+      transform: scale(1.12);
     }
 
     .platform-text {
@@ -4179,9 +4196,19 @@
 
       async function showDomainManager(targetDomain = '') {
         if (!requireBackend()) return;
-        // Auto-create session if none exists (same logic as URL creation).
-        // First-time users get a session silently — no prompt.
+        // Adding a domain always asks first when there is no session yet:
+        // unlike one-click link shortening, it starts billing/verification.
         if (!getSessionId()) {
+          const confirmed = await showCustomModal({
+            title: "Create a New Session?",
+            message: "You don't have an active session yet. Proceeding will generate a new 10-character Session ID and store your history in our database.<br><br>Do you want to continue?",
+            showCancel: true,
+            confirmText: "Continue",
+            cancelText: "Exit"
+          });
+
+          if (!confirmed) return;
+
           try {
             // Inform the user that a session is being created
             showLoadingModal({
@@ -6080,6 +6107,18 @@
             document.body.classList.remove('initial-loading');
             setTimeout(() => initialLoader.remove(), 500);
           }
+          // Deep link from pricing ("Register Domain"): open the custom
+          // domain dialog exactly as if the + button had been pressed —
+          // including the new-session dialog when there is no session yet.
+          try {
+            const params = new URLSearchParams(window.location.search);
+            if (params.has('add-domain')) {
+              params.delete('add-domain');
+              const clean = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+              window.history.replaceState(null, '', clean);
+              setTimeout(() => showDomainManager(), 600);
+            }
+          } catch (e) { /* never block boot */ }
         }
       }
 
