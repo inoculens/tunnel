@@ -32,8 +32,13 @@
   <link rel="apple-touch-icon" href="/visuals/logo-no-background.png" />
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self';" />
-  
+
   <title>Link Not Available - INOCULENS Tunnel</title>
+  <!-- Shared design system: styles the consent banner injected by
+       assets/common.js (and header/drawer/footer where present). First in
+       cascade order so this page's own <style> rules below win any
+       equal-specificity ties and its layout is unchanged. -->
+  <link rel="stylesheet" href="/assets/common.css">
   <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap');
   </style>
