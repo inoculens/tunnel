@@ -36,11 +36,19 @@ import {
   checkUrlSafety,
   countDayKey,
   bumpDayCount,
+  writeCountShard,
+  sumShardsFromKeys,
   shouldStoreClickDetail,
   sessionLinkCount,
   bumpSessionLinkCount,
   deriveAddress,
   nextWalletIndex,
+  turnstileSiteKey,
+  verifyTurnstileToken,
+  turnstileRequired,
+  bumpKindCounter,
+  originalHash,
+  isBlockedOriginal,
   listAll,
   coverageValid,
   COVERAGE_YEAR_MS,
@@ -56,6 +64,19 @@ import {
 // are the app itself (reserved in addCustomDomain, can never be claimed).
 // Best effort: DNS ownership remains the source of truth; SaaS failures are
 // logged and surfaced via cf fields, never block payment.
+
+// Turnstile gate (mint-family only, never resolve): lenient risk-based.
+// Throws 412 turnstile-required when a widget must be solved.
+async function requireTurnstile(s, p, event, kind) {
+  if (!(await turnstileRequired(s, kind, clientIp(event), p.sessionId || null))) return;
+  const v = await verifyTurnstileToken(p.turnstileToken, clientIp(event));
+  if (!v.ok) {
+    const e = new Error("TURNSTILE_REQUIRED");
+    e.statusCode = 412;
+    e.code = "failed-precondition";
+    throw e;
+  }
+}
 async function ensureSaaSHostname(doc) {
   if (!cfConfig()) return null;
   if (!(doc.dnsVerification?.cnameValid && doc.dnsVerification?.txtVerified)) return null;
@@ -207,6 +228,11 @@ async function domainInfo(doc, viewerSessionId = null) {
   const route = routingTarget();
   const pending = doc.pendingClaim || null;
   const pendingMine = !!(pending && viewerSessionId && pending.sessionId === viewerSessionId);
+  const isOwner = !!(viewerSessionId && doc.sessionId === viewerSessionId);
+  // Owner TXT tokens are redacted for non-owners (claimants get only their
+  // pending token via the pendingClaim branch). TXT is public DNS anyway,
+  // but no reason to hand it to anyone who knows the domain name.
+  const ownerToken = isOwner ? doc.verificationToken : null;
   return {
     domain: doc.domain,
     id: doc.domain,
@@ -217,8 +243,8 @@ async function domainInfo(doc, viewerSessionId = null) {
     coverageLifetime: doc.coverageLifetime === true,
     coverageValid: coverageValid(doc),
     dnsVerification: doc.dnsVerification,
-    dnsVerificationToken: doc.verificationToken,
-    verificationToken: doc.verificationToken,
+    dnsVerificationToken: ownerToken,
+    verificationToken: ownerToken,
     pendingClaim: pendingMine
       ? { byYou: true, at: pending.at || null }
       : pending
@@ -240,7 +266,7 @@ async function domainInfo(doc, viewerSessionId = null) {
       recordName: doc.domain,
       isApex: await isApexDomain(doc.domain),
       txtHost: `verification.${doc.domain}`,
-      txt: doc.verificationToken,
+      txt: ownerToken,
       sslCnameTarget: doc.sslTarget,
       sslCnameName: `_acme-challenge.${doc.domain}`,
       dcvTarget: dcvDelegationTargetFor(doc.domain),
@@ -261,6 +287,7 @@ function linkShape(l) {
     clickCount: l.clickCount || 0,
     platform: l.platform || null,
     ...(l.label ? { label: l.label } : {}),
+    ...(l.quarantined ? { quarantined: true, quarantineReason: l.quarantineReason || "UNSAFE" } : {}),
   };
 }
 
@@ -381,6 +408,7 @@ const actions = {
       e.code = "resource-exhausted";
       throw e;
     }
+    await requireTurnstile(s, p, event, "shorten");
     const { originalUrl, customSlug, sessionId, domain } = p;
     const cleanUrl = typeof originalUrl === "string" ? originalUrl.trim() : "";
     const cleanSlug = customSlug == null ? null : String(customSlug).trim();
@@ -507,11 +535,6 @@ const actions = {
     };
     await s.setJSON(linkKey(host, code), link);
     await bumpSessionLinkCount(s, sessionId, 1);
-    try {
-      await s.setJSON(`admin-log/${new Date().toISOString()}-shorten`, {
-        at: new Date().toISOString(), host, code, sessionId,
-      }).catch(() => {});
-    } catch { /* best effort */ }
     return ok({
       shortenedUrl: link.short,
       deleteToken: link.deleteToken,
@@ -579,27 +602,60 @@ const actions = {
     // Sort by key (click IDs start with timestamp36) to avoid fetching all
     // bodies just to order. Fetch only the requested window.
     const sorted = [...blobs].sort((a, b) => String(b.key || "").localeCompare(String(a.key || "")));
-    const total = sorted.length;
+    const detailTotal = sorted.length;
     const window = sorted.slice(offset, offset + limit);
     const docs = await mapWithConcurrency(window, 12, (b) =>
       freshGet(s, b.key, { type: "json" }).catch(() => null)
     );
     const clicks = docs.filter(Boolean);
     clicks.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    // Daily shard totals for graph (best effort, bounded).
+    // Exact total: legacy baseline + write-only shard delta (key-counted, no
+    // body reads, lossless under concurrency). Badge clickCount stays approx.
+    let clickCount = link.clickCount || 0;
     let daily = [];
     try {
-      const dayBlobs = await listAll(s, `counts/${(host || "").toLowerCase()}/${link.code}/`);
-      const dayDocs = await mapWithConcurrency(dayBlobs.slice(-90), 6, (b) =>
-        freshGet(s, b.key, { type: "json" }).catch(() => null)
-      );
-      daily = dayBlobs.slice(-90).map((b, i) => ({
-        day: String(b.key || "").split("/").pop(),
-        count: Number(dayDocs[i]?.count) || 0,
-      })).filter((d) => d.day);
-      daily.sort((a, b) => String(a.day).localeCompare(String(b.day)));
-    } catch { /* ignore */ }
-    return ok({ clickCount: link.clickCount || 0, total, clicks, daily, hasMore: offset + limit < total });
+      const countBlobs = await listAll(s, `counts/${(host || "").toLowerCase()}/${link.code}/`);
+      const { delta, byDay } = sumShardsFromKeys(countBlobs);
+      const base = link.baseCount !== undefined ? Number(link.baseCount) || 0 : (link.clickCount || 0);
+      const hasShards = countBlobs.some((b) => String(b.key || "").split("/").length === 5);
+      clickCount = hasShards ? base + delta : (link.clickCount || 0);
+      // Daily graph: minute-shard grouping first; legacy day-aggs fill days
+      // with no shards (history only, never double-counted).
+      const days = new Map(byDay);
+      const legacyDays = countBlobs.filter((b) => String(b.key || "").split("/").length === 4).slice(-90);
+      if (legacyDays.length) {
+        const legacyDocs = await mapWithConcurrency(legacyDays, 6, (b) =>
+          freshGet(s, b.key, { type: "json" }).catch(() => null)
+        );
+        legacyDays.forEach((b, i) => {
+          const day = String(b.key || "").split("/").pop();
+          if (day && !days.has(day)) days.set(day, Number(legacyDocs[i]?.count) || 0);
+        });
+      }
+      daily = [...days.entries()].map(([day, count]) => ({ day, count }))
+        .sort((a, b) => String(a.day).localeCompare(String(b.day))).slice(-90);
+      // Opportunistic rollup: if minute shards pile up, fold the oldest day
+      // into its day-agg and delete those shards (bounded 200/call).
+      const minuteKeys = countBlobs.filter((b) => String(b.key || "").split("/").length === 5);
+      if (minuteKeys.length > 1000) {
+        try {
+          const oldest = [...byDay.keys()].sort()[0];
+          const dayKeys = minuteKeys.filter((b) => String(b.key || "").split("/")[3] === oldest).slice(0, 200);
+          let dayDelta = 0;
+          for (const b of dayKeys) dayDelta += String(b.key || "").includes("-adj-") ? -1 : 1;
+          const aggKey = `counts/${(host || "").toLowerCase()}/${link.code}/${oldest}`;
+          const agg = (await s.get(aggKey, { type: "json" }).catch(() => null)) || { count: 0, rolled: true };
+          // Only fold if this day has no unlisted remainder risk: fold exactly
+          // the deleted keys' delta (remainder stays as shards).
+          agg.count = (Number(agg.count) || 0) + dayDelta;
+          await s.setJSON(aggKey, agg);
+          await mapWithConcurrency(dayKeys, 12, (b) => s.delete(b.key).catch(() => null));
+        } catch (e) {
+          console.error("shard rollup failed:", e?.message || e);
+        }
+      }
+    } catch { /* badge fallback above */ }
+    return ok({ clickCount, total: detailTotal, clicks, daily, hasMore: offset + limit < detailTotal, quarantined: link.quarantined === true });
   },
 
   async deleteAllClicks(s, p) {
@@ -607,7 +663,12 @@ const actions = {
     const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
     await deleteClickKeys(s, host, link.code);
+    try {
+      const counts = await listAll(s, `counts/${(host || "").toLowerCase()}/${link.code}/`);
+      await mapWithConcurrency(counts.slice(0, 500), 12, (b) => s.delete(b.key).catch(() => null));
+    } catch { /* best effort */ }
     link.clickCount = 0;
+    link.baseCount = 0;
     await s.setJSON(linkKey(host, link.code), link);
     return ok({});
   },
@@ -623,9 +684,10 @@ const actions = {
     const existing = await freshGet(s, key, { type: "json" }).catch(() => null);
     if (!existing) return ok({ deleted: false });
     await s.delete(key);
+    // Compensating shard keeps exact totals (no counter races).
+    try { await writeCountShard(s, host, link.code, -1); } catch { /* ignore */ }
     link.clickCount = Math.max(0, (link.clickCount || 1) - 1);
     await s.setJSON(linkKey(host, link.code), link);
-    try { await bumpDayCount(s, host, link.code, -1); } catch { /* ignore */ }
     return ok({ deleted: true });
   },
 
@@ -701,11 +763,14 @@ const actions = {
       dcvSuffix: dcvDelegationSuffix(),
       cloudflareConfigured: !!cfConfig(),
       autoSsl: process.env.AUTO_SSL !== "0",
+      turnstileSiteKey: turnstileSiteKey(),
     });
   },
 
-  async addCustomDomain(s, p) {
+  async addCustomDomain(s, p, event) {
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
+    try { await bumpKindCounter(s, "domain-add", clientIp(event)); } catch { /* ignore */ }
+    await requireTurnstile(s, p, event, "domain");
     const host = cleanDomain(p.domain);
     if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
     // Never allow hijacking the system hosts or the SaaS infrastructure hosts.
@@ -766,7 +831,7 @@ const actions = {
       createdAt: Date.now(),
     };
     await s.setJSON(`domain/${host}`, doc);
-    return ok(await domainInfo(doc));
+    return ok(await domainInfo(doc, p.sessionId));
   },
 
   async getDomainVerificationInfo(s, p) {
@@ -813,7 +878,9 @@ const actions = {
   // Verified transfer: claimant proves DNS for PENDING token, then ownership
   // + all links (with stats, clicks/ are host/code keyed) move as if created
   // in the new session. s.* links never move (not a session merge).
-  async verifyClaimedDomainDns(s, p) {
+  async verifyClaimedDomainDns(s, p, event) {
+    try { await bumpKindCounter(s, "claim", clientIp(event)); } catch { /* ignore */ }
+    await requireTurnstile(s, p, event, "claim");
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
     const host = cleanDomain(p.domain);
     if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
@@ -1190,6 +1257,120 @@ const actions = {
     return ok({ deleted: code });
   },
 
+  // ----- Link Management (admin moderation) -----
+  // All gated by needAdmin + audit-logged. Redaction happens in the UI
+  // (redacted-by-default, click-to-reveal); the backend returns full values
+  // so moderation (quarantine/delete/block) is possible.
+
+  async adminSearchLinks(s, p, event) {
+    await needAdmin(s, p, event);
+    const qCode = typeof p.code === "string" ? p.code.trim() : "";
+    const qDomain = cleanDomain(p.domain || "");
+    const qOrig = typeof p.originalContains === "string" ? p.originalContains.trim().toLowerCase().slice(0, 120) : "";
+    const onlyQ = p.quarantinedOnly === true;
+    const blobs = await listAll(s, "link/");
+    const docs = await mapWithConcurrency(blobs.slice(0, 2000), 12, (b) =>
+      freshGet(s, b.key, { type: "json" }).catch(() => null)
+    );
+    let found = docs.filter(Boolean);
+    if (qDomain) found = found.filter((l) => (l.domain || "").toLowerCase() === qDomain);
+    if (qCode) found = found.filter((l) => (l.code || "") === qCode);
+    if (qOrig) found = found.filter((l) => String(l.original || "").toLowerCase().includes(qOrig));
+    if (onlyQ) found = found.filter((l) => l.quarantined === true);
+    found.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return ok({ links: found.slice(0, 50).map(linkShape), truncated: found.length > 50, total: found.length });
+  },
+
+  async adminSetQuarantine(s, p, event) {
+    await needAdmin(s, p, event);
+    const host = needLinkHost(p);
+    const link = await needLink(s, host, p.shortCode);
+    link.quarantined = p.quarantined !== false;
+    if (link.quarantined) {
+      link.quarantineReason = String(p.reason || "ADMIN").slice(0, 40);
+      link.quarantineAt = new Date().toISOString();
+    } else {
+      delete link.quarantined;
+      delete link.quarantineReason;
+      delete link.quarantineAt;
+    }
+    await s.setJSON(linkKey(host, link.code), link);
+    try {
+      await s.setJSON(`admin-log/${new Date().toISOString()}-quarantine`, {
+        at: new Date().toISOString(), host, code: link.code, quarantined: link.quarantined,
+      }).catch(() => {});
+    } catch { /* ignore */ }
+    return ok({ quarantined: link.quarantined === true });
+  },
+
+  async adminDeleteLink(s, p, event) {
+    await needAdmin(s, p, event);
+    const host = needLinkHost(p);
+    const link = await needLink(s, host, p.shortCode);
+    await s.delete(linkKey(host, link.code));
+    try {
+      const alt = new URL(link.short).hostname.toLowerCase();
+      if (alt && alt !== host.toLowerCase()) await s.delete(linkKey(alt, link.code));
+    } catch { /* ignore */ }
+    await deleteClickKeys(s, host, link.code);
+    try {
+      const counts = await listAll(s, `counts/${host.toLowerCase()}/${link.code}/`);
+      await mapWithConcurrency(counts.slice(0, 500), 12, (b) => s.delete(b.key).catch(() => null));
+    } catch { /* ignore */ }
+    try { await bumpSessionLinkCount(s, link.sessionId, -1); } catch { /* ignore */ }
+    try {
+      await s.setJSON(`admin-log/${new Date().toISOString()}-dellink`, {
+        at: new Date().toISOString(), host, code: link.code,
+      }).catch(() => {});
+    } catch { /* ignore */ }
+    return ok({ deleted: link.code });
+  },
+
+  async adminBlockOriginal(s, p, event) {
+    await needAdmin(s, p, event);
+    const original = String(p.original || "").trim();
+    if (!original || original.length > 2048) return fail(400, "invalid-argument", "Invalid URL.");
+    const h = await originalHash(original);
+    if (!h) return fail(400, "invalid-argument", "Invalid URL.");
+    let host = "";
+    try { host = new URL(original).hostname.toLowerCase().slice(0, 120); } catch { /* keep empty */ }
+    await s.setJSON(`blocked/${h}`, { hash: h, host, at: new Date().toISOString(), reason: String(p.reason || "ADMIN").slice(0, 40) });
+    // Sweep existing links with the exact same original (bounded).
+    let swept = 0;
+    try {
+      const blobs = await listAll(s, "link/");
+      const docs = await mapWithConcurrency(blobs.slice(0, 2000), 12, (b) =>
+        freshGet(s, b.key, { type: "json" }).catch(() => null)
+      );
+      const matches = docs.filter((l) => l && String(l.original || "").trim() === original).slice(0, 200);
+      await mapWithConcurrency(matches, 12, (l) => {
+        l.quarantined = true;
+        l.quarantineReason = "BLOCKLISTED";
+        l.quarantineAt = new Date().toISOString();
+        return s.setJSON(linkKey(l.domain || host, l.code), l);
+      });
+      swept = matches.length;
+    } catch (e) {
+      console.error("block sweep failed:", e?.message || e);
+    }
+    try {
+      await s.setJSON(`admin-log/${new Date().toISOString()}-block`, {
+        at: new Date().toISOString(), hash: h, host, swept,
+      }).catch(() => {});
+    } catch { /* ignore */ }
+    return ok({ blocked: true, swept });
+  },
+
+  async adminUnblockOriginal(s, p, event) {
+    await needAdmin(s, p, event);
+    const original = String(p.original || "").trim();
+    const hash = typeof p.hash === "string" ? p.hash.trim().toLowerCase() : null;
+    const h = hash && /^[0-9a-f]{64}$/.test(hash) ? hash : await originalHash(original);
+    if (!h) return fail(400, "invalid-argument", "Invalid URL or hash.");
+    await s.delete(`blocked/${h}`);
+    return ok({ unblocked: true });
+  },
+
   async applyDiscountCode(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
     const code = String(p.code || "").trim().toUpperCase();
@@ -1237,19 +1418,31 @@ const actions = {
     }
     const pct = stored.percent;
     const promo = stored;
-    // Snapshot for race rollback (loser restores previous deal).
-    const prevDiscount = doc.discount ? { ...doc.discount } : null;
-    const prevPayment = doc.paymentStatus;
-    const prevExp = doc.coverageExpiresAt || null;
-    const prevLife = doc.coverageLifetime === true;
-    const prevQuote = doc.quote ? { ...doc.quote } : null;
-    // Reserve the single-use BEFORE applying: if the doc save below ever
-    // failed, the use stays burned (conservative — a code can never stretch
-    // to maxUses+1 through retries).
+    // Reserve BEFORE applying (use stays burned if doc save fails — a code can
+    // never stretch past maxUses through retries). Activate-after-trim: the
+    // winner is decided BEFORE touching the domain, so concurrent losers never
+    // flash active and can never mint in a double-active window.
     promo.uses = Array.isArray(promo.uses) ? promo.uses : [];
     const myUse = { domain: doc.domain, sessionId: p.sessionId, at: new Date().toISOString() };
     promo.uses.push(myUse);
     await s.setJSON(`promo/${code}`, promo);
+    try {
+      const fresh = await freshGet(s, `promo/${code}`, { type: "json" }).catch(() => null);
+      const max = (fresh && fresh.maxUses) || promo.maxUses || 1;
+      if (fresh && Array.isArray(fresh.uses) && fresh.uses.length > max) {
+        const sorted = [...fresh.uses].sort(
+          (a, b) => String(a?.at || "").localeCompare(String(b?.at || "")) ||
+            String(a?.domain || "").localeCompare(String(b?.domain || ""))
+        );
+        const kept = sorted.slice(0, max);
+        const won = kept.some((u) => u && u.domain === doc.domain && u.sessionId === p.sessionId);
+        fresh.uses = kept;
+        await s.setJSON(`promo/${code}`, fresh);
+        if (!won) return fail(400, "invalid-argument", "This code has already been redeemed.");
+      }
+    } catch (e) {
+      console.error(`promo trim check failed for ${code}:`, e?.message || e);
+    }
     // The code's expiry doubles as the domain's coverage end: redeeming pins
     // it to the domain so later expiry checks know what capped this deal.
     doc.discount = { code, percent: pct, expiresAt: promo.expiresAt || null };
@@ -1271,34 +1464,6 @@ const actions = {
         await ensureSaaSHostname(doc);
       }
       await s.setJSON(`domain/${doc.domain}`, doc);
-      // Post-save overshoot check (concurrent redeems): keep earliest maxUses,
-      // loser rolls back and fails. Closes single-use double-spend race.
-      try {
-        const fresh = await freshGet(s, `promo/${code}`, { type: "json" }).catch(() => null);
-        const max = (fresh && fresh.maxUses) || promo.maxUses || 1;
-        if (fresh && Array.isArray(fresh.uses) && fresh.uses.length > max) {
-          const sorted = [...fresh.uses].sort(
-            (a, b) => String(a?.at || "").localeCompare(String(b?.at || "")) ||
-              String(a?.domain || "").localeCompare(String(b?.domain || ""))
-          );
-          const kept = sorted.slice(0, max);
-          const won = kept.some((u) => u && u.domain === doc.domain && u.sessionId === p.sessionId);
-          fresh.uses = kept;
-          await s.setJSON(`promo/${code}`, fresh);
-          if (!won) {
-            doc.discount = prevDiscount;
-            doc.paymentStatus = prevPayment;
-            doc.coverageExpiresAt = prevExp;
-            doc.coverageLifetime = prevLife;
-            doc.quote = prevQuote;
-            if (doc.status === "active" && !coverageValid(doc)) doc.status = "pending_verification";
-            await s.setJSON(`domain/${doc.domain}`, doc);
-            return fail(400, "invalid-argument", "This code has already been redeemed.");
-          }
-        }
-      } catch (e) {
-        console.error(`promo overshoot check failed for ${code}:`, e?.message || e);
-      }
       return ok({
         isFullDiscount: true,
         discounted: true,
@@ -1355,29 +1520,9 @@ const actions = {
       await s.setJSON(`domain/${doc.domain}`, doc);
       reverified++;
     }
-    // Promo overshoot check (same as full-discount branch).
-    try {
-      const fresh = await freshGet(s, `promo/${code}`, { type: "json" }).catch(() => null);
-      const max = (fresh && fresh.maxUses) || promo.maxUses || 1;
-      if (fresh && Array.isArray(fresh.uses) && fresh.uses.length > max) {
-        const sorted = [...fresh.uses].sort(
-          (a, b) => String(a?.at || "").localeCompare(String(b?.at || "")) ||
-            String(a?.domain || "").localeCompare(String(b?.domain || ""))
-        );
-        const kept = sorted.slice(0, max);
-        const won = kept.some((u) => u && u.domain === doc.domain && u.sessionId === p.sessionId);
-        fresh.uses = kept;
-        await s.setJSON(`promo/${code}`, fresh);
-        if (!won) {
-          doc.discount = prevDiscount;
-          doc.quote = prevQuote;
-          await s.setJSON(`domain/${doc.domain}`, doc);
-          return fail(400, "invalid-argument", "This code has already been redeemed.");
-        }
-      }
-    } catch (e) {
-      console.error(`promo overshoot check failed for ${code}:`, e?.message || e);
-    }
+    // Winner already decided before apply (trim-before-activate); no second
+    // overshoot possible here (no further pushes). Address clash loop above
+    // preserves the discounted price.
     return ok({
       discounted: true,
       amount: doc.quote.amount,

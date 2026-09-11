@@ -82,7 +82,7 @@
   <link rel="apple-touch-icon" href="/visuals/logo-no-background.png" />
 
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self';">
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'; frame-src 'self' https://challenges.cloudflare.com; child-src 'self' https://challenges.cloudflare.com;">
   <title>INOCULENS Tunnel | Premium URL Shortener & Deep Link Generator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3616,6 +3616,57 @@
         return true;
       }
 
+      // Turnstile (Cloudflare) — risk-based on mint-family calls only, never
+      // on link redirects. Backend returns TURNSTILE_REQUIRED only for fast
+      // loops / near-quota sessions; this solves one widget and retries once
+      // with the token. Missing sitekey = clear error, try again later.
+      function ensureTurnstileScript() {
+        if (window.turnstile) return Promise.resolve(true);
+        return new Promise((resolve) => {
+          try {
+            const s = document.createElement('script');
+            s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+            s.async = true;
+            s.onload = () => resolve(!!window.turnstile);
+            s.onerror = () => resolve(false);
+            document.head.appendChild(s);
+            setTimeout(() => resolve(!!window.turnstile), 5000);
+          } catch (e) { resolve(false); }
+        });
+      }
+      function showTurnstileChallenge() {
+        const sitekey = publicConfig.turnstileSiteKey;
+        if (!sitekey) return Promise.resolve(null);
+        return new Promise((resolve) => {
+          const overlay = document.createElement('div');
+          overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:60000;display:flex;align-items:center;justify-content:center;padding:20px;';
+          overlay.innerHTML = '<div class="modal-card" style="max-width:360px;text-align:center;">'
+            + '<div class="modal-title">Quick human check</div>'
+            + '<div class="modal-message">Unusual pace detected — solve once to continue.</div>'
+            + '<div id="turnstileBox" style="display:flex;justify-content:center;margin-bottom:16px;"></div>'
+            + '<button class="modal-btn modal-btn-cancel" id="turnstileCancel" style="width:100%;">Cancel</button></div>';
+          const done = (token) => {
+            try { overlay.remove(); } catch (e) {}
+            document.body.classList.remove('modal-open');
+            resolve(token || null);
+          };
+          document.body.appendChild(overlay);
+          document.body.classList.add('modal-open');
+          overlay.querySelector('#turnstileCancel').onclick = () => done(null);
+          ensureTurnstileScript().then((ok) => {
+            if (!ok || !window.turnstile) { done(null); return; }
+            try {
+              window.turnstile.render('#turnstileBox', {
+                sitekey,
+                callback: (t) => done(t),
+                'expired-callback': () => done(null),
+                'error-callback': () => done(null),
+              });
+            } catch (e) { done(null); }
+          });
+        });
+      }
+
       const SESSION_KEY = 'tunnel_session_id';
       const SESSION_ID_LENGTH = 10; // Authoritative length for all session ID validation
 
@@ -3940,10 +3991,12 @@
           // Reset inline styles that might have been applied in "no session" state
           buttonsRow.style.width = 'auto';
           buttonsRow.style.justifyContent = 'flex-start';
-          // The Promo button only renders while the admin key is unlocked in
+          // The Admin button only renders while the admin key is unlocked in
           // this browser (see merge-box unlock). There is no other entry point.
+          // Hidden feature: normal users never see it; knowledge without the
+          // key yields 403s only (backend needAdmin is the sole gate).
           const promoBtn = (typeof hasPromoAccess === 'function' && hasPromoAccess())
-            ? '<button class="session-item btn-session btn-session-merge" onclick="openPromoAdmin()">Promo</button>'
+            ? '<button class="session-item btn-session btn-session-merge" onclick="openPromoAdmin()">Admin</button>'
             : '';
           buttonsRow.innerHTML = `
           <button class="session-item btn-session btn-copy-small" onclick="copySessionId()">Copy</button>
@@ -4530,7 +4583,9 @@
           // sessions become inert pending claims (no transfer until DNS proof
           // via verifyClaimedDomainDns, which also merges links+stats).
           const addFn = functions.httpsCallable('addCustomDomain');
-          const addRes = await addFn({ domain: pendingDomain, type: 'managed', sessionId: getSessionId() });
+          const tsToken0 = window._tsToken || undefined;
+          window._tsToken = undefined;
+          const addRes = await addFn({ domain: pendingDomain, type: 'managed', sessionId: getSessionId(), ...(tsToken0 ? { turnstileToken: tsToken0 } : {}) });
           if (addRes.data && addRes.data.pendingClaim) {
             btn.classList.remove('loading');
             btn.disabled = false;
@@ -4548,6 +4603,15 @@
           showStep(2);
         } catch (err) {
           console.error('Error in proceedToAddDomain:', err);
+          if ((err.message === 'TURNSTILE_REQUIRED') && !window._tsRetried) {
+            window._tsRetried = true;
+            btn.classList.remove('loading');
+            btn.disabled = false;
+            const token = await showTurnstileChallenge();
+            window._tsRetried = false;
+            if (token) { window._tsToken = token; await proceedToAddDomain(); }
+            return;
+          }
           showCustomModal({ title: "Error", message: escapeHTML(err.message || 'Something went wrong') });
         } finally {
           btn.classList.remove('loading');
@@ -4569,7 +4633,9 @@
           // Show verification step (domain already created in step 1)
           // Get the domain info from backend using addCustomDomain (which returns the info)
           const addFn = functions.httpsCallable('addCustomDomain');
-          const res = await addFn({ sessionId: getSessionId(), domain: pendingDomain });
+          const tsToken1 = window._tsToken || undefined;
+          window._tsToken = undefined;
+          const res = await addFn({ sessionId: getSessionId(), domain: pendingDomain, ...(tsToken1 ? { turnstileToken: tsToken1 } : {}) });
           const data = res.data || {};
           if (data.pendingClaim) {
             btn.classList.remove('loading');
@@ -4619,7 +4685,9 @@
         showLoadingModal({ title: "Verifying Claim", message: "Checking DNS + moving history..." });
         try {
           const fn = functions.httpsCallable('verifyClaimedDomainDns');
-          const res = await fn({ domain: pendingDomain, sessionId: getSessionId() });
+          const tsToken2 = window._tsToken || undefined;
+          window._tsToken = undefined;
+          const res = await fn({ domain: pendingDomain, sessionId: getSessionId(), ...(tsToken2 ? { turnstileToken: tsToken2 } : {}) });
           closeLoadingModal();
           if (res.data && res.data.success) {
             await loadUserDomains();
@@ -4630,6 +4698,13 @@
           }
         } catch (e) {
           closeLoadingModal();
+          if ((e.message === 'TURNSTILE_REQUIRED') && !window._tsRetried) {
+            window._tsRetried = true;
+            const token = await showTurnstileChallenge();
+            window._tsRetried = false;
+            if (token) { window._tsToken = token; await verifyPendingClaim(); }
+            return;
+          }
           showCustomModal({ title: "Error", message: escapeHTML(e.message || 'Verify failed') });
         }
       }
@@ -5835,11 +5910,11 @@
         try { sessionStorage.removeItem('tunnel_admin_key'); } catch (e) {}
         updateSessionUI();
         closePromoAdmin();
-        showToast('Promo admin locked.', 'info');
+        showToast('Admin locked.', 'info');
       }
       function openPromoAdmin() {
         if (!hasPromoAccess()) {
-          showToast('Promo admin locked — unlock via Merge with admin key.', 'error');
+          showToast('Admin locked — unlock via Merge with admin key.', 'error');
           return;
         }
         const overlay = document.getElementById('promoAdminOverlay');
@@ -5853,7 +5928,23 @@
         if (overlay) overlay.style.display = 'none';
         document.body.classList.remove('modal-open');
       }
+      function adminShowTab(tab) {
+        const main = document.getElementById('promoMain');
+        const view = document.getElementById('promoCodesView');
+        const links = document.getElementById('linkMgmtView');
+        const hint = document.getElementById('promoTabHint');
+        const tabP = document.getElementById('adminTabPromo');
+        const tabL = document.getElementById('adminTabLinks');
+        const isLinks = tab === 'links';
+        if (main) main.style.display = isLinks ? 'none' : 'block';
+        if (view) view.style.display = 'none';
+        if (links) links.style.display = isLinks ? 'block' : 'none';
+        if (hint) hint.style.display = isLinks ? 'none' : 'block';
+        if (tabP) tabP.className = 'modal-btn ' + (isLinks ? 'modal-btn-cancel' : 'modal-btn-ok');
+        if (tabL) tabL.className = 'modal-btn ' + (isLinks ? 'modal-btn-ok' : 'modal-btn-cancel');
+      }
       function promoShowCodes() {
+        adminShowTab('promo');
         const main = document.getElementById('promoMain');
         const view = document.getElementById('promoCodesView');
         if (main) main.style.display = 'none';
@@ -5861,10 +5952,125 @@
         promoLoad();
       }
       function promoShowMain() {
+        adminShowTab('promo');
         const main = document.getElementById('promoMain');
         const view = document.getElementById('promoCodesView');
         if (view) view.style.display = 'none';
         if (main) main.style.display = 'block';
+      }
+      // --- Link Management (admin moderation, redacted-by-default) ---
+      function adminMaskSession(sid) {
+        const s = String(sid || '');
+        return s.length > 3 ? s.slice(0, 3) + '••••••' : '••••••';
+      }
+      function adminTruncUrl(u) {
+        const s = String(u || '');
+        return s.length > 60 ? s.slice(0, 60) + '…' : s;
+      }
+      async function adminSearchLinks() {
+        const list = document.getElementById('adminLinksList');
+        const btn = document.getElementById('adminSearchBtn');
+        if (list) list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">Loading…</div>';
+        try {
+          if (btn) { btn.disabled = true; btn.textContent = 'Searching…'; }
+          const fn = functions.httpsCallable('adminSearchLinks');
+          const res = await fn({
+            adminKey: promoAdminKey(),
+            domain: (document.getElementById('adminSearchDomain').value || '').trim(),
+            code: (document.getElementById('adminSearchCode').value || '').trim(),
+            originalContains: (document.getElementById('adminSearchOrig').value || '').trim(),
+            quarantinedOnly: !!document.getElementById('adminSearchQuar').checked,
+          });
+          window._adminLinks = res.data.links || [];
+          const trunc = res.data.truncated ? `<div style="padding:8px; text-align:center; color:var(--text-muted); font-size:0.75rem;">Showing 50 of ${res.data.total} — refine search.</div>` : '';
+          if (!window._adminLinks.length) {
+            list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">No links match.</div>';
+            return;
+          }
+          list.innerHTML = window._adminLinks.map((l, i) => {
+            const q = l.quarantined ? `<span class="domain-status status-pending">Quarantined</span>` : `<span class="domain-status status-active">Live</span>`;
+            return `<div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px;">
+              <div style="display:flex; justify-content:space-between; gap:8px; align-items:center;">
+                <div style="font-family:monospace; font-weight:700;">${escapeHTML(l.domain)}/${escapeHTML(l.code)}</div>${q}
+              </div>
+              <div style="font-size:0.8rem; margin-top:4px;">to <span id="admin-orig-${i}">${escapeHTML(adminTruncUrl(l.original))}</span>
+                <button class="btn-small btn-copy-small" onclick="adminRevealOrig(${i})" title="Reveal full URL">Reveal</button></div>
+              <div style="font-size:0.8rem; color:var(--text-muted);">session <span style="font-family:monospace;" id="admin-sess-${i}">${escapeHTML(adminMaskSession(l.sessionId))}</span>
+                <button class="btn-small btn-copy-small" onclick="adminRevealSess(${i})" title="Reveal session">Reveal</button>
+                · clicks ${Number(l.clickCount) || 0}</div>
+              <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
+                <button class="btn-small btn-copy-small" onclick="adminQuarantine(${escapeJS(l.domain)}, ${escapeJS(l.code)}, ${l.quarantined ? 'false' : 'true'})">${l.quarantined ? 'Unquarantine' : 'Quarantine'}</button>
+                <button class="btn-small btn-delete-small" onclick="adminDeleteLink(${escapeJS(l.domain)}, ${escapeJS(l.code)})">Delete</button>
+                <button class="btn-small btn-copy-small" onclick="adminBlockOrig(${i})" title="Quarantine all links with this exact original + block re-mint">Block URL</button>
+              </div>
+            </div>`;
+          }).join('') + trunc;
+        } catch (e) {
+          console.error('adminSearchLinks:', e);
+          if (list) list.innerHTML = `<div style="padding:16px; text-align:center; color:var(--danger);">${escapeHTML(e.message || 'Search failed')}</div>`;
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = 'Search'; }
+        }
+      }
+      function adminRevealOrig(i) {
+        const l = (window._adminLinks || [])[i];
+        const el = document.getElementById('admin-orig-' + i);
+        if (l && el) el.textContent = l.original || '';
+      }
+      function adminRevealSess(i) {
+        const l = (window._adminLinks || [])[i];
+        const el = document.getElementById('admin-sess-' + i);
+        if (l && el) el.textContent = l.sessionId || '';
+      }
+      async function adminQuarantine(domain, code, q) {
+        const ok = await showCustomModal({
+          title: q ? "Quarantine Link" : "Unquarantine Link",
+          message: `${q ? 'Stop resolving' : 'Restore resolving for'} <strong>${escapeHTML(domain)}/${escapeHTML(code)}</strong>?`,
+          showCancel: true, danger: !!q, confirmText: q ? "Quarantine" : "Restore", cancelText: "Cancel"
+        });
+        if (!ok) return;
+        try {
+          const fn = functions.httpsCallable('adminSetQuarantine');
+          await fn({ adminKey: promoAdminKey(), domain, shortCode: code, quarantined: q, reason: 'ADMIN' });
+          showToast(q ? 'Link quarantined.' : 'Link restored.', 'success');
+          await adminSearchLinks();
+        } catch (e) {
+          showToast(e.message || 'Failed', 'error');
+        }
+      }
+      async function adminDeleteLink(domain, code) {
+        const ok = await showCustomModal({
+          title: "Delete Link",
+          message: `Permanently delete <strong>${escapeHTML(domain)}/${escapeHTML(code)}</strong> for everyone (plus clicks + counters)?`,
+          showCancel: true, danger: true, confirmText: "Delete", cancelText: "Keep"
+        });
+        if (!ok) return;
+        try {
+          const fn = functions.httpsCallable('adminDeleteLink');
+          await fn({ adminKey: promoAdminKey(), domain, shortCode: code });
+          showToast('Link deleted.', 'success');
+          await adminSearchLinks();
+        } catch (e) {
+          showToast(e.message || 'Delete failed', 'error');
+        }
+      }
+      async function adminBlockOrig(i) {
+        const l = (window._adminLinks || [])[i];
+        if (!l) return;
+        const ok = await showCustomModal({
+          title: "Block URL",
+          message: `Quarantine all links with this exact original and block re-mint?<br><span class="modal-url-box">${escapeHTML(adminTruncUrl(l.original))}</span>`,
+          showCancel: true, danger: true, confirmText: "Block", cancelText: "Cancel"
+        });
+        if (!ok) return;
+        try {
+          const fn = functions.httpsCallable('adminBlockOriginal');
+          const res = await fn({ adminKey: promoAdminKey(), original: l.original, reason: 'ADMIN' });
+          showToast(`Blocked. Quarantined ${res.data.swept || 0} link(s).`, 'success');
+          await adminSearchLinks();
+        } catch (e) {
+          showToast(e.message || 'Block failed', 'error');
+        }
       }
       // Blob list reads lag behind writes (eventual consistency): a code
       // created/revoked seconds ago may be missing/stale in the listing.
@@ -6578,13 +6784,16 @@
           }
 
 
-          // Call the backend API
+          // Call the backend API (one-shot Turnstile token if just solved).
           const shorten = functions.httpsCallable('shortenUrl');
+          const tsToken = window._tsToken || undefined;
+          window._tsToken = undefined;
           const response = await shorten({
             originalUrl: urlInput,
             customSlug: slugInput || null,
             sessionId: sid,
-            domain: selectedDomain.replace(/\/$/, '') // Passes domain without slash
+            domain: selectedDomain.replace(/\/$/, ''), // Passes domain without slash
+            ...(tsToken ? { turnstileToken: tsToken } : {}),
           });
 
           const shortenedUrl = response.data.shortenedUrl;
@@ -6672,6 +6881,27 @@
           const errorBox = document.getElementById('errorBox');
           let message = "An unexpected error occurred.";
           const errorCode = error.message || (error.details && error.details.message) || (error.details && error.details.error);
+
+          if (errorCode === 'TURNSTILE_REQUIRED' && !window._tsRetried) {
+            window._tsRetried = true;
+            button.disabled = false;
+            button.textContent = 'Shorten URL';
+            try {
+              const token = await showTurnstileChallenge();
+              if (token) {
+                window._tsToken = token;
+                await shortenUrl();
+                window._tsRetried = false;
+                return;
+              }
+            } finally {
+              window._tsRetried = false;
+            }
+            document.getElementById('errorBox').textContent = '⚠️ Quick human check needed — please try again.';
+            document.getElementById('errorBox').style.display = 'flex';
+            return;
+          }
+          window._tsRetried = false;
 
           if (errorCode === 'ERR_INVALID_URL') {
             message = "The URL you provided is invalid. Please make sure it starts with http:// or https://";
@@ -7071,7 +7301,7 @@
             </tr>
             <tr id="row-${keyAttr}-data" class="link-data-row">
               <td data-label="Original Link"><div class="history-original" title="${escapeAttr(item.original)}">${escapeHTML(item.original)}</div></td>
-              <td data-label="Short Link"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a></td>
+              <td data-label="Short Link"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a>${item.quarantined ? ' <span class="domain-status status-pending" title="Flagged unsafe — not resolving">Quarantined</span>' : ''}</td>
               <td data-label="Clicks">
                 <div class="click-count-wrapper">
                   <span id="clicks-${keyAttr}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
@@ -7896,7 +8126,7 @@
             }
             try { sessionStorage.setItem('tunnel_admin_key', key); } catch (e) {}
             updateSessionUI();
-            showCustomModal({ title: "Admin Unlocked", message: "Promo admin unlocked. Use the <strong>Promo</strong> button next to your session controls." });
+            showCustomModal({ title: "Admin Unlocked", message: "Admin unlocked. Use the <strong>Admin</strong> button next to your session controls." });
             return true;
           }
 
@@ -8246,13 +8476,17 @@
   <div id="promoAdminOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 40000; align-items: center; justify-content: center; padding: 20px;">
     <div class="modal-card" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-        <h2 class="modal-title" style="margin: 0;">Promo Codes (Admin)</h2>
+        <h2 class="modal-title" style="margin: 0;">Admin</h2>
         <div style="display: flex; gap: 8px; align-items: center;">
           <button class="modal-btn modal-btn-cancel" onclick="promoLock()" style="height: 36px; width: auto; padding: 0 14px; font-size: 0.75rem;">Lock</button>
           <button class="copy-btn" onclick="closePromoAdmin()" style="background: transparent; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">&times;</button>
         </div>
       </div>
-      <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Single-use by default: each code binds to the first domain redeeming it.</p>
+      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+        <button class="modal-btn modal-btn-ok" id="adminTabPromo" onclick="adminShowTab('promo')" style="flex: 1;">Promo</button>
+        <button class="modal-btn modal-btn-cancel" id="adminTabLinks" onclick="adminShowTab('links')" style="flex: 1;">Link Management</button>
+      </div>
+      <p id="promoTabHint" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Single-use by default: each code binds to the first domain redeeming it.</p>
       <div id="promoMain">
       <button class="modal-btn modal-btn-ok" onclick="promoShowCodes()" style="width: 100%; margin-bottom: 16px;">View all codes</button>
       <div style="border-top: 1px solid var(--border); padding-top: 16px;">
@@ -8285,6 +8519,22 @@
           <button class="modal-btn modal-btn-ok" onclick="promoLoad()" style="height: 44px; flex: 1;">Refresh</button>
         </div>
         <div id="promoCodesList"></div>
+      </div>
+      <div id="linkMgmtView" style="display: none;">
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Moderation: values redacted by default, click reveal to show. All actions audit-logged.</p>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+          <input type="text" id="adminSearchDomain" placeholder="domain (exact)" maxlength="253"
+            style="height: 40px; background: rgba(0,0,0,0.4); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;">
+          <input type="text" id="adminSearchCode" placeholder="slug (exact)" maxlength="30"
+            style="height: 40px; background: rgba(0,0,0,0.4); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px; font-family: monospace;">
+        </div>
+        <input type="text" id="adminSearchOrig" placeholder="original URL contains…" maxlength="120"
+          style="width: 100%; height: 40px; background: rgba(0,0,0,0.4); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px; margin-bottom: 8px; box-sizing: border-box;">
+        <label style="display: flex; gap: 8px; align-items: center; font-size: 0.85rem; color: var(--text); margin-bottom: 12px; cursor: pointer;">
+          <input type="checkbox" id="adminSearchQuar" style="width: 16px; height: 16px; accent-color: var(--primary);"> Quarantined only
+        </label>
+        <button class="modal-btn modal-btn-ok" id="adminSearchBtn" onclick="adminSearchLinks()" style="width: 100%; margin-bottom: 12px;">Search</button>
+        <div id="adminLinksList"></div>
       </div>
     </div>
   </div>

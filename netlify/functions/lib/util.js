@@ -680,7 +680,31 @@ export function safetyCacheKey(url) {
   }
 }
 
+export async function originalHash(url) {
+  try {
+    const { createHash } = await import("node:crypto");
+    return createHash("sha256").update(String(url).trim()).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+export async function isBlockedOriginal(s, url) {
+  try {
+    const h = await originalHash(url);
+    if (!h) return false;
+    const doc = await s.get(`blocked/${h}`, { type: "json" });
+    return !!doc;
+  } catch {
+    return false;
+  }
+}
+
 export async function checkUrlSafety(s, url) {
+  // Local blocklist first (fail-closed, no external call).
+  try {
+    if (await isBlockedOriginal(s, url)) return { safe: false, reason: "BLOCKLISTED" };
+  } catch { /* fall through to live check */ }
   const key = process.env.SAFE_BROWSING_API_KEY || null;
   if (!key) return { safe: true, degraded: true, reason: "no-key" };
   const cacheKey = safetyCacheKey(url);
@@ -742,7 +766,51 @@ export function countDayKey(host, code, when = Date.now()) {
   return `counts/${cleanDomain(host) || "unknown"}/${code}/${day}`;
 }
 
+// Exact counters without read-modify-write races: each click writes one tiny
+// shard doc (pure write, never lost under concurrency). Totals are derived by
+// KEY COUNTING (no body fetches): minute shards +1, adj shards -1.
+// Legacy day-aggs (pre-shard `counts/<h>/<c>/<day>` {count}) are history only.
+export function minuteShardKey(host, code, delta = 1) {
+  const now = new Date();
+  const day = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+  const min = `${String(now.getUTCHours()).padStart(2, "0")}${String(now.getUTCMinutes()).padStart(2, "0")}`;
+  const r = Math.random().toString(36).slice(2, 10);
+  const h = cleanDomain(host) || "unknown";
+  return delta < 0
+    ? `counts/${h}/${code}/${day}/${min}-adj-${r}`
+    : `counts/${h}/${code}/${day}/${min}-${r}`;
+}
+
+export async function writeCountShard(s, host, code, delta = 1) {
+  try {
+    await s.setJSON(minuteShardKey(host, code, delta), { count: delta < 0 ? -1 : 1, at: new Date().toISOString() });
+  } catch (e) {
+    console.error(`writeCountShard failed:`, e?.message || e);
+  }
+}
+
+// Sum from listed keys only (no body reads). Returns { delta, byDay }.
+export function sumShardsFromKeys(countKeys) {
+  let delta = 0;
+  const byDay = new Map();
+  for (const b of countKeys) {
+    const key = String(b.key || b || "");
+    const parts = key.split("/");
+    // Minute shards: counts/<h>/<c>/<day>/<leaf> (4 segments after counts).
+    // Legacy day-aggs: counts/<h>/<c>/<day> (3) — excluded here (history only).
+    if (parts.length !== 5) continue;
+    const day = parts[3];
+    const leaf = parts[4] || "";
+    const d = leaf.includes("-adj-") ? -1 : 1;
+    delta += d;
+    byDay.set(day, (byDay.get(day) || 0) + d);
+  }
+  return { delta, byDay };
+}
+
 export async function bumpDayCount(s, host, code, n = 1) {
+  // Legacy day-agg path (kept for old graph history). New clicks use
+  // writeCountShard instead — exact under concurrency.
   const key = countDayKey(host, code);
   try {
     const cur = (await s.get(key, { type: "json" })) || { count: 0 };
@@ -756,12 +824,33 @@ export async function bumpDayCount(s, host, code, n = 1) {
 // Per-IP-per-link-per-minute logging bucket (redirect never blocked).
 // Returns true if detail doc should be stored. Same IP looping 50k/min gets
 // counted but not 50k docs. Distinct IPs each get full budget.
+// IPv6 is bucketed by /64 prefix (rotation within a /64 shares budget),
+// IPv4 by full address. Dorm NAT shares fairly via the higher /64 budget.
+export function throttleBucketForIp(rawIp) {
+  const raw = String(rawIp || "unknown").trim();
+  if (raw.includes(":")) {
+    // IPv6 (or already-truncated /64 like "2001:db8:abcd:12::/64"): take the
+    // first 4 hextets as the /64 identity so rotation inside it shares budget.
+    const noSuffix = raw.split("/")[0];
+    // Expand "::" minimally: split and take leading groups; already-truncated
+    // forms like "a:b:c:d::/64" yield ["a","b","c","d","",""] -> first 4.
+    const parts = noSuffix.split(":").filter((x) => x !== "");
+    const prefix = parts.slice(0, 4).join(":").toLowerCase() || "v6unknown";
+    return `v6:${prefix}`;
+  }
+  return `v4:${raw.toLowerCase()}`;
+}
+
 export async function shouldStoreClickDetail(s, host, code, rawIp) {
-  const limit = Number(process.env.RESOLVE_LOG_PER_IP_MIN || 30);
-  const lim = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 200) : 30;
+  const bucket = throttleBucketForIp(rawIp);
+  const isV6 = bucket.startsWith("v6:");
+  const def = isV6 ? 300 : 30;
+  const envKey = isV6 ? "RESOLVE_LOG_PER_NET64_MIN" : "RESOLVE_LOG_PER_IP_MIN";
+  const limit = Number(process.env[envKey] || def);
+  const lim = Number.isFinite(limit) && limit > 0 ? Math.min(limit, isV6 ? 2000 : 200) : def;
   try {
     const { createHash } = await import("node:crypto");
-    const ipHash = createHash("sha256").update(String(rawIp || "unknown")).digest("hex").slice(0, 16);
+    const ipHash = createHash("sha256").update(bucket).digest("hex").slice(0, 16);
     const win = Math.floor(Date.now() / 60000);
     const key = `rl-resolve/${cleanDomain(host) || "unknown"}/${code}/${ipHash}/${win}`;
     const cur = (await s.get(key, { type: "json" })) || { count: 0 };
@@ -771,6 +860,86 @@ export async function shouldStoreClickDetail(s, host, code, rawIp) {
   } catch {
     return true;
   }
+}
+
+// ---------- Turnstile (Cloudflare, risk-based on mint only — never redirect) ----------
+// Lenient: only fast loops / near-quota sessions are asked, once in a while.
+// Missing TURNSTILE_SECRET = never require (degraded, logged).
+
+export function turnstileSiteKey() {
+  return process.env.TURNSTILE_SITEKEY || null;
+}
+
+export async function verifyTurnstileToken(token, ip) {
+  const secret = process.env.TURNSTILE_SECRET || null;
+  if (!secret) return { ok: false, reason: "no-secret" };
+  if (!token || typeof token !== "string") return { ok: false, reason: "missing" };
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 2500);
+    let res;
+    try {
+      res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ secret, response: token, remoteip: String(ip || "") }).toString(),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(t);
+    }
+    if (!res.ok) return { ok: false, reason: `verify-${res.status}` };
+    const data = await res.json().catch(() => null);
+    return data && data.success ? { ok: true } : { ok: false, reason: "rejected" };
+  } catch (e) {
+    return { ok: false, reason: `error:${e?.message || e}` };
+  }
+}
+
+// Returns true when this mint-family request should present a widget.
+// Reads current-minute counters WITHOUT incrementing (checkRate increments).
+export async function turnstileRequired(s, kind, ip, sessionId = null) {
+  try {
+    if (!process.env.TURNSTILE_SECRET) return false;
+    const win = Math.floor(Date.now() / 60000);
+    const getCount = async (key) => {
+      try {
+        const cur = await s.get(key, { type: "json" });
+        return Number(cur?.count) || 0;
+      } catch { return 0; }
+    };
+    if (kind === "shorten") {
+      const c = await getCount(`rl/shorten/${ip}/${win}`);
+      if (c >= 6) return true;
+      if (sessionId) {
+        const meta = await s.get(`sessions/${sessionId}/meta`, { type: "json" }).catch(() => null);
+        const n = Number(meta?.linkCount) || 0;
+        const quota = Number(process.env.LINK_QUOTA_SYSTEM || 500);
+        const q = Number.isFinite(quota) && quota > 0 ? quota : 500;
+        if (n >= q * 0.8) return true;
+      }
+      return false;
+    }
+    if (kind === "domain") {
+      const c = await getCount(`rl/domain-add/${ip}/${win}`);
+      return c >= 3;
+    }
+    if (kind === "claim") {
+      const c = await getCount(`rl/claim/${ip}/${win}`);
+      return c >= 2;
+    }
+  } catch { /* fail open */ }
+  return false;
+}
+
+export async function bumpKindCounter(s, kind, ip) {
+  try {
+    const win = Math.floor(Date.now() / 60000);
+    const key = `rl/${kind}/${ip}/${win}`;
+    const cur = (await s.get(key, { type: "json" })) || { count: 0 };
+    cur.count = (Number(cur.count) || 0) + 1;
+    await s.setJSON(key, cur);
+  } catch { /* ignore */ }
 }
 
 // Per-session link quota (system + custom combined).
