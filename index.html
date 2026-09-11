@@ -6226,17 +6226,17 @@
             <div style="font-size:0.88rem; margin-top:6px; white-space:pre-wrap; overflow-wrap:anywhere;">${escapeHTML(preview)}</div>
           </div>`;
         }).join('');
-        // Same pager pattern as the link-history list (Prev/Next + counts),
-        // rendered only past one page.
+        // Lightweight pager nav (deliberately NOT a card: no background box,
+        // so it can't blend with the report boxes above — just a faint top
+        // divider, compact muted counts, and pill buttons). Rendered only
+        // past one page.
         if (totalPages > 1) {
           html += `
-          <div id="feedbackPagination" class="pagination-controls" style="display: flex; flex-direction: column; gap: 12px; margin-top: 12px; padding: 1rem; background: rgba(255,255,255,0.02); border-radius: 0.75rem; border: 1px solid var(--border);">
-            <div class="pagination-info" style="font-size: 0.85rem; color: var(--text-muted); font-weight: 500; text-align: center; display: flex; align-items: center; justify-content: center; gap: 4px;">
-              <span>Showing</span> <span style="color: white; font-weight: 600;">${startIndex + 1}-${endIndex}</span> <span>of</span> <span style="color: white; font-weight: 600;">${totalItems}</span>
-              <span style="margin: 0 4px; color: var(--border);">|</span>
-              <span>Page</span> <span style="color: white; font-weight: 600;">${feedbackPage}</span> <span>of</span> <span style="color: white; font-weight: 600;">${totalPages}</span>
+          <div id="feedbackPagination" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 4px; padding: 12px 2px 2px; border-top: 1px solid var(--border);">
+            <div style="font-size: 0.75rem; color: var(--text-faint); font-weight: 500; letter-spacing: 0.02em;">
+              ${startIndex + 1}–${endIndex} of ${totalItems} · Page ${feedbackPage} of ${totalPages}
             </div>
-            <div class="pagination-buttons" style="display: flex; gap: 8px; justify-content: center;">
+            <div style="display: flex; gap: 8px; margin-left: auto;">
               <button class="session-item btn-session"
                 style="padding: 0 14px; background: ${feedbackPage === 1 ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${feedbackPage === 1 ? 'var(--text-muted)' : 'white'}; ${feedbackPage === 1 ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
                 onclick="feedbackChangePage(${feedbackPage - 1})"
