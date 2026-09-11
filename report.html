@@ -90,6 +90,30 @@
       box-shadow: 0 0 0 1px rgba(62, 166, 255, 0.55), 0 0 0 4px rgba(62, 166, 255, 0.12);
     }
 
+    #reportContact {
+      width: 100%;
+      height: 48px;
+      padding: 0 16px;
+      font-size: 15px;
+      font-family: 'DM Sans', sans-serif;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      color: var(--text);
+      box-sizing: border-box;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    #reportContact::placeholder {
+      color: #717171;
+    }
+
+    #reportContact:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(62, 166, 255, 0.55), 0 0 0 4px rgba(62, 166, 255, 0.12);
+    }
+
     button.primary {
       font-family: 'DM Sans', sans-serif;
       background: var(--primary);
@@ -215,6 +239,8 @@
         <label for="reportText" style="display:block; font-size:0.85rem; font-weight:600; color:var(--text); margin-bottom:8px;">Describe the issue</label>
         <textarea id="reportText" maxlength="5000" placeholder="What happened? What did you expect? Steps to reproduce…"></textarea>
         <div class="char-count"><span id="reportCount">0</span> / 5000</div>
+        <label for="reportContact" style="display:block; font-size:0.85rem; font-weight:600; color:var(--text); margin:1rem 0 8px;">Do you want to be contacted about this?</label>
+        <input type="email" id="reportContact" maxlength="254" placeholder="Enter your email or leave blank if not" autocomplete="email">
         <div id="reportError" role="alert"></div>
         <div id="reportOk" role="status"></div>
         <button class="primary" id="reportSend" type="button">Send</button>
@@ -257,6 +283,7 @@
       var noSession = document.getElementById('noSession');
       var done = document.getElementById('reportDone');
       var text = document.getElementById('reportText');
+      var contact = document.getElementById('reportContact');
       var count = document.getElementById('reportCount');
       var btn = document.getElementById('reportSend');
       var errBox = document.getElementById('reportError');
@@ -272,6 +299,8 @@
         count.textContent = String(text.value.length);
         hideBoxes();
       });
+
+      contact.addEventListener('input', hideBoxes);
 
       function showError(m) {
         errBox.textContent = m;
@@ -371,6 +400,12 @@
           showError('Please keep it under 5000 characters.');
           return;
         }
+        var contactVal = (contact.value || '').trim();
+        // Light client check only (backend decides): one plausible address.
+        if (contactVal && !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(contactVal)) {
+          showError('That contact email doesn’t look valid — fix it or leave the field blank.');
+          return;
+        }
         var cur = getSessionId();
         if (!cur) {
           form.style.display = 'none';
@@ -385,6 +420,7 @@
           await apiCall('submitFeedback', {
             sessionId: cur,
             message: message,
+            contact: contactVal || null,
             ...(token ? { turnstileToken: token } : {})
           });
           form.style.display = 'none';

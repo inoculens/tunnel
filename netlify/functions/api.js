@@ -162,6 +162,7 @@ async function sendFeedbackEmail(doc, s) {
       `New Tunnel issue report ${doc.id}`,
       `Date: ${at}`,
       `Session: ${doc.sessionId}`,
+      `Contact: ${doc.contact || "-"}`,
       `IP: ${doc.ip || "-"}`,
       `UA: ${doc.ua || "-"}`,
       ``,
@@ -663,7 +664,7 @@ const actions = {
 
   // ----- issue reports (no login; session linked silently) -----
   // Storage: feedback/<date>-<ts36>-<rand8> -> { id, sessionId, message,
-  // createdAt, ip, ua }. The reporter IP is stored in plain text (operator
+  // contact|null, createdAt, ip, ua }. The reporter IP is stored in plain
   // choice, for abuse triage) — visible only in the admin viewer + notify
   // mail, never to reporters. Rate-limited per IP + per session, with a
   // risk-based Turnstile challenge on fast loops (same pattern as mint).
@@ -686,6 +687,13 @@ const actions = {
     const message = String(p.message || "").trim();
     if (message.length < 10) return fail(400, "invalid-argument", "Please describe the issue in a bit more detail (at least 10 characters).");
     if (message.length > 5000) return fail(400, "invalid-argument", "Please keep it under 5000 characters.");
+    // Optional reporter contact email (blank = no contact). Single mailbox
+    // only — validated like envelope addresses (no CR/LF, one @).
+    let contact = String(p.contact || "").trim() || null;
+    if (contact) {
+      contact = cleanMailbox(contact);
+      if (!contact) return fail(400, "invalid-argument", "That contact email doesn’t look valid — fix it or leave the field blank.");
+    }
     await needSession(s, p.sessionId);
     // Plain-text reporter IP (operator choice for abuse triage). Only ever
     // surfaces in the admin viewer + notify mail, never to reporters.
@@ -706,6 +714,7 @@ const actions = {
       id,
       sessionId: p.sessionId,
       message,
+      contact,
       createdAt: new Date(now).toISOString(),
       ip: reporterIp,
       ua,
@@ -730,6 +739,7 @@ const actions = {
         id: String(d.id),
         sessionId: String(d.sessionId || ""),
         message: String(d.message || "").slice(0, 5000),
+        contact: d.contact || null,
         createdAt: d.createdAt || null,
         ip: d.ip || null,
         ua: d.ua || null,
@@ -765,6 +775,7 @@ const actions = {
       id: "test-mail",
       sessionId: "(admin test)",
       message: "Tunnel feedback mail is working. You can delete this message.",
+      contact: null,
       createdAt: new Date().toISOString(),
       ip: null,
       ua: null,
