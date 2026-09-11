@@ -170,7 +170,9 @@ export function fail(statusCode, code, message) {
 // specials "@#$" allowed (never valid as session, so auto-routes to admin).
 export const SESSION_RE = /^[A-Za-z023456789]{10}$/;
 export const ADMIN_RE = /^[A-Za-z0-9\-_!@#$]{10}$/;
-export const CODE_RE = /^[A-Za-z0-9_-]{3,64}$/;
+export const CODE_RE = /^[A-Za-z0-9_-]{1,30}$/;
+export const MAX_SLUG_LEN = 30;
+export const MAX_ORIGINAL_URL_LEN = 2048;
 export const HOST_RE = /^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*\.[A-Za-z]{2,}$/;
 
 export function validSessionId(v) {
@@ -198,8 +200,19 @@ export function cleanDomain(raw) {
 
 export function validHttpUrl(v) {
   try {
-    const u = new URL(String(v));
-    return u.protocol === "http:" || u.protocol === "https:";
+    if (typeof v !== "string") return false;
+    const t = v.trim();
+    if (!t || t.length > MAX_ORIGINAL_URL_LEN) return false;
+    // Reject whitespace/control chars and obvious HTML/JS injection carriers.
+    // new URL() already rejects most, but explicit keeps errors clear and
+    // blocks encoded bypass attempts before parsing.
+    if (/[\x00-\x1F\x7F<>\"\\^`{|}]/.test(t) || /\s/.test(t)) return false;
+    const u = new URL(t);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    // Block userinfo (https://user:pass@host) — classic phishing carrier.
+    if (u.username || u.password) return false;
+    if (!u.hostname || u.hostname.length > 253) return false;
+    return true;
   } catch {
     return false;
   }

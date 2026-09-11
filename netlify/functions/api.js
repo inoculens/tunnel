@@ -382,8 +382,14 @@ const actions = {
       throw e;
     }
     const { originalUrl, customSlug, sessionId, domain } = p;
-    if (!validHttpUrl(originalUrl)) {
-      const e = new Error("ERR_INVALID_URL");
+    const cleanUrl = typeof originalUrl === "string" ? originalUrl.trim() : "";
+    const cleanSlug = customSlug == null ? null : String(customSlug).trim();
+    if (!cleanUrl || cleanUrl.length > 2048 || !validHttpUrl(cleanUrl)) {
+      const e = new Error(
+        cleanUrl && cleanUrl.length > 2048
+          ? "URL too long (max 2048 characters)."
+          : "ERR_INVALID_URL"
+      );
       e.statusCode = 400;
       e.code = "invalid-argument";
       throw e;
@@ -396,7 +402,7 @@ const actions = {
     }
     // Proactive safety at mint (silent for clean URLs).
     try {
-      const verdict = await checkUrlSafety(s, String(originalUrl));
+      const verdict = await checkUrlSafety(s, cleanUrl);
       if (verdict && verdict.safe === false) {
         const e = new Error("ERR_UNSAFE_URL");
         e.statusCode = 400;
@@ -433,21 +439,21 @@ const actions = {
     const host = cleanDomain(domain) || systemShortHost();
 
     let code;
-    if (customSlug) {
-      if (!validSlug(customSlug)) {
-        const e = new Error("Custom slugs must be 3–64 chars: letters, numbers, - _");
+    if (cleanSlug) {
+      if (!validSlug(cleanSlug)) {
+        const e = new Error("Custom slugs must be 1–30 chars: letters, numbers, - _");
         e.statusCode = 400;
         e.code = "invalid-argument";
         throw e;
       }
       // Scoped uniqueness: the same slug may live on other root domains.
-      if (await getLink(s, host, customSlug)) {
+      if (await getLink(s, host, cleanSlug)) {
         const e = new Error("ERR_SLUG_TAKEN");
         e.statusCode = 409;
         e.code = "already-exists";
         throw e;
       }
-      code = customSlug;
+      code = cleanSlug;
     } else {
       code = null;
       for (let i = 0; i < 10 && !code; i++) {
@@ -489,14 +495,14 @@ const actions = {
 
     const link = {
       code,
-      original: String(originalUrl),
+      original: cleanUrl,
       short: `https://${host}/${code}`,
       domain: host,
       sessionId,
       deleteToken: newToken(),
       label: "",
       clickCount: 0,
-      platform: detectPlatform(originalUrl),
+      platform: detectPlatform(cleanUrl),
       createdAt: Date.now(),
     };
     await s.setJSON(linkKey(host, code), link);

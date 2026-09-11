@@ -3068,7 +3068,7 @@
               </div>
             </div>
           </div>
-          <input type="text" id="slugInput" placeholder="custom-slug (optional)" aria-label="Custom slug">
+          <input type="text" id="slugInput" placeholder="custom-slug (optional, 1–30)" aria-label="Custom slug" maxlength="30" autocomplete="off" autocapitalize="off" spellcheck="false" title="1–30 chars: letters, numbers, - _">
         </div>
         <button class="primary" onclick="shortenUrl()">Shorten URL</button>
       </div>
@@ -3889,8 +3889,19 @@
       }
 
       function getSessionId() {
-        // Storage can throw when blocked (private mode, disabled cookies)
-        try { return localStorage.getItem(SESSION_KEY); } catch (e) { return null; }
+        // Storage can throw when blocked (private mode, disabled cookies).
+        // Synchronous strict check only (no network): malformed stored IDs
+        // (hand-edited, legacy with "1"/specials) are purged immediately so
+        // boot skips a wasted backend round-trip — faster on slow connections.
+        try {
+          const v = localStorage.getItem(SESSION_KEY);
+          if (!v) return null;
+          if (!SESSION_REGEX_STRICT.test(v) || v.length !== SESSION_ID_LENGTH || v.includes('1')) {
+            try { localStorage.removeItem(SESSION_KEY); } catch (_) {}
+            return null;
+          }
+          return v;
+        } catch (e) { return null; }
       }
 
       function setSessionId(id) {
@@ -6211,8 +6222,9 @@
 
       async function initApp() {
         // Check if there's an existing session - only show "Syncing session..." if there is
+        // (uses getSessionId() so malformed stored IDs are purged first, no extra read).
         const syncingText = document.getElementById('syncingSessionText');
-        const existingSessionId = localStorage.getItem('tunnel_session_id');
+        const existingSessionId = getSessionId();
         
         // If no existing session, hide the syncing text
         if (!existingSessionId && syncingText) {
@@ -6514,6 +6526,40 @@
           return;
         }
 
+        // Client-side URL check (mirrors backend validHttpUrl for fast feedback;
+        // backend remains authoritative).
+        if (urlInput.length > 2048) {
+          showCustomModal({ title: "URL Too Long", message: "URLs are limited to 2048 characters." });
+          button.disabled = false;
+          button.textContent = 'Shorten URL';
+          return;
+        }
+        try {
+          const _u = new URL(urlInput);
+          if ((_u.protocol !== 'http:' && _u.protocol !== 'https:') || _u.username || _u.password || !_u.hostname || /[\x00-\x1F\x7F<>\"\\^`{|}]/.test(urlInput) || /\s/.test(urlInput)) {
+            throw new Error('bad');
+          }
+        } catch (e) {
+          showCustomModal({
+            title: "Invalid URL",
+            message: "The URL you provided is invalid. Please make sure it starts with http:// or https://"
+          });
+          button.disabled = false;
+          button.textContent = 'Shorten URL';
+          return;
+        }
+
+        // Client-side slug check: 1–30 chars, letters/numbers/-/_ only.
+        if (slugInput && !/^[A-Za-z0-9_-]{1,30}$/.test(slugInput)) {
+          showCustomModal({
+            title: "Invalid Slug",
+            message: "Custom slugs must be 1–30 chars: letters, numbers, - _"
+          });
+          button.disabled = false;
+          button.textContent = 'Shorten URL';
+          return;
+        }
+
         if (!requireBackend()) {
           button.disabled = false;
           button.textContent = 'Shorten URL';
@@ -6633,6 +6679,9 @@
             message = "This URL is flagged as unsafe (phishing/malware) and can't be shortened.";
           } else if (errorCode === 'ERR_SLUG_TAKEN') {
             message = "This slug is already taken on this domain. Please choose a different one (the same slug can still be used on your other domains).";
+          } else if (error.code === 'invalid-argument' && error.message && error.message !== 'ERR_INVALID_URL') {
+            // Surface backend validation verbatim (slug 1–30, URL too long, etc.).
+            message = error.message;
           } else if (error.message && error.message.includes('429')) {
             message = "You've made too many attempts. Please wait a moment before trying again, or try disconnecting from your VPN or proxy if you're using one.";
           } else if (error.code === 'permission-denied' || errorCode === 'permission-denied' || error.message === 'permission-denied') {
