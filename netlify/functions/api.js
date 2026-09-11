@@ -169,9 +169,9 @@ async function sendFeedbackEmail(doc, s) {
       String(doc.message || ""),
     ];
     await transporter.sendMail({
-      from: `Tunnel Feedback <${from}>`,
+      from: `INOCULENS TUNNEL Feedback <${from}>`,
       to,
-      subject: `[Tunnel Feedback] ${doc.id}`,
+      subject: `[INOCULENS TUNNEL Feedback] ${doc.id}`,
       text: textLines.join("\n"),
     });
     try { transporter.close(); } catch { /* ignore */ }
