@@ -3201,7 +3201,13 @@
       <!-- Optional Input Field for Modals -->
       <input type="text" id="modalInput"
         style="display:none; width:100%; margin-bottom:1rem; padding:10px; background: rgba(0, 0, 0, 0.4); border:1px solid var(--border); border-radius: 8px; color: var(--text);"
-        maxlength="10" onpaste="handleModalInputPaste(event)" placeholder="">
+        maxlength="10" onpaste="handleModalInputPaste(event)" placeholder=""
+        autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <!-- Peek toggle: shown only for password-masked secret inputs -->
+      <div style="display:none; text-align:right; margin:-0.5rem 0 1rem;">
+        <button type="button" id="modalInputPeek" onclick="toggleModalInputPeek()"
+          style="background:transparent; border:none; color:var(--text-muted); font-family:'DM Sans',sans-serif; font-size:0.78rem; font-weight:600; cursor:pointer; padding:2px 4px;">Show</button>
+      </div>
 
       <div class="modal-actions">
         <button class="modal-btn modal-btn-cancel" id="modalCancelBtn">Cancel</button>
@@ -7071,7 +7077,8 @@
           message: "Enter your 10-character Session ID to synchronize your history.",
           showCancel: true,
           showInput: true,
-          inputPlaceholder: "Enter your session ID..."
+          inputPlaceholder: "Enter your session ID...",
+          inputType: 'password'
         });
 
         if (sid && sid.trim()) {
@@ -8906,7 +8913,8 @@
           message: "Enter the Session ID you want to merge <strong>INTO</strong> this one. <br>The links and custom domains from that session will be moved here, and that session will become empty.",
           showCancel: true,
           showInput: true,
-          inputPlaceholder: "Enter other Session ID..."
+          inputPlaceholder: "Enter other Session ID...",
+          inputType: 'password'
         });
 
         if (result && typeof result === 'string') {
@@ -8923,12 +8931,18 @@
           // only be an admin attempt.
           async function tryAdminUnlock(key) {
             if (!validAdminKeyFrontend(key)) return false;
+            // The entry popup is already gone here and verification takes a
+            // backend round-trip — show progress so the action reads as
+            // registered instead of dead.
+            showLoadingModal({ title: 'Verifying admin key…', message: 'Checking, please wait' });
             try {
               const adminFn = functions.httpsCallable('adminListDiscountCodes');
               await adminFn({ adminKey: key });
             } catch (adminErr) {
+              closeLoadingModal();
               return false;
             }
+            closeLoadingModal();
             try { sessionStorage.setItem('tunnel_admin_key', key); } catch (e) {}
             updateSessionUI();
             showCustomModal({ title: "Admin Unlocked", message: "Admin unlocked. Use the <strong>Admin</strong> button next to your session controls." });
@@ -8953,15 +8967,19 @@
           }
 
           try {
+            showLoadingModal({ title: 'Merging sessions…', message: 'Moving links and domains, please wait' });
             const checkFn = functions.httpsCallable('checkSessionExists');
             const exists = await checkFn({ sessionId: otherSid });
             if (!exists.data || !exists.data.exists) {
+              // Hand over to the admin path (it shows its own progress).
+              closeLoadingModal();
               if (await tryAdminUnlock(otherSid)) return;
               showCustomModal({ title: "Not Found", message: "Unknown Session ID." });
               return;
             }
           } catch (e) {
             console.error('Session lookup failed:', e);
+            closeLoadingModal();
             showCustomModal({ title: "Error", message: escapeHTML(e.message || 'Lookup failed') });
             return;
           }
@@ -8990,9 +9008,16 @@
               currentPage = 1;
               selectHistoryFilter('all', 'All domains');
               const domainBit = movedDomains > 0 ? ` and ${movedDomains} custom domain${movedDomains === 1 ? '' : 's'}` : '';
+              closeLoadingModal();
               showCustomModal({ title: "Success", message: `Merged ${mergedCount} link${mergedCount === 1 ? '' : 's'}${domainBit} into this session.` });
+            } else {
+              // Defensive: backend always answers success:true or throws —
+              // never strand the spinner if that contract ever breaks.
+              closeLoadingModal();
+              showCustomModal({ title: "Merge Error", message: "Unexpected response, please try again." });
             }
           } catch (e) {
+            closeLoadingModal();
             showCustomModal({ title: "Merge Error", message: escapeHTML(e.message || 'Merge failed') });
           }
         }
@@ -9108,9 +9133,26 @@
           window.modalEscHandler = null;
         }
       }
-      function showCustomModal({ title, message, showCancel = false, danger = false, showInput = false, inputPlaceholder = '', confirmText = '', cancelText = '' }) {
+      // Peek toggle for password-masked secret inputs (session IDs, admin
+      // keys). Reveals blind-typed secrets on demand; always resets to
+      // masked on open and on submit/cancel.
+      function toggleModalInputPeek() {
+        const inputEl = document.getElementById('modalInput');
+        const peekBtn = document.getElementById('modalInputPeek');
+        if (!inputEl || !peekBtn || inputEl.dataset.secretInput !== '1') return;
+        if (inputEl.type === 'password') {
+          inputEl.type = 'text';
+          peekBtn.textContent = 'Hide';
+        } else {
+          inputEl.type = 'password';
+          peekBtn.textContent = 'Show';
+        }
+      }
+      function showCustomModal({ title, message, showCancel = false, danger = false, showInput = false, inputPlaceholder = '', inputType = 'text', confirmText = '', cancelText = '' }) {
         return new Promise((resolve) => {
           const { overlay, titleEl, messageEl, cancelBtn, okBtn, inputEl } = modalEls();
+          const peekWrap = document.getElementById('modalInputPeek');
+          const peekBox = peekWrap ? peekWrap.parentElement : null;
 
           // Lock Nested Scroll Logic
           document.body.classList.add('modal-open');
@@ -9125,9 +9167,18 @@
             inputEl.style.display = 'block';
             inputEl.value = '';
             inputEl.placeholder = inputPlaceholder;
+            // Secret inputs (session IDs, admin keys) mask as password and
+            // get the peek toggle; everything else stays a plain text field.
+            const isSecret = inputType === 'password';
+            inputEl.type = isSecret ? 'password' : 'text';
+            inputEl.dataset.secretInput = isSecret ? '1' : '';
+            if (peekBox) peekBox.style.display = isSecret ? 'block' : 'none';
+            if (peekWrap) peekWrap.textContent = 'Show';
             setTimeout(() => inputEl.focus(), 100);
           } else {
             inputEl.style.display = 'none';
+            inputEl.dataset.secretInput = '';
+            if (peekBox) peekBox.style.display = 'none';
           }
 
           cancelBtn.style.display = showCancel ? 'block' : 'none';
@@ -9184,6 +9235,8 @@
           messageEl.innerHTML = `<div class="modal-spinner ${danger ? 'danger' : ''}"></div><div class="modal-loading-text">${escapeHTML(message)}</div>`;
 
           inputEl.style.display = 'none';
+          inputEl.dataset.secretInput = '';
+          { const pb = document.getElementById('modalInputPeek'); if (pb && pb.parentElement) pb.parentElement.style.display = 'none'; }
           cancelBtn.style.display = 'none';
 
           okBtn.className = 'modal-btn';
@@ -9213,6 +9266,8 @@
           messageEl.innerHTML = message;
 
           inputEl.style.display = 'none';
+          inputEl.dataset.secretInput = '';
+          { const pb = document.getElementById('modalInputPeek'); if (pb && pb.parentElement) pb.parentElement.style.display = 'none'; }
 
           // Show both Try Again and OK buttons
           cancelBtn.style.display = 'block';
