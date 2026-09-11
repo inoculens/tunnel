@@ -80,6 +80,103 @@ async function requireTurnstile(s, p, event, kind) {
     throw e;
   }
 }
+
+// Feedback email notify (SMTP, best-effort, fail-open): storage always wins.
+// Env: SMTP_HOST, SMTP_PORT (default 587), SMTP_USER, SMTP_PASS,
+// FEEDBACK_FROM (default SMTP_USER, single mailbox),
+// FEEDBACK_NOTIFY_TO (default SMTP_USER; one or several mailboxes separated
+//   by commas or semicolons, e.g. "a@x.com, b@x.com"). Missing host/user/pass
+// = skip silently (admin viewer remains source of truth).
+// Single-mailbox check: blocks CR/LF header injection via misconfig
+// and catches typos before nodemailer dials. Full RFC validation is the
+// MTA's job; here we only guarantee "one address, no control chars".
+function cleanMailbox(v) {
+  const s = String(v || "").trim();
+  if (!s || s.length > 254) return null;
+  if (/[\r\n<>]/.test(s)) return null;
+  if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(s)) return null;
+  return s;
+}
+
+// Recipient list for FEEDBACK_NOTIFY_TO: split on commas/semicolons,
+// validate each, dedupe, cap at 5 (typo-guard + bounds SMTP RCPT count).
+// Returns null when nothing valid remains (caller skips mail, keeps store).
+function cleanMailboxList(v, fallback) {
+  const raw = String(v || "").trim() ? String(v) : String(fallback || "");
+  const out = [];
+  const seen = new Set();
+  for (const part of raw.split(/[;,]/)) {
+    const m = cleanMailbox(part);
+    if (m && !seen.has(m.toLowerCase())) {
+      seen.add(m.toLowerCase());
+      out.push(m);
+      if (out.length >= 5) break;
+    }
+  }
+  return out.length ? out : null;
+}
+
+async function sendFeedbackEmail(doc, s) {
+  const host = String(process.env.SMTP_HOST || "").trim() || null;
+  const user = String(process.env.SMTP_USER || "").trim() || null;
+  const pass = process.env.SMTP_PASS || null;
+  if (!host || !user || !pass) return { ok: false, reason: "not-configured" };
+  if (/[\r\n]/.test(host)) return { ok: false, reason: "bad-config" };
+  // FEEDBACK_FROM stays single (envelope sender); TO accepts a short list.
+  const toList = cleanMailboxList(process.env.FEEDBACK_NOTIFY_TO, user);
+  const from = cleanMailbox(process.env.FEEDBACK_FROM || user);
+  // Never bounce on operator misconfig: store already won, mail is notify-only.
+  if (!toList || !from) {
+    console.error("sendFeedbackEmail skipped: invalid FEEDBACK_NOTIFY_TO/FROM");
+    return { ok: false, reason: "bad-config" };
+  }
+  const to = toList.join(", ");
+  // Site-wide mail throttle (mailbomb guard): per-IP/session limits stop one
+  // actor, but sessions are cheap to mint — without a global cap a rotating
+  // attacker could still flood the inbox and burn SMTP quota / reputation.
+  // Overflow reports are NOT lost: they persist to Blobs + admin viewer.
+  try {
+    if (s && !(await checkRate(s, "feedback-mail", "site", 5))) {
+      console.error(`sendFeedbackEmail(${doc.id}) throttled: site mail budget spent`);
+      return { ok: false, reason: "throttled" };
+    }
+  } catch { /* fail open: still attempt the send */ }
+  const port = Number(process.env.SMTP_PORT || 587);
+  try {
+    const { default: nodemailer } = await import("nodemailer");
+    const transporter = nodemailer.createTransport({
+      host,
+      port: Number.isFinite(port) && port > 0 ? port : 587,
+      secure: (Number.isFinite(port) && port > 0 ? port : 587) === 465,
+      requireTLS: true,
+      auth: { user, pass },
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 10000,
+    });
+    const at = doc.createdAt || new Date().toISOString();
+    const textLines = [
+      `New Tunnel issue report ${doc.id}`,
+      `Date: ${at}`,
+      `Session: ${doc.sessionId}`,
+      `IP hash: ${doc.ipHash || "-"}`,
+      `UA: ${doc.ua || "-"}`,
+      ``,
+      String(doc.message || ""),
+    ];
+    await transporter.sendMail({
+      from: `Tunnel Feedback <${from}>`,
+      to,
+      subject: `[Tunnel Feedback] ${doc.id}`,
+      text: textLines.join("\n"),
+    });
+    try { transporter.close(); } catch { /* ignore */ }
+    return { ok: true };
+  } catch (e) {
+    console.error(`sendFeedbackEmail(${doc.id}) failed:`, e?.message || e);
+    return { ok: false, reason: e?.message || "send-failed" };
+  }
+}
 async function ensureSaaSHostname(doc) {
   if (!cfConfig()) return null;
   if (!(doc.dnsVerification?.cnameValid && doc.dnsVerification?.txtVerified)) return null;
@@ -559,6 +656,92 @@ const actions = {
 
   async validateSession(s, p) {
     return ok({ exists: !!(await getSession(s, p.sessionId)) });
+  },
+
+  // ----- issue reports (no login; session linked silently) -----
+  // Storage: feedback/<date>-<ts36>-<rand8> -> { id, sessionId, message,
+  // createdAt, ipHash, ua }. Rate-limited per IP + per session, with a
+  // risk-based Turnstile challenge on fast loops (same pattern as mint).
+  async submitFeedback(s, p, event) {
+    if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
+    const ip = clientIp(event);
+    await requireTurnstile(s, p, event, "feedback");
+    if (!(await checkRate(s, "feedback-ip", ip, 5))) {
+      const e = new Error("You've sent too many reports. Wait a moment and try again.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
+    if (!(await checkRate(s, "feedback-sess", p.sessionId, 3))) {
+      const e = new Error("You've sent too many reports from this session. Wait a moment and try again.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
+    const message = String(p.message || "").trim();
+    if (message.length < 10) return fail(400, "invalid-argument", "Please describe the issue in a bit more detail (at least 10 characters).");
+    if (message.length > 5000) return fail(400, "invalid-argument", "Please keep it under 5000 characters.");
+    await needSession(s, p.sessionId);
+    let ipHash = null;
+    try {
+      const { createHash } = await import("node:crypto");
+      ipHash = createHash("sha256").update(String(ip)).digest("hex").slice(0, 16);
+    } catch { /* ignore */ }
+    let ua = null;
+    try {
+      const h = event.headers || {};
+      const lowered = {};
+      for (const [k, v] of Object.entries(h)) lowered[String(k).toLowerCase()] = v;
+      ua = String(lowered["user-agent"] || "").slice(0, 140) || null;
+    } catch { /* ignore */ }
+    const now = Date.now();
+    const id = `${new Date(now).toISOString().slice(0, 10)}-${now.toString(36)}-${newCode(8)}`;
+    const doc = {
+      id,
+      sessionId: p.sessionId,
+      message,
+      createdAt: new Date(now).toISOString(),
+      ipHash,
+      ua,
+    };
+    await s.setJSON(`feedback/${id}`, doc);
+    // Best-effort notify: never fail the submit if mail is down/misconfigured.
+    try { await sendFeedbackEmail(doc, s); } catch (e) {
+      console.error(`submitFeedback notify failed (${id}):`, e?.message || e);
+    }
+    return ok({ id });
+  },
+
+  async adminListFeedback(s, p, event) {
+    await needAdmin(s, p, event);
+    const blobs = await listAll(s, "feedback/");
+    const docs = await mapWithConcurrency(blobs, 12, (b) =>
+      freshGet(s, b.key, { type: "json" }).catch(() => null)
+    );
+    const out = docs
+      .filter((d) => d && d.id && typeof d.message === "string")
+      .map((d) => ({
+        id: String(d.id),
+        sessionId: String(d.sessionId || ""),
+        message: String(d.message || "").slice(0, 5000),
+        createdAt: d.createdAt || null,
+        ipHash: d.ipHash || null,
+        ua: d.ua || null,
+      }));
+    out.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    return ok({ reports: out.slice(0, 500) });
+  },
+
+  async adminDeleteFeedback(s, p, event) {
+    await needAdmin(s, p, event);
+    const id = String(p.id || "").trim();
+    // Allowlist: generated ids are YYYY-MM-DD + base36 ts + code alphabet.
+    // Blocks key traversal (/, \, ..) and any non-id payload outright.
+    if (!id || id.length > 80 || !/^[A-Za-z0-9._-]+$/.test(id)) {
+      return fail(400, "invalid-argument", "Invalid report id.");
+    }
+    await s.delete(`feedback/${id}`);
+    return ok({ deleted: id });
   },
 
   async getLinksBySession(s, p) {

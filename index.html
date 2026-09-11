@@ -1545,6 +1545,18 @@
       }
     }
 
+    .btn-session-report {
+      background: transparent;
+      color: var(--warning);
+      border: 1px solid rgba(245, 166, 35, 0.4);
+    }
+
+    @media (hover: hover) {
+      .btn-session-report:hover {
+        background: rgba(245, 166, 35, 0.14);
+      }
+    }
+
     .btn-session:active {
       transform: scale(0.97);
     }
@@ -4001,6 +4013,7 @@
           <button class="session-item btn-session btn-copy-small" onclick="copySessionId()">Copy</button>
           <button class="session-item btn-session btn-session-merge" onclick="openMergeModal()">Merge</button>
           <button class="session-item btn-session btn-session-fresh" onclick="startFresh()">Start Fresh</button>
+          <button class="session-item btn-session btn-session-report" onclick="location.href='/report'">Report an issue</button>
           ${promoBtn}
         `;
         } else {
@@ -5951,16 +5964,22 @@
         const main = document.getElementById('promoMain');
         const view = document.getElementById('promoCodesView');
         const links = document.getElementById('linkMgmtView');
+        const feedback = document.getElementById('feedbackView');
         const hint = document.getElementById('promoTabHint');
         const tabP = document.getElementById('adminTabPromo');
         const tabL = document.getElementById('adminTabLinks');
+        const tabF = document.getElementById('adminTabFeedback');
         const isLinks = tab === 'links';
-        if (main) main.style.display = isLinks ? 'none' : 'block';
+        const isFeedback = tab === 'feedback';
+        if (main) main.style.display = (!isLinks && !isFeedback) ? 'block' : 'none';
         if (view) view.style.display = 'none';
         if (links) links.style.display = isLinks ? 'block' : 'none';
-        if (hint) hint.style.display = isLinks ? 'none' : 'block';
-        if (tabP) tabP.className = 'modal-btn ' + (isLinks ? 'modal-btn-cancel' : 'modal-btn-ok');
+        if (feedback) feedback.style.display = isFeedback ? 'block' : 'none';
+        if (hint) hint.style.display = (!isLinks && !isFeedback) ? 'block' : 'none';
+        if (tabP) tabP.className = 'modal-btn ' + ((!isLinks && !isFeedback) ? 'modal-btn-ok' : 'modal-btn-cancel');
         if (tabL) tabL.className = 'modal-btn ' + (isLinks ? 'modal-btn-ok' : 'modal-btn-cancel');
+        if (tabF) tabF.className = 'modal-btn ' + (isFeedback ? 'modal-btn-ok' : 'modal-btn-cancel');
+        if (isFeedback) feedbackLoad();
       }
       function promoShowCodes() {
         adminShowTab('promo');
@@ -6144,6 +6163,58 @@
             <div style="font-size:0.8rem; margin-top:4px;">${c.percent}% off · <strong>${used}/${max}</strong> used · ${c.expiresAt ? `expires ${escapeHTML(c.expiresAt.slice(0, 10))}` : 'never expires'}${c.note ? ` · ${escapeHTML(c.note)}` : ''}</div>
           </div>`;
         }).join('');
+      }
+      // --- Feedback reports (admin moderation) ---
+      async function feedbackLoad() {
+        const list = document.getElementById('feedbackList');
+        const btn = document.getElementById('feedbackRefreshBtn');
+        if (list) list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">Loading…</div>';
+        try {
+          if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+          const fn = functions.httpsCallable('adminListFeedback');
+          const res = await fn({ adminKey: promoAdminKey() });
+          renderFeedback(res.data.reports || []);
+        } catch (e) {
+          console.error('feedbackLoad:', e);
+          if (list) list.innerHTML = `<div style="padding:16px; text-align:center; color:var(--danger);">${escapeHTML(e.message || 'Load failed')}</div>`;
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = 'Refresh'; }
+        }
+      }
+      function renderFeedback(reports) {
+        const list = document.getElementById('feedbackList');
+        if (!list) return;
+        if (!reports.length) {
+          list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">No reports yet.</div>';
+          return;
+        }
+        list.innerHTML = reports.map((r) => {
+          const when = r.createdAt ? String(r.createdAt).slice(0, 16).replace('T', ' ') : '?';
+          return `<div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px;">
+            <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
+              <div style="font-size:0.75rem; color:var(--text-muted);">session <span style="font-family:monospace;">${escapeHTML(adminMaskSession(r.sessionId))}</span> · ${escapeHTML(when)}</div>
+              <button class="btn-small btn-delete-small" onclick="feedbackDelete(${escapeJS(r.id)})" title="Delete report">Delete</button>
+            </div>
+            <div style="font-size:0.88rem; margin-top:6px; white-space:pre-wrap; overflow-wrap:anywhere;">${escapeHTML(r.message || '')}</div>
+          </div>`;
+        }).join('');
+      }
+      async function feedbackDelete(id) {
+        const okDel = await showCustomModal({
+          title: 'Delete report?',
+          message: 'This removes the report from storage. This cannot be undone.',
+          showCancel: true,
+          danger: true
+        });
+        if (!okDel) return;
+        try {
+          const fn = functions.httpsCallable('adminDeleteFeedback');
+          await fn({ adminKey: promoAdminKey(), id });
+          showToast('Report deleted.', 'info');
+          feedbackLoad();
+        } catch (e) {
+          showToast(e.message || 'Delete failed', 'error');
+        }
       }
       function promoFindCached(code) {
         const all = Array.isArray(window._promoCodes) ? window._promoCodes : [];
@@ -8514,6 +8585,7 @@
       <div style="display: flex; gap: 8px; margin-bottom: 12px;">
         <button class="modal-btn modal-btn-ok" id="adminTabPromo" onclick="adminShowTab('promo')" style="flex: 1;">Promo</button>
         <button class="modal-btn modal-btn-cancel" id="adminTabLinks" onclick="adminShowTab('links')" style="flex: 1;">Link Management</button>
+        <button class="modal-btn modal-btn-cancel" id="adminTabFeedback" onclick="adminShowTab('feedback')" style="flex: 1;">Feedback</button>
       </div>
       <p id="promoTabHint" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Single-use by default: each code binds to the first domain redeeming it.</p>
       <div id="promoMain">
@@ -8564,6 +8636,11 @@
         </label>
         <button class="modal-btn modal-btn-ok" id="adminSearchBtn" onclick="adminSearchLinks()" style="width: 100%; margin-bottom: 12px;">Search</button>
         <div id="adminLinksList"></div>
+      </div>
+      <div id="feedbackView" style="display: none;">
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Issue reports from the Report page. Newest first. Sessions masked.</p>
+        <button class="modal-btn modal-btn-ok" id="feedbackRefreshBtn" onclick="feedbackLoad()" style="width: 100%; margin-bottom: 12px;">Refresh</button>
+        <div id="feedbackList"></div>
       </div>
     </div>
   </div>

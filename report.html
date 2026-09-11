@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="description" content="Report an issue with INOCULENS Tunnel." />
+  <meta name="theme-color" content="#0f0f0f" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'; frame-src 'self' https://challenges.cloudflare.com; child-src 'self' https://challenges.cloudflare.com;" />
+  <title>Report an issue | INOCULENS Tunnel</title>
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="/visuals/favicon.ico" />
+
+  <!-- Analytics (consent-gated, GDPR): the gtag loader is injected by
+       assets/common.js ONLY after the visitor accepts the banner.
+       Default-deny here so nothing fires beforehand. -->
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('consent', 'default', { ad_storage: 'denied', analytics_storage: 'denied', wait_for_update: 500 });
+    gtag('js', new Date());
+    try {
+      if (localStorage.getItem('tunnel_consent') === 'granted') {
+        var __ga = document.createElement('script');
+        __ga.async = true;
+        __ga.src = 'https://www.googletagmanager.com/gtag/js?id=G-6XQPYNCYNJ';
+        document.head.appendChild(__ga);
+        gtag('config', 'G-6XQPYNCYNJ');
+      }
+    } catch (e) {}
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="/assets/common.css">
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap">
+
+  <style>
+    .report-card {
+      background: rgba(33, 33, 36, 0.62);
+      backdrop-filter: blur(28px) saturate(135%);
+      -webkit-backdrop-filter: blur(28px) saturate(135%);
+      padding: 1.5rem;
+      border-radius: 18px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+      width: 100%;
+      border: 1px solid var(--border);
+      margin-bottom: 3rem;
+    }
+
+    .report-card h1 {
+      font-size: 1.6rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .report-sub {
+      color: var(--text-muted);
+      font-size: 0.92rem;
+      line-height: 1.6;
+      margin-bottom: 1.25rem;
+    }
+
+    #reportText {
+      width: 100%;
+      min-height: 220px;
+      resize: vertical;
+      padding: 14px 16px;
+      font-size: 15px;
+      font-family: 'DM Sans', sans-serif;
+      line-height: 1.6;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      color: var(--text);
+      box-sizing: border-box;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    #reportText::placeholder {
+      color: #717171;
+    }
+
+    #reportText:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(62, 166, 255, 0.55), 0 0 0 4px rgba(62, 166, 255, 0.12);
+    }
+
+    button.primary {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--primary);
+      color: var(--primary-ink);
+      height: 48px;
+      padding: 0 24px;
+      font-weight: 600;
+      font-size: 0.92rem;
+      letter-spacing: 0.01em;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.1s ease;
+      margin-top: 0.85rem;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      box-shadow: none;
+    }
+
+    button.primary:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    @media (hover: hover) {
+      button.primary:hover:not(:disabled) {
+        background: var(--primary-hover);
+      }
+    }
+
+    button.primary:active:not(:disabled) {
+      transform: scale(0.98);
+      background: #d9d9d9;
+    }
+
+    #reportError {
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 12px;
+      background: rgba(240, 65, 65, 0.09);
+      border: 1px solid rgba(240, 65, 65, 0.3);
+      color: var(--danger-text, #f28b82);
+      font-size: 0.9rem;
+      display: none;
+    }
+
+    #reportOk {
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 12px;
+      background: rgba(43, 166, 64, 0.1);
+      border: 1px solid rgba(43, 166, 64, 0.28);
+      color: var(--success-text, #6fcf7f);
+      font-size: 0.9rem;
+      display: none;
+    }
+
+    .char-count {
+      text-align: right;
+      font-size: 0.75rem;
+      color: var(--text-faint);
+      margin-top: 6px;
+    }
+
+    .footer {
+      text-align: center;
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+      width: 100%;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+
+<body>
+  <header class="glass-header">
+    <div class="header-content">
+      <div class="header-left">
+        <a href="/" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
+          <img src="/visuals/logo-no-background.png" alt="Logo" class="header-logo">
+          <span class="header-title">INOCULENS Tunnel</span>
+        </a>
+      </div>
+      <div class="header-right">
+        <a href="/pricing.html" class="nav-btn">Pricing</a>
+        <a href="/about.html" class="nav-btn">About</a>
+        <a href="/terms.html" class="nav-btn">Terms</a>
+      </div>
+      <button class="mobile-menu-btn" onclick="toggleMobileMenu(true)">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="report-card">
+      <h1>Report an issue</h1>
+      <p class="report-sub">Tell us what went wrong. No login needed — your report is linked to your session automatically so we can investigate.</p>
+
+      <div id="noSession" style="display:none; text-align:center; padding: 24px 8px;">
+        <p style="color: var(--text-muted); line-height: 1.6; margin-bottom: 20px;">You don’t have an active session in this browser yet.<br>Create or load a session first, then come back here.</p>
+        <a href="/" class="nav-btn" style="display:inline-block; padding: 12px 32px; font-size: 0.9rem; background:#f1f1f1; color:#0f0f0f; font-weight:600;">Go to Tunnel</a>
+      </div>
+
+      <div id="reportForm" style="display:none;">
+        <label for="reportText" style="display:block; font-size:0.85rem; font-weight:600; color:var(--text); margin-bottom:8px;">Describe the issue</label>
+        <textarea id="reportText" maxlength="5000" placeholder="What happened? What did you expect? Steps to reproduce…"></textarea>
+        <div class="char-count"><span id="reportCount">0</span> / 5000</div>
+        <div id="reportError" role="alert"></div>
+        <div id="reportOk" role="status"></div>
+        <button class="primary" id="reportSend" type="button">Send</button>
+      </div>
+
+      <div id="reportDone" style="display:none; text-align:center; padding: 24px 8px;">
+        <div style="font-size: 2.5rem; margin-bottom: 12px;">✅</div>
+        <h2 style="margin: 0 0 8px; font-size: 1.2rem;">Thanks — report received.</h2>
+        <p style="color: var(--text-muted); line-height: 1.6; margin-bottom: 20px;">We’ll look into it. You can keep using Tunnel as normal.</p>
+        <a href="/" class="nav-btn" style="display:inline-block; padding: 12px 32px; font-size: 0.9rem;">Back to Tunnel</a>
+      </div>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <p>&copy; 2026 INOCULENS Tunnel. All rights reserved. Built for creators.</p>
+  </footer>
+
+  <script>
+    (function () {
+      var SESSION_KEY = 'tunnel_session_id';
+      var SESSION_RE = /^[A-Za-z023456789]{10}$/;
+      var API_URL = '/.netlify/functions/api';
+      var MAX_LEN = 5000, MIN_LEN = 10;
+
+      function getSessionId() {
+        try {
+          var v = localStorage.getItem(SESSION_KEY);
+          if (!v) return null;
+          if (!SESSION_RE.test(v) || v.length !== 10 || v.indexOf('1') !== -1) {
+            try { localStorage.removeItem(SESSION_KEY); } catch (_) {}
+            return null;
+          }
+          return v;
+        } catch (e) { return null; }
+      }
+
+      var sid = getSessionId();
+      var form = document.getElementById('reportForm');
+      var noSession = document.getElementById('noSession');
+      var done = document.getElementById('reportDone');
+      var text = document.getElementById('reportText');
+      var count = document.getElementById('reportCount');
+      var btn = document.getElementById('reportSend');
+      var errBox = document.getElementById('reportError');
+      var okBox = document.getElementById('reportOk');
+
+      if (!sid) {
+        noSession.style.display = 'block';
+      } else {
+        form.style.display = 'block';
+      }
+
+      text.addEventListener('input', function () {
+        count.textContent = String(text.value.length);
+        hideBoxes();
+      });
+
+      function showError(m) {
+        errBox.textContent = m;
+        errBox.style.display = 'block';
+        okBox.style.display = 'none';
+      }
+      function hideBoxes() {
+        errBox.style.display = 'none';
+        okBox.style.display = 'none';
+      }
+
+      var publicConfig = {};
+      fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'getPublicConfig' })
+      }).then(function (r) { return r.json(); }).then(function (b) {
+        publicConfig = b || {};
+      }).catch(function () {});
+
+      function ensureTurnstileScript() {
+        if (window.turnstile) return Promise.resolve(true);
+        return new Promise(function (resolve) {
+          try {
+            var s = document.createElement('script');
+            s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+            s.async = true;
+            s.onload = function () { resolve(!!window.turnstile); };
+            s.onerror = function () { resolve(false); };
+            document.head.appendChild(s);
+            setTimeout(function () { resolve(!!window.turnstile); }, 5000);
+          } catch (e) { resolve(false); }
+        });
+      }
+
+      function showTurnstileChallenge() {
+        var sitekey = publicConfig.turnstileSiteKey;
+        if (!sitekey) return Promise.resolve(null);
+        return new Promise(function (resolve) {
+          var overlay = document.createElement('div');
+          overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:60000;display:flex;align-items:center;justify-content:center;padding:20px;';
+          overlay.innerHTML = '<div class="modal-card" style="background:rgba(32,32,35,0.88);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;max-width:360px;text-align:center;color:#f1f1f1;">'
+            + '<div style="font-weight:700;margin-bottom:8px;">Quick human check</div>'
+            + '<div style="color:#aaa;font-size:0.9rem;margin-bottom:16px;">Unusual pace detected — solve once to continue.</div>'
+            + '<div id="turnstileBox" style="display:flex;justify-content:center;margin-bottom:16px;"></div>'
+            + '<button id="turnstileCancel" style="width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.07);color:#f1f1f1;cursor:pointer;">Cancel</button></div>';
+          var finished = false;
+          var finish = function (token) {
+            if (finished) return;
+            finished = true;
+            try { overlay.remove(); } catch (e) {}
+            resolve(token || null);
+          };
+          document.body.appendChild(overlay);
+          overlay.querySelector('#turnstileCancel').onclick = function () { finish(null); };
+          ensureTurnstileScript().then(function (ok) {
+            if (!ok || !window.turnstile) { finish(null); return; }
+            try {
+              window.turnstile.render('#turnstileBox', {
+                sitekey: sitekey,
+                callback: function (t) { finish(t); },
+                'expired-callback': function () { finish(null); },
+                'error-callback': function () { finish(null); }
+              });
+            } catch (e) { finish(null); }
+          });
+        });
+      }
+
+      async function apiCall(action, data) {
+        var res = await fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({ action: action }, data || {}))
+        });
+        var body = null;
+        try { body = await res.json(); } catch (e) {}
+        if (!res.ok) {
+          var info = (body && body.error) || {};
+          var err = new Error(info.message || ('Request failed (' + res.status + ').'));
+          err.code = info.code || ('http-' + res.status);
+          throw err;
+        }
+        return body;
+      }
+
+      var tsRetried = false;
+
+      btn.addEventListener('click', async function () {
+        hideBoxes();
+        var message = (text.value || '').trim();
+        if (message.length < MIN_LEN) {
+          showError('Please describe the issue in a bit more detail (at least 10 characters).');
+          return;
+        }
+        if (message.length > MAX_LEN) {
+          showError('Please keep it under 5000 characters.');
+          return;
+        }
+        var cur = getSessionId();
+        if (!cur) {
+          form.style.display = 'none';
+          noSession.style.display = 'block';
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+        try {
+          var token = window._tsToken || undefined;
+          window._tsToken = undefined;
+          await apiCall('submitFeedback', {
+            sessionId: cur,
+            message: message,
+            ...(token ? { turnstileToken: token } : {})
+          });
+          form.style.display = 'none';
+          done.style.display = 'block';
+        } catch (e) {
+          if ((e && e.message === 'TURNSTILE_REQUIRED') && !tsRetried) {
+            tsRetried = true;
+            btn.disabled = false;
+            btn.textContent = 'Send';
+            try {
+              var t2 = await showTurnstileChallenge();
+              if (t2) {
+                window._tsToken = t2;
+                btn.click();
+                return;
+              }
+            } finally {
+              tsRetried = false;
+            }
+            showError('Quick human check needed — please try again.');
+            return;
+          }
+          tsRetried = false;
+          if (e && (e.code === 'resource-exhausted' || /429/.test(e.message || ''))) {
+            showError('You’ve sent too many reports. Wait a moment and try again.');
+          } else if (e) {
+            showError(e.message || 'Could not send. Check your connection and try again.');
+          }
+        } finally {
+          if (form.style.display !== 'none') {
+            btn.disabled = false;
+            btn.textContent = 'Send';
+          }
+        }
+      });
+    })();
+  </script>
+  <script src="/assets/common.js"></script>
+  <div class="drawer-overlay" id="drawerOverlay" onclick="toggleMobileMenu(false)"></div>
+  <div class="mobile-drawer" id="mobileDrawer">
+    <div class="drawer-header">
+      <span class="header-title" style="display: block !important;">MENU</span>
+      <button class="drawer-close" onclick="toggleMobileMenu(false)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+    <div class="drawer-nav">
+      <a href="/pricing.html" class="nav-btn" onclick="toggleMobileMenu(false)">Pricing</a>
+      <a href="/about.html" class="nav-btn" onclick="toggleMobileMenu(false)">About</a>
+      <a href="/terms.html" class="nav-btn" onclick="toggleMobileMenu(false)">Terms</a>
+    </div>
+  </div>
+</body>
+
+</html>

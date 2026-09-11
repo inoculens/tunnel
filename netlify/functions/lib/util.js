@@ -13,6 +13,8 @@
  *                                     discount, quote, createdAt }
  *   wallet/meta                     { nextIndex }
  *   rl/<name>/<ip>/<windowMinute>   { count }
+ *   feedback/<date>-<ts36>-<rand8>   { id, sessionId, message, createdAt,
+ *                                     ipHash, ua }
  */
 import { getStore, connectLambda } from "@netlify/blobs";
 import { randomBytes } from "node:crypto";
@@ -956,6 +958,10 @@ export async function turnstileRequired(s, kind, ip, sessionId = null) {
     if (kind === "claim") {
       const c = await getCount(`rl/claim/${ip}/${win}`);
       return c >= 2;
+    }
+    if (kind === "feedback") {
+      const c = await getCount(`rl/feedback-ip/${ip}/${win}`);
+      return c >= 3;
     }
   } catch { /* fail open */ }
   return false;

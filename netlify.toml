@@ -61,6 +61,15 @@
 #        family only (fast loops / near-quota), never on link redirects.
 #        Missing secret = never require (degraded).
 #     HOME_URL=https://tunnel.inoculens.com/      (resolver fallback/404 base)
+#     SMTP_HOST=<smtp host>  SMTP_PORT=587
+#     SMTP_USER=<sender mailbox>  SMTP_PASS=<dedicated app password>
+#     FEEDBACK_NOTIFY_TO=<inbox for new-report mail; one mailbox, or several
+#        separated by commas or semicolons, e.g. "a@<domain>, b@<domain>">
+#     FEEDBACK_FROM=<sender mailbox>
+#        “Report an issue” mail notify (best-effort, fail-open): reports always
+#        persist to Blobs feedback/ + admin Feedback tab; mail is skipped when
+#        SMTP vars are absent and never fails a submit. Set real addresses only
+#        in Site settings → Environment variables, never in this file.
 #     AUTO_SSL=1 (default) — with Cloudflare SaaS HTTP validation, routing
 #       validity implies SSL will auto-provision. Set SSL_DELEGATION_TARGET
 #       only if you switch a hostname to TXT/delegated validation.
@@ -97,6 +106,11 @@
 [[redirects]]
   from = "/terms"
   to = "/terms.html"
+  status = 200
+
+[[redirects]]
+  from = "/report"
+  to = "/report.html"
   status = 200
 
 # Everything else that isn't a file → branded 404 page.
