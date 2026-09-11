@@ -443,7 +443,11 @@ async function needAdmin(s, p, event) {
     throw e;
   }
   const ip = clientIp(event);
-  if (!(await checkRate(s, "admin", ip, 10))) {
+  // Single choke point for the whole admin panel (all 13 admin* actions
+  // gate here): 60/min/IP keeps active moderation smooth. Brute force stays
+  // meaningless (~68^10 keyspace), and the check runs before key validation
+  // so wrong-key probing is still throttled.
+  if (!(await checkRate(s, "admin", ip, 60))) {
     const e = new Error("Too many attempts, wait a moment.");
     e.statusCode = 429;
     e.code = "resource-exhausted";
@@ -2027,8 +2031,12 @@ export async function handler(event) {
   } catch {
     return fail(400, "invalid-argument", "Invalid JSON body.");
   }
-  const fn = actions[body.action];
-  if (!fn) return fail(400, "invalid-argument", `Unknown action: ${body.action || "(missing)"}.`);
+  // Own-property + typeof guards (not just truthiness): blocks
+  // prototype-edge lookups like action:"constructor" (inherited Object
+  // constructor IS a function) from reaching a non-action function.
+  const name = typeof body.action === "string" ? body.action : "";
+  const fn = Object.hasOwn(actions, name) ? actions[name] : undefined;
+  if (typeof fn !== "function") return fail(400, "invalid-argument", `Unknown action: ${body.action || "(missing)"}.`);
   const s = store(event);
   try {
     return await fn(s, body, event);
