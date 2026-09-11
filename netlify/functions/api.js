@@ -760,6 +760,16 @@ const actions = {
     return ok({ deleted: id });
   },
 
+  // Bulk-delete every issue report. Admin-gated like all admin ops. Keys
+  // come from the store listing itself (fixed feedback/ prefix), so there
+  // is no id input to validate. Blobs-only: notify-mailbox copies are kept.
+  async adminDeleteAllFeedback(s, p, event) {
+    await needAdmin(s, p, event);
+    const blobs = await listAll(s, "feedback/");
+    await mapWithConcurrency(blobs, 12, (b) => s.delete(b.key).catch(() => null));
+    return ok({ deleted: blobs.length });
+  },
+
   // Diagnose mail notify from inside the app (Admin → Feedback → Send test
   // mail). Sends a real test message via the configured SMTP env and reports
   // the outcome. Never echoes credentials: only a short reason string.
@@ -1488,9 +1498,8 @@ const actions = {
   },
 
   // ----- Link Management (admin moderation) -----
-  // All gated by needAdmin + audit-logged. Redaction happens in the UI
-  // (redacted-by-default, click-to-reveal); the backend returns full values
-  // so moderation (quarantine/delete/block) is possible.
+  // All gated by needAdmin + audit-logged. The backend returns full values
+  // (admin-only UI) so moderation (quarantine/delete/block) is possible.
 
   async adminSearchLinks(s, p, event) {
     await needAdmin(s, p, event);
@@ -1508,7 +1517,21 @@ const actions = {
     if (qOrig) found = found.filter((l) => String(l.original || "").toLowerCase().includes(qOrig));
     if (onlyQ) found = found.filter((l) => l.quarantined === true);
     found.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    return ok({ links: found.slice(0, 50).map(linkShape), truncated: found.length > 50, total: found.length });
+    const page = found.slice(0, 50);
+    // Blocklist flags: the blocked/ prefix is tiny, so one list read builds
+    // the hash set and each link is marked with local hashing only (no
+    // per-link reads). Lets the UI badge Blocked originals directly.
+    let blockedSet = new Set();
+    try {
+      const bblobs = await listAll(s, "blocked/");
+      blockedSet = new Set(bblobs.map((b) => String(b.key || "").split("/").pop()));
+    } catch { /* ignore: flags default to false */ }
+    const hashes = await mapWithConcurrency(page, 12, (l) => originalHash(l.original || ""));
+    const links = page.map((l, i) => ({
+      ...linkShape(l),
+      ...(hashes[i] && blockedSet.has(hashes[i]) ? { originalBlocked: true } : {}),
+    }));
+    return ok({ links, truncated: found.length > 50, total: found.length });
   },
 
   async adminSetQuarantine(s, p, event) {
@@ -1564,7 +1587,10 @@ const actions = {
     if (!h) return fail(400, "invalid-argument", "Invalid URL.");
     let host = "";
     try { host = new URL(original).hostname.toLowerCase().slice(0, 120); } catch { /* keep empty */ }
-    await s.setJSON(`blocked/${h}`, { hash: h, host, at: new Date().toISOString(), reason: String(p.reason || "ADMIN").slice(0, 40) });
+    // Persist the exact original too (not just host+hash) so the admin
+    // Blocked-URLs list can show and unblock entries whose links are all
+    // gone. Older records without it fall back to host display.
+    await s.setJSON(`blocked/${h}`, { hash: h, host, original: original.slice(0, 2048), at: new Date().toISOString(), reason: String(p.reason || "ADMIN").slice(0, 40) });
     // Sweep existing links with the exact same original (bounded).
     let swept = 0;
     try {
@@ -1599,6 +1625,28 @@ const actions = {
     if (!h) return fail(400, "invalid-argument", "Invalid URL or hash.");
     await s.delete(`blocked/${h}`);
     return ok({ unblocked: true });
+  },
+
+  // Visible blocklist (orphan-safe): blocks survive link deletions by
+  // design, so the admin needs a list to review/undo them even when no
+  // link carries the original anymore. Prefix is tiny — one list read.
+  async adminListBlocked(s, p, event) {
+    await needAdmin(s, p, event);
+    const blobs = await listAll(s, "blocked/");
+    const docs = await mapWithConcurrency(blobs, 12, (b) =>
+      freshGet(s, b.key, { type: "json" }).catch(() => null)
+    );
+    const out = docs
+      .filter((d) => d && d.hash)
+      .map((d) => ({
+        hash: String(d.hash),
+        host: String(d.host || ""),
+        original: typeof d.original === "string" ? d.original.slice(0, 2048) : null,
+        at: d.at || null,
+        reason: String(d.reason || ""),
+      }));
+    out.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+    return ok({ blocked: out.slice(0, 500) });
   },
 
   async applyDiscountCode(s, p) {

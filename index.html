@@ -575,6 +575,11 @@
       color: var(--success-text);
     }
 
+    .status-blocked {
+      background: rgba(240, 65, 65, 0.14);
+      color: var(--danger-text);
+    }
+
     #slugInput {
       height: 48px;
       padding: 0 12px;
@@ -3520,7 +3525,7 @@
         <div class="stats-controls">
           <div style="display:flex; align-items:center; gap:10px;">
             <h3 style="margin:0;">Recent Activity</h3>
-            <select id="timezoneSelect" class="timezone-select" onchange="refreshStatsView()">
+            <select id="timezoneSelect" class="timezone-select" onchange="window._statsOffset=0;refreshStatsView()">
               <option value="local">Local Time</option>
               <option value="UTC">UTC</option>
               <option value="Europe/Bucharest">EET (Romania)</option>
@@ -3715,7 +3720,7 @@
 
       // Pagination state
       let currentPage = 1;
-      const ITEMS_PER_PAGE = 5;
+      const ITEMS_PER_PAGE = 10;
 
       // The list currently rendered (after search/domain filter). Pagination
       // operates on THIS array, not on currentLinks (which may be longer).
@@ -5957,15 +5962,17 @@
         promoShowMain();
       }
       // Esc closes the Admin panel like every other dialogue — but yields to
-      // anything stacked above it (confirm modal, report detail, code
-      // stats), which have their own Esc handlers and close first.
+      // anything stacked above it (confirm modal, report detail, link
+      // detail, code stats), which have their own Esc handlers and close first.
       function handlePromoAdminEsc(e) {
         if (!e || e.key !== 'Escape') return;
         const modal = document.getElementById('modalOverlay');
         const detail = document.getElementById('feedbackDetailOverlay');
+        const linkDetail = document.getElementById('adminLinkDetailOverlay');
         const stats = document.getElementById('promoStatsOverlay');
         if ((modal && modal.style.display === 'flex') ||
             (detail && detail.style.display === 'flex') ||
+            (linkDetail && linkDetail.style.display === 'flex') ||
             (stats && stats.style.display === 'flex')) return;
         closePromoAdmin();
       }
@@ -5974,7 +5981,10 @@
         if (overlay) overlay.style.display = 'none';
         const detail = document.getElementById('feedbackDetailOverlay');
         if (detail) detail.style.display = 'none';
+        const linkDetail = document.getElementById('adminLinkDetailOverlay');
+        if (linkDetail) linkDetail.style.display = 'none';
         window.removeEventListener('keydown', handleFeedbackDetailEsc);
+        window.removeEventListener('keydown', handleAdminLinkDetailEsc);
         window.removeEventListener('keydown', handlePromoAdminEsc);
         document.body.classList.remove('modal-open');
       }
@@ -5998,6 +6008,7 @@
         if (tabL) tabL.className = 'modal-btn ' + (isLinks ? 'modal-btn-ok' : 'modal-btn-cancel');
         if (tabF) tabF.className = 'modal-btn ' + (isFeedback ? 'modal-btn-ok' : 'modal-btn-cancel');
         if (isFeedback) feedbackLoad();
+        if (isLinks) blockedLoad();
       }
       function promoShowCodes() {
         adminShowTab('promo');
@@ -6014,16 +6025,36 @@
         if (view) view.style.display = 'none';
         if (main) main.style.display = 'block';
       }
-      // --- Link Management (admin moderation, redacted-by-default) ---
-      function adminMaskSession(sid) {
-        const s = String(sid || '');
-        return s.length > 3 ? s.slice(0, 3) + '••••••' : '••••••';
-      }
+      // --- Link Management (admin moderation, detail-modal pattern) ---
+      // List rows are minimal (short link + state badges, no actions);
+      // clicking a row opens the full link + all actions in a modal.
+      // Client-side paging (10/page) over the searched set, same lightweight
+      // pager as the Feedback tab. Lookups are by domain+code identity —
+      // indexes shift under paging, so never by index.
       function adminTruncUrl(u) {
         const s = String(u || '');
         return s.length > 60 ? s.slice(0, 60) + '…' : s;
       }
-      async function adminSearchLinks() {
+      let adminLinkPage = 1;
+      const ADMIN_LINKS_PER_PAGE = 10;
+      function adminLinkKey(l) {
+        return (l && l.domain ? String(l.domain).toLowerCase() : '') + '/' + (l && l.code ? l.code : '');
+      }
+      function adminFindLink(domain, code) {
+        const all = Array.isArray(window._adminLinks) ? window._adminLinks : [];
+        const key = String(domain || '').toLowerCase() + '/' + String(code || '');
+        return all.find((l) => adminLinkKey(l) === key) || null;
+      }
+      function adminLinkBadges(l) {
+        const q = l && l.quarantined
+          ? '<span class="domain-status status-pending">Quarantined</span>'
+          : '<span class="domain-status status-active">Live</span>';
+        const b = l && l.originalBlocked
+          ? ' <span class="domain-status status-blocked">Blocked</span>'
+          : '';
+        return q + b;
+      }
+      async function adminSearchLinks(keepPage = false) {
         const list = document.getElementById('adminLinksList');
         const btn = document.getElementById('adminSearchBtn');
         if (list) list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">Loading…</div>';
@@ -6038,29 +6069,9 @@
             quarantinedOnly: !!document.getElementById('adminSearchQuar').checked,
           });
           window._adminLinks = res.data.links || [];
-          const trunc = res.data.truncated ? `<div style="padding:8px; text-align:center; color:var(--text-muted); font-size:0.75rem;">Showing 50 of ${res.data.total} — refine search.</div>` : '';
-          if (!window._adminLinks.length) {
-            list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">No links match.</div>';
-            return;
-          }
-          list.innerHTML = window._adminLinks.map((l, i) => {
-            const q = l.quarantined ? `<span class="domain-status status-pending">Quarantined</span>` : `<span class="domain-status status-active">Live</span>`;
-            return `<div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px;">
-              <div style="display:flex; justify-content:space-between; gap:8px; align-items:center;">
-                <div style="font-family:monospace; font-weight:700;">${escapeHTML(l.domain)}/${escapeHTML(l.code)}</div>${q}
-              </div>
-              <div style="font-size:0.8rem; margin-top:4px;">to <span id="admin-orig-${i}">${escapeHTML(adminTruncUrl(l.original))}</span>
-                <button class="btn-small btn-copy-small" onclick="adminRevealOrig(${i})" title="Reveal full URL">Reveal</button></div>
-              <div style="font-size:0.8rem; color:var(--text-muted);">session <span style="font-family:monospace;" id="admin-sess-${i}">${escapeHTML(adminMaskSession(l.sessionId))}</span>
-                <button class="btn-small btn-copy-small" onclick="adminRevealSess(${i})" title="Reveal session">Reveal</button>
-                · clicks ${Number(l.clickCount) || 0}</div>
-              <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
-                <button class="btn-small btn-copy-small" onclick="adminQuarantine(${escapeJS(l.domain)}, ${escapeJS(l.code)}, ${l.quarantined ? 'false' : 'true'})">${l.quarantined ? 'Unquarantine' : 'Quarantine'}</button>
-                <button class="btn-small btn-delete-small" onclick="adminDeleteLink(${escapeJS(l.domain)}, ${escapeJS(l.code)})">Delete</button>
-                <button class="btn-small btn-copy-small" onclick="adminBlockOrig(${i})" title="Quarantine all links with this exact original + block re-mint">Block URL</button>
-              </div>
-            </div>`;
-          }).join('') + trunc;
+          window._adminLinksTruncated = res.data.truncated ? `Showing 50 of ${res.data.total} — refine search.` : '';
+          if (!keepPage) adminLinkPage = 1;
+          renderAdminLinks();
         } catch (e) {
           console.error('adminSearchLinks:', e);
           if (list) list.innerHTML = `<div style="padding:16px; text-align:center; color:var(--danger);">${escapeHTML(e.message || 'Search failed')}</div>`;
@@ -6068,15 +6079,137 @@
           if (btn) { btn.disabled = false; btn.textContent = 'Search'; }
         }
       }
-      function adminRevealOrig(i) {
-        const l = (window._adminLinks || [])[i];
-        const el = document.getElementById('admin-orig-' + i);
-        if (l && el) el.textContent = l.original || '';
+      function renderAdminLinks() {
+        const list = document.getElementById('adminLinksList');
+        if (!list) return;
+        const all = Array.isArray(window._adminLinks) ? window._adminLinks : [];
+        if (!all.length) {
+          list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">No links match.</div>';
+          return;
+        }
+        const totalItems = all.length;
+        const totalPages = Math.max(1, Math.ceil(totalItems / ADMIN_LINKS_PER_PAGE));
+        if (adminLinkPage > totalPages) adminLinkPage = Math.max(1, totalPages);
+        if (adminLinkPage < 1) adminLinkPage = 1;
+        const startIndex = (adminLinkPage - 1) * ADMIN_LINKS_PER_PAGE;
+        const endIndex = Math.min(startIndex + ADMIN_LINKS_PER_PAGE, totalItems);
+        const page = all.slice(startIndex, endIndex);
+        let html = page.map((l) => {
+          return `<div onclick="adminOpenLink(${escapeJS(l.domain || '')}, ${escapeJS(l.code || '')})" title="Open link details" style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; cursor:pointer;">
+            <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; min-width:0;">
+              <div style="font-family:monospace; font-weight:700; overflow-wrap:anywhere; min-width:0;">${escapeHTML(l.domain)}/${escapeHTML(l.code)}</div>
+              <div style="display:flex; gap:6px; flex-shrink:0; align-items:center;">${adminLinkBadges(l)}</div>
+            </div>
+          </div>`;
+        }).join('');
+        if (window._adminLinksTruncated) {
+          html += `<div style="padding:8px; text-align:center; color:var(--text-muted); font-size:0.75rem;">${escapeHTML(window._adminLinksTruncated)}</div>`;
+        }
+        if (totalPages > 1) {
+          html += `
+          <div id="adminLinksPagination" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 4px; padding: 12px 2px 2px; border-top: 1px solid var(--border);">
+            <div style="font-size: 0.75rem; color: var(--text-faint); font-weight: 500; letter-spacing: 0.02em;">
+              ${startIndex + 1}–${endIndex} of ${totalItems} · Page ${adminLinkPage} of ${totalPages}
+            </div>
+            <div style="display: flex; gap: 8px; margin-left: auto;">
+              <button class="session-item btn-session"
+                style="padding: 0 14px; background: ${adminLinkPage === 1 ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${adminLinkPage === 1 ? 'var(--text-muted)' : 'white'}; ${adminLinkPage === 1 ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                onclick="adminLinkChangePage(${adminLinkPage - 1})"
+                ${adminLinkPage === 1 ? 'disabled' : ''}>
+                ← Prev
+              </button>
+              <button class="session-item btn-session"
+                style="padding: 0 14px; background: ${adminLinkPage === totalPages ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${adminLinkPage === totalPages ? 'var(--text-muted)' : 'white'}; ${adminLinkPage === totalPages ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                onclick="adminLinkChangePage(${adminLinkPage + 1})"
+                ${adminLinkPage === totalPages ? 'disabled' : ''}>
+                Next →
+              </button>
+            </div>
+          </div>`;
+        }
+        list.innerHTML = html;
       }
-      function adminRevealSess(i) {
-        const l = (window._adminLinks || [])[i];
-        const el = document.getElementById('admin-sess-' + i);
-        if (l && el) el.textContent = l.sessionId || '';
+      function adminLinkChangePage(newPage) {
+        const all = Array.isArray(window._adminLinks) ? window._adminLinks : [];
+        const totalPages = Math.max(1, Math.ceil(all.length / ADMIN_LINKS_PER_PAGE));
+        if (newPage < 1 || newPage > totalPages) return;
+        adminLinkPage = newPage;
+        renderAdminLinks();
+        setTimeout(() => {
+          const pager = document.getElementById('adminLinksPagination');
+          if (pager && typeof pager.scrollIntoView === 'function') {
+            try { pager.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {}
+          }
+        }, 50);
+      }
+      function adminOpenLink(domain, code) {
+        const l = adminFindLink(domain, code);
+        if (!l) { showToast('Link no longer in the list — hit Search.', 'error'); return; }
+        window._adminLinkDetail = { domain: l.domain, code: l.code };
+        const shortEl = document.getElementById('adminLinkDetailShort');
+        const origEl = document.getElementById('adminLinkDetailOrig');
+        const sessEl = document.getElementById('adminLinkDetailSession');
+        const metaEl = document.getElementById('adminLinkDetailMeta');
+        const badgesEl = document.getElementById('adminLinkDetailBadges');
+        const qBtn = document.getElementById('adminLinkDetailQuarantine');
+        const bBtn = document.getElementById('adminLinkDetailBlock');
+        if (shortEl) shortEl.textContent = `${l.domain || ''}/${l.code || ''}`;
+        if (origEl) { origEl.textContent = l.original || ''; origEl.scrollTop = 0; }
+        if (sessEl) sessEl.textContent = l.sessionId || '?';
+        if (metaEl) {
+          const clicks = Number(l.clickCount) || 0;
+          const created = l.timestamp ? String(l.timestamp).slice(0, 16).replace('T', ' ') : '?';
+          metaEl.textContent = `clicks ${clicks} · created ${created}`;
+        }
+        if (badgesEl) badgesEl.innerHTML = adminLinkBadges(l);
+        if (qBtn) qBtn.textContent = l.quarantined ? 'Unquarantine' : 'Quarantine';
+        if (bBtn) bBtn.textContent = l.originalBlocked ? 'Unblock URL' : 'Block URL';
+        const overlay = document.getElementById('adminLinkDetailOverlay');
+        if (overlay) {
+          overlay.style.display = 'flex';
+          window.addEventListener('keydown', handleAdminLinkDetailEsc);
+        }
+      }
+      function handleAdminLinkDetailEsc(e) {
+        if (e.key === 'Escape') adminCloseLinkDetail();
+      }
+      function adminCloseLinkDetail() {
+        const overlay = document.getElementById('adminLinkDetailOverlay');
+        if (overlay) overlay.style.display = 'none';
+        window.removeEventListener('keydown', handleAdminLinkDetailEsc);
+        // Promo admin stays open underneath — keep the scroll lock.
+      }
+      function adminCopyDetailShort(btn) {
+        const el = document.getElementById('adminLinkDetailShort');
+        if (el) copyText(el.textContent, btn);
+      }
+      function adminCopyDetailSess(btn) {
+        const el = document.getElementById('adminLinkDetailSession');
+        if (el) copyText(el.textContent, btn);
+      }
+      function adminDetailRef() {
+        const d = window._adminLinkDetail || {};
+        const l = adminFindLink(d.domain, d.code);
+        return { d, l };
+      }
+      function adminDetailQuarantine() {
+        const { d, l } = adminDetailRef();
+        if (!d.domain) return;
+        adminCloseLinkDetail();
+        adminQuarantine(d.domain, d.code, !(l && l.quarantined));
+      }
+      function adminDetailBlock() {
+        const { d, l } = adminDetailRef();
+        if (!d.domain) return;
+        adminCloseLinkDetail();
+        if (l && l.originalBlocked) adminUnblockOrig(l.original);
+        else adminBlockOrig(l ? l.original : '');
+      }
+      function adminDetailDelete() {
+        const { d } = adminDetailRef();
+        if (!d.domain) return;
+        adminCloseLinkDetail();
+        adminDeleteLink(d.domain, d.code);
       }
       async function adminQuarantine(domain, code, q) {
         const ok = await showCustomModal({
@@ -6089,7 +6222,7 @@
           const fn = functions.httpsCallable('adminSetQuarantine');
           await fn({ adminKey: promoAdminKey(), domain, shortCode: code, quarantined: q, reason: 'ADMIN' });
           showToast(q ? 'Link quarantined.' : 'Link restored.', 'success');
-          await adminSearchLinks();
+          await adminSearchLinks(true);
         } catch (e) {
           showToast(e.message || 'Failed', 'error');
         }
@@ -6105,39 +6238,60 @@
           const fn = functions.httpsCallable('adminDeleteLink');
           await fn({ adminKey: promoAdminKey(), domain, shortCode: code });
           showToast('Link deleted.', 'success');
-          await adminSearchLinks();
+          await adminSearchLinks(true);
         } catch (e) {
           showToast(e.message || 'Delete failed', 'error');
         }
       }
-      async function adminBlockOrig(i) {
-        const l = (window._adminLinks || [])[i];
-        if (!l) return;
+      async function adminBlockOrig(original) {
+        const orig = String(original || '').trim();
+        if (!orig) { showToast('No original URL on this link.', 'error'); return; }
         const ok = await showCustomModal({
           title: "Block URL",
-          message: `Quarantine all links with this exact original and block re-mint?<br><span class="modal-url-box">${escapeHTML(adminTruncUrl(l.original))}</span>`,
+          message: `Quarantine all links with this exact original and block re-mint?<br><span class="modal-url-box">${escapeHTML(adminTruncUrl(orig))}</span>`,
           showCancel: true, danger: true, confirmText: "Block", cancelText: "Cancel"
         });
         if (!ok) return;
         try {
           const fn = functions.httpsCallable('adminBlockOriginal');
-          const res = await fn({ adminKey: promoAdminKey(), original: l.original, reason: 'ADMIN' });
+          const res = await fn({ adminKey: promoAdminKey(), original: orig, reason: 'ADMIN' });
           showToast(`Blocked. Quarantined ${res.data.swept || 0} link(s).`, 'success');
-          await adminSearchLinks();
+          await adminSearchLinks(true);
+          try { blockedLoad(); } catch (_) {}
         } catch (e) {
           showToast(e.message || 'Block failed', 'error');
+        }
+      }
+      async function adminUnblockOrig(original) {
+        const orig = String(original || '').trim();
+        if (!orig) { showToast('No original URL on this link.', 'error'); return; }
+        const ok = await showCustomModal({
+          title: "Unblock URL",
+          message: `Allow minting this original URL again?<br><span class="modal-url-box">${escapeHTML(adminTruncUrl(orig))}</span><br>Already-quarantined links stay quarantined — restore them individually if needed.`,
+          showCancel: true, danger: true, confirmText: "Unblock", cancelText: "Cancel"
+        });
+        if (!ok) return;
+        try {
+          const fn = functions.httpsCallable('adminUnblockOriginal');
+          await fn({ adminKey: promoAdminKey(), original: orig });
+          showToast('URL unblocked — minting allowed again.', 'success');
+          await adminSearchLinks(true);
+          try { blockedLoad(); } catch (_) {}
+        } catch (e) {
+          showToast(e.message || 'Unblock failed', 'error');
         }
       }
       // Blob list reads lag behind writes (eventual consistency): a code
       // created/revoked seconds ago may be missing/stale in the listing.
       // Callers pass the affected code so we re-check once after a delay.
-      async function promoLoad(awaitCode, expectAbsent) {
+      async function promoLoad(awaitCode, expectAbsent, keepPage = false) {
         const list = document.getElementById('promoCodesList');
         if (list) list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">Loading…</div>';
         try {
           const fn = functions.httpsCallable('adminListDiscountCodes');
           const res = await fn({ adminKey: promoAdminKey() });
           const codes = res.data.codes || [];
+          if (!keepPage) promoCodesPage = 1;
           renderPromoCodes(codes);
           if (awaitCode) {
             const present = codes.some((c) => c.code === awaitCode);
@@ -6155,16 +6309,28 @@
           if (list) list.innerHTML = `<div style="padding:16px; text-align:center; color:var(--danger);">${escapeHTML(e.message || 'Unlock failed')}</div>`;
         }
       }
+      // Promo codes list — paged 10/page like every other list. The full
+      // array stays cached for Stats lookups; only the page renders.
+      let promoCodesPage = 1;
+      const PROMO_CODES_PER_PAGE = 10;
       function renderPromoCodes(codes) {
         const list = document.getElementById('promoCodesList');
         // Cache for the dedicated stats screen (avoids a refetch per open).
-        window._promoCodes = Array.isArray(codes) ? codes : [];
+        const all = Array.isArray(codes) ? codes : [];
+        window._promoCodes = all;
         if (!list) return;
-        if (!codes.length) {
+        if (!all.length) {
           list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">No codes yet — create one below.</div>';
           return;
         }
-        list.innerHTML = codes.map((c) => {
+        const totalItems = all.length;
+        const totalPages = Math.max(1, Math.ceil(totalItems / PROMO_CODES_PER_PAGE));
+        if (promoCodesPage > totalPages) promoCodesPage = Math.max(1, totalPages);
+        if (promoCodesPage < 1) promoCodesPage = 1;
+        const startIndex = (promoCodesPage - 1) * PROMO_CODES_PER_PAGE;
+        const endIndex = Math.min(startIndex + PROMO_CODES_PER_PAGE, totalItems);
+        const page = all.slice(startIndex, endIndex);
+        let html = page.map((c) => {
           const used = Number(c.used || 0), max = Number(c.maxUses || 1);
           const exhausted = used >= max;
           return `<div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; ${exhausted ? 'opacity:0.6;' : ''}">
@@ -6181,6 +6347,153 @@
             <div style="font-size:0.8rem; margin-top:4px;">${c.percent}% off · <strong>${used}/${max}</strong> used · ${c.expiresAt ? `expires ${escapeHTML(c.expiresAt.slice(0, 10))}` : 'never expires'}${c.note ? ` · ${escapeHTML(c.note)}` : ''}</div>
           </div>`;
         }).join('');
+        if (totalPages > 1) {
+          html += `
+          <div id="promoCodesPagination" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 4px; padding: 12px 2px 2px; border-top: 1px solid var(--border);">
+            <div style="font-size: 0.75rem; color: var(--text-faint); font-weight: 500; letter-spacing: 0.02em;">
+              ${startIndex + 1}–${endIndex} of ${totalItems} · Page ${promoCodesPage} of ${totalPages}
+            </div>
+            <div style="display: flex; gap: 8px; margin-left: auto;">
+              <button class="session-item btn-session"
+                style="padding: 0 14px; background: ${promoCodesPage === 1 ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${promoCodesPage === 1 ? 'var(--text-muted)' : 'white'}; ${promoCodesPage === 1 ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                onclick="promoCodesChangePage(${promoCodesPage - 1})"
+                ${promoCodesPage === 1 ? 'disabled' : ''}>
+                ← Prev
+              </button>
+              <button class="session-item btn-session"
+                style="padding: 0 14px; background: ${promoCodesPage === totalPages ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${promoCodesPage === totalPages ? 'var(--text-muted)' : 'white'}; ${promoCodesPage === totalPages ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                onclick="promoCodesChangePage(${promoCodesPage + 1})"
+                ${promoCodesPage === totalPages ? 'disabled' : ''}>
+                Next →
+              </button>
+            </div>
+          </div>`;
+        }
+        list.innerHTML = html;
+      }
+      function promoCodesChangePage(newPage) {
+        const all = Array.isArray(window._promoCodes) ? window._promoCodes : [];
+        const totalPages = Math.max(1, Math.ceil(all.length / PROMO_CODES_PER_PAGE));
+        if (newPage < 1 || newPage > totalPages) return;
+        promoCodesPage = newPage;
+        renderPromoCodes(all);
+        setTimeout(() => {
+          const pager = document.getElementById('promoCodesPagination');
+          if (pager && typeof pager.scrollIntoView === 'function') {
+            try { pager.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {}
+          }
+        }, 50);
+      }
+      // --- Blocked URLs list (orphan-safe unblock) ---
+      // Blocks outlive their links by design, so this list — not link
+      // search — is the place to review and undo them. Paged 10/page like
+      // every other list.
+      let blockedPage = 1;
+      const BLOCKED_PER_PAGE = 10;
+      async function blockedLoad(keepPage = false) {
+        const list = document.getElementById('blockedList');
+        const btn = document.getElementById('blockedRefreshBtn');
+        if (!list) return;
+        list.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted); font-size:0.8rem;">Loading…</div>';
+        try {
+          if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+          const fn = functions.httpsCallable('adminListBlocked');
+          const res = await fn({ adminKey: promoAdminKey() });
+          if (!keepPage) blockedPage = 1;
+          renderBlocked(res.data.blocked || []);
+        } catch (e) {
+          console.error('blockedLoad:', e);
+          list.innerHTML = `<div style="padding:12px; text-align:center; color:var(--danger); font-size:0.8rem;">${escapeHTML(e.message || 'Load failed')}</div>`;
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = 'Refresh'; }
+        }
+      }
+      function renderBlocked(items) {
+        const list = document.getElementById('blockedList');
+        if (!list) return;
+        const all = Array.isArray(items) ? items : [];
+        window._blockedUrls = all;
+        if (!all.length) {
+          list.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted); font-size:0.8rem;">No blocked URLs.</div>';
+          return;
+        }
+        const totalItems = all.length;
+        const totalPages = Math.max(1, Math.ceil(totalItems / BLOCKED_PER_PAGE));
+        if (blockedPage > totalPages) blockedPage = Math.max(1, totalPages);
+        if (blockedPage < 1) blockedPage = 1;
+        const startIndex = (blockedPage - 1) * BLOCKED_PER_PAGE;
+        const endIndex = Math.min(startIndex + BLOCKED_PER_PAGE, totalItems);
+        const page = all.slice(startIndex, endIndex);
+        let html = page.map((b) => {
+          const label = b.original || b.host || b.hash;
+          const when = b.at ? String(b.at).slice(0, 16).replace('T', ' ') : '?';
+          const old = !b.original ? ' <span style="color:var(--text-faint);">(host only — blocked before URL tracking)</span>' : '';
+          return `<div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px;">
+            <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
+              <div style="min-width:0;">
+                <div style="font-size:0.85rem; overflow-wrap:anywhere; font-family:monospace;">${escapeHTML(label)}</div>
+                <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">${escapeHTML(when)}${old}${b.reason ? ` · ${escapeHTML(b.reason)}` : ''}</div>
+              </div>
+              <button class="btn-small btn-copy-small" style="flex-shrink:0;" onclick="blockedUnblock(${escapeJS(b.hash || '')}, ${escapeJS(label)})" title="Allow minting this URL again">Unblock</button>
+            </div>
+          </div>`;
+        }).join('');
+        if (totalPages > 1) {
+          html += `
+          <div id="blockedPagination" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 4px; padding: 12px 2px 2px; border-top: 1px solid var(--border);">
+            <div style="font-size: 0.75rem; color: var(--text-faint); font-weight: 500; letter-spacing: 0.02em;">
+              ${startIndex + 1}–${endIndex} of ${totalItems} · Page ${blockedPage} of ${totalPages}
+            </div>
+            <div style="display: flex; gap: 8px; margin-left: auto;">
+              <button class="session-item btn-session"
+                style="padding: 0 14px; background: ${blockedPage === 1 ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${blockedPage === 1 ? 'var(--text-muted)' : 'white'}; ${blockedPage === 1 ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                onclick="blockedChangePage(${blockedPage - 1})"
+                ${blockedPage === 1 ? 'disabled' : ''}>
+                ← Prev
+              </button>
+              <button class="session-item btn-session"
+                style="padding: 0 14px; background: ${blockedPage === totalPages ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${blockedPage === totalPages ? 'var(--text-muted)' : 'white'}; ${blockedPage === totalPages ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                onclick="blockedChangePage(${blockedPage + 1})"
+                ${blockedPage === totalPages ? 'disabled' : ''}>
+                Next →
+              </button>
+            </div>
+          </div>`;
+        }
+        list.innerHTML = html;
+      }
+      function blockedChangePage(newPage) {
+        const all = Array.isArray(window._blockedUrls) ? window._blockedUrls : [];
+        const totalPages = Math.max(1, Math.ceil(all.length / BLOCKED_PER_PAGE));
+        if (newPage < 1 || newPage > totalPages) return;
+        blockedPage = newPage;
+        renderBlocked(all);
+        setTimeout(() => {
+          const pager = document.getElementById('blockedPagination');
+          if (pager && typeof pager.scrollIntoView === 'function') {
+            try { pager.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {}
+          }
+        }, 50);
+      }
+      async function blockedUnblock(hash, label) {
+        const h = String(hash || '').trim();
+        if (!h) return;
+        const ok = await showCustomModal({
+          title: "Unblock URL",
+          message: `Allow minting this original URL again?<br><span class="modal-url-box">${escapeHTML(adminTruncUrl(label))}</span>`,
+          showCancel: true, danger: true, confirmText: "Unblock", cancelText: "Cancel"
+        });
+        if (!ok) return;
+        try {
+          const fn = functions.httpsCallable('adminUnblockOriginal');
+          await fn({ adminKey: promoAdminKey(), hash: h });
+          showToast('URL unblocked — minting allowed again.', 'success');
+          blockedLoad(true);
+          // Link badges may have changed too (Blocked flag now clears).
+          try { await adminSearchLinks(true); } catch (_) {}
+        } catch (e) {
+          showToast(e.message || 'Unblock failed', 'error');
+        }
       }
       // --- Feedback reports (admin moderation) ---
       // Client-side paging (10/page): the backend caps the list at 500 and a
@@ -6211,6 +6524,8 @@
         // Cache for the detail modal + pager (avoids a refetch per open/page).
         const all = Array.isArray(reports) ? reports : [];
         window._feedbackReports = all;
+        const delAllBtn = document.getElementById('feedbackDeleteAllBtn');
+        if (delAllBtn) delAllBtn.disabled = !all.length;
         if (!all.length) {
           list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">No reports yet.</div>';
           return;
@@ -6362,10 +6677,40 @@
           showToast(e.message || 'Delete failed', 'error');
         }
       }
+      async function feedbackDeleteAll() {
+        const all = Array.isArray(window._feedbackReports) ? window._feedbackReports : [];
+        if (!all.length) { showToast('No reports to delete.', 'info'); return; }
+        const n = all.length;
+        const okDel = await showCustomModal({
+          title: 'Delete all reports?',
+          message: `This permanently removes <strong>${n} report${n === 1 ? '' : 's'}</strong> from storage. This cannot be undone.<br><br>Copies already sent to your mailbox are kept.`,
+          showCancel: true,
+          danger: true,
+          confirmText: 'Delete All'
+        });
+        if (!okDel) return;
+        const btn = document.getElementById('feedbackDeleteAllBtn');
+        try {
+          if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
+          const fn = functions.httpsCallable('adminDeleteAllFeedback');
+          const res = await fn({ adminKey: promoAdminKey() });
+          const deleted = Number(res.data.deleted || 0);
+          showToast(`Deleted ${deleted} report${deleted === 1 ? '' : 's'}.`, 'info');
+          feedbackPage = 1;
+          feedbackLoad();
+        } catch (e) {
+          showToast(e.message || 'Delete all failed', 'error');
+        } finally {
+          if (btn) { btn.textContent = 'Delete All'; }
+        }
+      }
       function promoFindCached(code) {
         const all = Array.isArray(window._promoCodes) ? window._promoCodes : [];
         return all.find((c) => c && c.code === code) || null;
       }
+      // Redemptions list — paged 10/page like every other list.
+      let promoStatsPage = 1;
+      const PROMO_STATS_PER_PAGE = 10;
       function promoOpenStats(code) {
         const c = promoFindCached(code);
         if (!c) { showToast('Code no longer in the list — hit Refresh.', 'error'); return; }
@@ -6373,9 +6718,11 @@
         const codeEl = document.getElementById('promoStatsCode');
         const summaryEl = document.getElementById('promoStatsSummary');
         const countEl = document.getElementById('promoStatsCount');
-        const listEl = document.getElementById('promoStatsList');
         const used = Number(c.used || 0), max = Number(c.maxUses || 1);
         const uses = Array.isArray(c.uses) ? c.uses.slice().reverse() : [];
+        window._promoStatsUses = uses;
+        window._promoStatsUsed = used;
+        promoStatsPage = 1;
         if (codeEl) codeEl.textContent = c.code || '';
         if (summaryEl) {
           summaryEl.innerHTML = `${c.percent}% off · <strong>${used}/${max}</strong> used · ${c.expiresAt ? `expires ${escapeHTML(c.expiresAt.slice(0, 10))}` : 'never expires'}${c.note ? ` · ${escapeHTML(c.note)}` : ''}${c.createdAt ? `<div style="margin-top:4px; color:var(--text-muted);">Created ${escapeHTML(String(c.createdAt).slice(0, 10))}</div>` : ''}`;
@@ -6384,17 +6731,62 @@
           const truncated = used > uses.length ? ` · showing latest ${uses.length}` : '';
           countEl.textContent = `Redemptions (${used})${truncated}`;
         }
-        if (listEl) {
-          listEl.innerHTML = uses.length ? uses.map((u, i) =>
-            `<div class="click-entry"><div style="min-width:0;"><div class="click-time font-bold" style="overflow-wrap:anywhere;">#${uses.length - i} · ${escapeHTML(u.domain || '?')}</div><div class="click-ip">session <span style="font-family:monospace;">${escapeHTML(u.sessionId || '?')}</span> · ${escapeHTML((u.at || '').slice(0, 10))}</div></div></div>`
-          ).join('') : '<div style="padding:40px; text-align:center; color:var(--text-muted);">No redemptions yet.</div>';
-          listEl.scrollTop = 0;
-        }
+        renderPromoStatsUses();
         if (overlay) {
           overlay.style.display = 'flex';
           document.body.classList.add('modal-open');
           window.addEventListener('keydown', handlePromoStatsEsc);
         }
+      }
+      function renderPromoStatsUses() {
+        const listEl = document.getElementById('promoStatsList');
+        if (!listEl) return;
+        const uses = Array.isArray(window._promoStatsUses) ? window._promoStatsUses : [];
+        if (!uses.length) {
+          listEl.innerHTML = '<div style="padding:40px; text-align:center; color:var(--text-muted);">No redemptions yet.</div>';
+          return;
+        }
+        const totalItems = uses.length;
+        const totalPages = Math.max(1, Math.ceil(totalItems / PROMO_STATS_PER_PAGE));
+        if (promoStatsPage > totalPages) promoStatsPage = Math.max(1, totalPages);
+        if (promoStatsPage < 1) promoStatsPage = 1;
+        const startIndex = (promoStatsPage - 1) * PROMO_STATS_PER_PAGE;
+        const endIndex = Math.min(startIndex + PROMO_STATS_PER_PAGE, totalItems);
+        const page = uses.slice(startIndex, endIndex);
+        let html = page.map((u, i) =>
+          `<div class="click-entry"><div style="min-width:0;"><div class="click-time font-bold" style="overflow-wrap:anywhere;">#${totalItems - (startIndex + i)} · ${escapeHTML(u.domain || '?')}</div><div class="click-ip">session <span style="font-family:monospace;">${escapeHTML(u.sessionId || '?')}</span> · ${escapeHTML((u.at || '').slice(0, 10))}</div></div></div>`
+        ).join('');
+        if (totalPages > 1) {
+          html += `
+          <div id="promoStatsPagination" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 4px; padding: 12px 2px 2px; border-top: 1px solid var(--border);">
+            <div style="font-size: 0.75rem; color: var(--text-faint); font-weight: 500; letter-spacing: 0.02em;">
+              ${startIndex + 1}–${endIndex} of ${totalItems} · Page ${promoStatsPage} of ${totalPages}
+            </div>
+            <div style="display: flex; gap: 8px; margin-left: auto;">
+              <button class="session-item btn-session"
+                style="padding: 0 14px; background: ${promoStatsPage === 1 ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${promoStatsPage === 1 ? 'var(--text-muted)' : 'white'}; ${promoStatsPage === 1 ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                onclick="promoStatsChangePage(${promoStatsPage - 1})"
+                ${promoStatsPage === 1 ? 'disabled' : ''}>
+                ← Prev
+              </button>
+              <button class="session-item btn-session"
+                style="padding: 0 14px; background: ${promoStatsPage === totalPages ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${promoStatsPage === totalPages ? 'var(--text-muted)' : 'white'}; ${promoStatsPage === totalPages ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                onclick="promoStatsChangePage(${promoStatsPage + 1})"
+                ${promoStatsPage === totalPages ? 'disabled' : ''}>
+                Next →
+              </button>
+            </div>
+          </div>`;
+        }
+        listEl.innerHTML = html;
+        listEl.scrollTop = 0;
+      }
+      function promoStatsChangePage(newPage) {
+        const uses = Array.isArray(window._promoStatsUses) ? window._promoStatsUses : [];
+        const totalPages = Math.max(1, Math.ceil(uses.length / PROMO_STATS_PER_PAGE));
+        if (newPage < 1 || newPage > totalPages) return;
+        promoStatsPage = newPage;
+        renderPromoStatsUses();
       }
       function handlePromoStatsEsc(e) {
         if (e.key === 'Escape') promoCloseStats();
@@ -6447,7 +6839,7 @@
           const fn = functions.httpsCallable('adminDeleteDiscountCode');
           await fn({ adminKey: promoAdminKey(), code });
           showToast(`Code ${code} revoked.`, 'success');
-          await promoLoad(code, true);
+          await promoLoad(code, true, true);
         } catch (e) {
           console.error('promoRevoke:', e);
           showToast(e.message || 'Revoke failed', 'error');
@@ -7678,12 +8070,23 @@
         const item = currentLinks[index];
         window.currentStatsCode = code;
         window.currentStatsDomain = itemDomain(item);
+        // Click-entries list — paged 10/page like every other list, using
+        // the backend limit/offset window (newest first). Always reopens on
+        // the latest page.
+        window._statsOffset = 0;
 
         const overlay = document.getElementById('statsOverlay');
         overlay.style.display = 'flex';
         document.body.classList.add('modal-open');
 
         window.addEventListener('keydown', handleStatsEsc);
+        refreshStatsView();
+      }
+
+      const STATS_CLICKS_PER_PAGE = 10;
+      function statsChangePage(newOffset) {
+        const off = Math.max(0, Math.floor(Number(newOffset) || 0));
+        window._statsOffset = off;
         refreshStatsView();
       }
 
@@ -7717,7 +8120,8 @@
 
         try {
           const getStats = functions.httpsCallable('getClickStats');
-          const res = await getStats({ shortCode: item.code, domain: itemDomain(item), deleteToken: item.deleteToken, limit: 200, offset: 0 });
+          let offset = Math.max(0, Math.floor(Number(window._statsOffset) || 0));
+          let res = await getStats({ shortCode: item.code, domain: itemDomain(item), deleteToken: item.deleteToken, limit: STATS_CLICKS_PER_PAGE, offset });
 
           totalCount.textContent = res.data.clickCount;
 
@@ -7732,9 +8136,19 @@
           if (mobileListEl) mobileListEl.textContent = res.data.clickCount;
 
           if (res.data.clicks.length === 0) {
-            list.innerHTML = '<div style="padding:40px; text-align:center; color:var(--text-muted);">No clicks recorded yet.</div>';
-            if (purgeBtn) purgeBtn.style.display = 'none';
-            return;
+            // Page emptied by a delete (or offset past the end): step back
+            // once and refetch instead of stranding on an empty page.
+            if (offset > 0) {
+              offset = Math.max(0, offset - STATS_CLICKS_PER_PAGE);
+              window._statsOffset = offset;
+              res = await getStats({ shortCode: item.code, domain: itemDomain(item), deleteToken: item.deleteToken, limit: STATS_CLICKS_PER_PAGE, offset });
+              totalCount.textContent = res.data.clickCount;
+            }
+            if (res.data.clicks.length === 0) {
+              list.innerHTML = '<div style="padding:40px; text-align:center; color:var(--text-muted);">No clicks recorded yet.</div>';
+              if (purgeBtn) purgeBtn.style.display = 'none';
+              return;
+            }
           }
 
           if (purgeBtn) purgeBtn.style.display = 'flex'; // or 'block' depending on styling, flex is defined in css
@@ -7764,9 +8178,33 @@
             </div>
           `;
           });
-          if (res.data.hasMore) {
-            const total = Number(res.data.total) || res.data.clicks.length;
-            html += `<div style="padding:16px; text-align:center; color:var(--text-muted); font-size:0.8rem;">Showing latest ${res.data.clicks.length} of ${total} — ledger keeps every click forever, use search/pagination for older.</div>`;
+          // Newest-first backend window: offset 0 is the latest page.
+          const total = Number(res.data.total) || res.data.clicks.length;
+          const from = total === 0 ? 0 : offset + 1;
+          const to = Math.min(offset + res.data.clicks.length, total);
+          const hasOlder = !!res.data.hasMore;
+          const hasNewer = offset > 0;
+          if (hasNewer || hasOlder || total > res.data.clicks.length) {
+            html += `
+            <div id="statsPagination" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 4px; padding: 12px 2px 2px; border-top: 1px solid var(--border);">
+              <div style="font-size: 0.75rem; color: var(--text-faint); font-weight: 500; letter-spacing: 0.02em;">
+                ${from}–${to} of ${total} · Page ${Math.floor(offset / STATS_CLICKS_PER_PAGE) + 1} of ${Math.max(1, Math.ceil(total / STATS_CLICKS_PER_PAGE))}
+              </div>
+              <div style="display: flex; gap: 8px; margin-left: auto;">
+                <button class="session-item btn-session"
+                  style="padding: 0 14px; background: ${!hasNewer ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${!hasNewer ? 'var(--text-muted)' : 'white'}; ${!hasNewer ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                  onclick="statsChangePage(${offset - STATS_CLICKS_PER_PAGE})"
+                  ${!hasNewer ? 'disabled' : ''}>
+                  ← Newer
+                </button>
+                <button class="session-item btn-session"
+                  style="padding: 0 14px; background: ${!hasOlder ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${!hasOlder ? 'var(--text-muted)' : 'white'}; ${!hasOlder ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                  onclick="statsChangePage(${offset + STATS_CLICKS_PER_PAGE})"
+                  ${!hasOlder ? 'disabled' : ''}>
+                  Older →
+                </button>
+              </div>
+            </div>`;
           }
           list.innerHTML = html;
 
@@ -7866,6 +8304,7 @@
                 message: "All click data has been deleted successfully.",
                 showCancel: false
               });
+              window._statsOffset = 0;
               refreshStatsView();
             } catch (e) {
               // Close loading modal first
@@ -8768,7 +9207,7 @@
         <div id="promoCodesList"></div>
       </div>
       <div id="linkMgmtView" style="display: none;">
-        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Moderation: values redacted by default, click reveal to show. All actions audit-logged.</p>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Moderation: click a link for details and actions. All actions audit-logged.</p>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
           <input type="text" id="adminSearchDomain" placeholder="domain (exact)" maxlength="253"
             style="height: 40px; background: rgba(0,0,0,0.4); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px;">
@@ -8782,13 +9221,22 @@
         </label>
         <button class="modal-btn modal-btn-ok" id="adminSearchBtn" onclick="adminSearchLinks()" style="width: 100%; margin-bottom: 12px;">Search</button>
         <div id="adminLinksList"></div>
+        <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
+            <h3 style="margin: 0; font-size: 0.9rem;">Blocked URLs</h3>
+            <button class="btn-small btn-copy-small" id="blockedRefreshBtn" onclick="blockedLoad()" title="Reload blocklist">Refresh</button>
+          </div>
+          <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 8px;">Blocks survive link deletions — unblock here even when no link is left.</p>
+          <div id="blockedList"></div>
+        </div>
       </div>
       <div id="feedbackView" style="display: none;">
         <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Issue reports from the Report page. Newest first. Click a report to read it in full.</p>
-        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
           <button class="modal-btn modal-btn-ok" id="feedbackRefreshBtn" onclick="feedbackLoad(true)" style="flex: 1;">Refresh</button>
-          <button class="modal-btn modal-btn-cancel" id="feedbackTestMailBtn" onclick="feedbackTestMail()" style="flex: 1;">Send test mail</button>
+          <button class="modal-btn modal-btn-danger" id="feedbackDeleteAllBtn" onclick="feedbackDeleteAll()" style="flex: 1;">Delete All</button>
         </div>
+        <button class="modal-btn modal-btn-cancel" id="feedbackTestMailBtn" onclick="feedbackTestMail()" style="width: 100%; margin-bottom: 12px;">Send test mail</button>
         <div id="feedbackList"></div>
       </div>
     </div>
@@ -8839,6 +9287,34 @@
         <button class="modal-btn modal-btn-cancel" onclick="feedbackCloseDetail()" style="flex: 1;">← Back to reports</button>
         <button class="modal-btn modal-btn-danger" id="feedbackDetailDelete" style="flex: 1;">Delete</button>
       </div>
+    </div>
+  </div>
+
+  <div id="adminLinkDetailOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 50000; align-items: center; justify-content: center; padding: 20px;">
+    <div class="modal-card" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px;">
+        <h2 class="modal-title" style="margin: 0;">Link details</h2>
+        <button class="copy-btn" onclick="adminCloseLinkDetail()" style="background: transparent; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">&times;</button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px; min-width: 0; flex-wrap: wrap;">
+        <div id="adminLinkDetailShort" style="font-family: monospace; font-weight: 700; overflow-wrap: anywhere;"></div>
+        <button class="btn-small btn-copy-small" onclick="adminCopyDetailShort(this)" title="Copy short link">Copy</button>
+      </div>
+      <div id="adminLinkDetailBadges" style="display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap;"></div>
+      <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 6px;">Original URL</div>
+      <div id="adminLinkDetailOrig" style="font-size: 0.85rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(0,0,0,0.32); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: 40vh; overflow-y: auto; font-family: monospace;"></div>
+      <div style="display: flex; align-items: center; gap: 8px; margin-top: 12px; min-width: 0; flex-wrap: wrap;">
+        <span style="font-size: 0.75rem; color: var(--text-muted);">session</span>
+        <div id="adminLinkDetailSession" style="font-family: monospace; font-weight: 700; overflow-wrap: anywhere;"></div>
+        <button class="btn-small btn-copy-small" onclick="adminCopyDetailSess(this)" title="Copy session ID">Copy</button>
+      </div>
+      <div id="adminLinkDetailMeta" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;"></div>
+      <div style="display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap;">
+        <button class="btn-small btn-copy-small" id="adminLinkDetailQuarantine" onclick="adminDetailQuarantine()" style="flex: 1; min-width: 120px;">Quarantine</button>
+        <button class="btn-small btn-copy-small" id="adminLinkDetailBlock" onclick="adminDetailBlock()" style="flex: 1; min-width: 120px;">Block URL</button>
+        <button class="btn-small btn-delete-small" onclick="adminDetailDelete()" style="flex: 1; min-width: 120px;">Delete</button>
+      </div>
+      <button class="modal-btn modal-btn-cancel" onclick="adminCloseLinkDetail()" style="width: 100%; margin-top: 8px;">← Back to links</button>
     </div>
   </div>
 
