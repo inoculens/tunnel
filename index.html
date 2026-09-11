@@ -5953,7 +5953,21 @@
         if (!overlay) return;
         overlay.style.display = 'flex';
         document.body.classList.add('modal-open');
+        window.addEventListener('keydown', handlePromoAdminEsc);
         promoShowMain();
+      }
+      // Esc closes the Admin panel like every other dialogue — but yields to
+      // anything stacked above it (confirm modal, report detail, code
+      // stats), which have their own Esc handlers and close first.
+      function handlePromoAdminEsc(e) {
+        if (!e || e.key !== 'Escape') return;
+        const modal = document.getElementById('modalOverlay');
+        const detail = document.getElementById('feedbackDetailOverlay');
+        const stats = document.getElementById('promoStatsOverlay');
+        if ((modal && modal.style.display === 'flex') ||
+            (detail && detail.style.display === 'flex') ||
+            (stats && stats.style.display === 'flex')) return;
+        closePromoAdmin();
       }
       function closePromoAdmin() {
         const overlay = document.getElementById('promoAdminOverlay');
@@ -5961,6 +5975,7 @@
         const detail = document.getElementById('feedbackDetailOverlay');
         if (detail) detail.style.display = 'none';
         window.removeEventListener('keydown', handleFeedbackDetailEsc);
+        window.removeEventListener('keydown', handlePromoAdminEsc);
         document.body.classList.remove('modal-open');
       }
       function adminShowTab(tab) {
