@@ -24,9 +24,19 @@ function toggleMobileMenu(open) {
 // stored in localStorage ('tunnel_consent' = 'granted' | 'denied').
 // Each page head contains a consent-default-denied gtag stub; this module
 // injects the loader + config on accept (or on load if already granted).
+// Scoped to the app host only: short-link/redirect origins (s.*,
+// custom domains, infra hosts) never load analytics, even with consent set.
 (function () {
-  var GA_ID = 'G-6XQPYNCYNJ';
+  var GA_ID = 'G-40PHLHE0JN';
   var CONSENT_KEY = 'tunnel_consent';
+
+  function appHostAllowed() {
+    try {
+      var h = window.location.hostname || '';
+      return h === 'tunnel.inoculens.com' ||
+        h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '';
+    } catch (e) { return false; }
+  }
 
   function storageGet(k) {
     try { return window.localStorage.getItem(k); } catch (e) { return null; }
@@ -36,6 +46,7 @@ function toggleMobileMenu(open) {
   }
 
   function loadGtag() {
+    if (!appHostAllowed()) return;
     if (window.__tunnelGtagLoaded) return;
     window.__tunnelGtagLoaded = true;
     try {
@@ -86,6 +97,9 @@ function toggleMobileMenu(open) {
   window.tunnelSetConsent = setConsent;
 
   function initConsent() {
+    // Off the app host: no banner, no loader, no stored-choice reads that
+    // could fire anything — redirect origins stay fully untracked.
+    if (!appHostAllowed()) return;
     var choice = storageGet(CONSENT_KEY);
     if (choice === 'granted') {
       loadGtag();

@@ -11,12 +11,16 @@
     gtag('consent', 'default', { ad_storage: 'denied', analytics_storage: 'denied', wait_for_update: 500 });
     gtag('js', new Date());
     try {
-      if (localStorage.getItem('tunnel_consent') === 'granted') {
+      // App host only (tunnel.inoculens.com + local dev): short-link and
+      // redirect origins never pre-load analytics.
+      var __h = window.location.hostname || '';
+      var __app = (__h === 'tunnel.inoculens.com' || __h === 'localhost' || __h === '127.0.0.1' || __h === '::1' || __h === '');
+      if (__app && localStorage.getItem('tunnel_consent') === 'granted') {
         var __ga = document.createElement('script');
         __ga.async = true;
-        __ga.src = 'https://www.googletagmanager.com/gtag/js?id=G-6XQPYNCYNJ';
+        __ga.src = 'https://www.googletagmanager.com/gtag/js?id=G-40PHLHE0JN';
         document.head.appendChild(__ga);
-        gtag('config', 'G-6XQPYNCYNJ');
+        gtag('config', 'G-40PHLHE0JN');
       }
     } catch (e) {}
   </script>
