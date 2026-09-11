@@ -1833,8 +1833,10 @@
       background: rgba(0, 0, 0, 0.6);
       backdrop-filter: blur(10px);
       -webkit-backdrop-filter: blur(10px);
-      z-index: 50000;
-      /* Increased to ensure it appears above all other modals */
+      z-index: 60000;
+      /* Topmost dialogue layer: confirm/loading/error must paint above every
+         parent that can spawn them (admin + detail + stats overlays all sit
+         at 50000 or below). Toasts (100000) stay above this by design. */
       display: none;
       align-items: center;
       justify-content: center;
@@ -9400,7 +9402,7 @@
       </div>
       <div id="adminLinkDetailBadges" style="display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap;"></div>
       <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 6px;">Original URL</div>
-      <div id="adminLinkDetailOrig" style="font-size: 0.85rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(0,0,0,0.32); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: 40vh; overflow-y: auto; font-family: monospace;"></div>
+      <div id="adminLinkDetailOrig" style="font-size: 0.85rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; background: rgba(0,0,0,0.32); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: calc(3 * 1.6em + 24px); overflow-y: auto; overflow-x: hidden; font-family: monospace;"></div>
       <div style="display: flex; align-items: center; gap: 8px; margin-top: 12px; min-width: 0; flex-wrap: wrap;">
         <span style="font-size: 0.75rem; color: var(--text-muted);">session</span>
         <div id="adminLinkDetailSession" style="font-family: monospace; font-weight: 700; overflow-wrap: anywhere;"></div>
