@@ -162,7 +162,7 @@ async function sendFeedbackEmail(doc, s) {
       `New Tunnel issue report ${doc.id}`,
       `Date: ${at}`,
       `Session: ${doc.sessionId}`,
-      `IP hash: ${doc.ipHash || "-"}`,
+      `IP: ${doc.ip || "-"}`,
       `UA: ${doc.ua || "-"}`,
       ``,
       String(doc.message || ""),
@@ -663,7 +663,9 @@ const actions = {
 
   // ----- issue reports (no login; session linked silently) -----
   // Storage: feedback/<date>-<ts36>-<rand8> -> { id, sessionId, message,
-  // createdAt, ipHash, ua }. Rate-limited per IP + per session, with a
+  // createdAt, ip, ua }. The reporter IP is stored in plain text (operator
+  // choice, for abuse triage) — visible only in the admin viewer + notify
+  // mail, never to reporters. Rate-limited per IP + per session, with a
   // risk-based Turnstile challenge on fast loops (same pattern as mint).
   async submitFeedback(s, p, event) {
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
@@ -685,10 +687,11 @@ const actions = {
     if (message.length < 10) return fail(400, "invalid-argument", "Please describe the issue in a bit more detail (at least 10 characters).");
     if (message.length > 5000) return fail(400, "invalid-argument", "Please keep it under 5000 characters.");
     await needSession(s, p.sessionId);
-    let ipHash = null;
+    // Plain-text reporter IP (operator choice for abuse triage). Only ever
+    // surfaces in the admin viewer + notify mail, never to reporters.
+    let reporterIp = null;
     try {
-      const { createHash } = await import("node:crypto");
-      ipHash = createHash("sha256").update(String(ip)).digest("hex").slice(0, 16);
+      reporterIp = String(trustedRawIp(event) || "").slice(0, 64) || null;
     } catch { /* ignore */ }
     let ua = null;
     try {
@@ -704,7 +707,7 @@ const actions = {
       sessionId: p.sessionId,
       message,
       createdAt: new Date(now).toISOString(),
-      ipHash,
+      ip: reporterIp,
       ua,
     };
     await s.setJSON(`feedback/${id}`, doc);
@@ -728,7 +731,7 @@ const actions = {
         sessionId: String(d.sessionId || ""),
         message: String(d.message || "").slice(0, 5000),
         createdAt: d.createdAt || null,
-        ipHash: d.ipHash || null,
+        ip: d.ip || null,
         ua: d.ua || null,
       }));
     out.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
@@ -763,7 +766,7 @@ const actions = {
       sessionId: "(admin test)",
       message: "Tunnel feedback mail is working. You can delete this message.",
       createdAt: new Date().toISOString(),
-      ipHash: null,
+      ip: null,
       ua: null,
     };
     const r = await sendFeedbackEmail(probe, s);

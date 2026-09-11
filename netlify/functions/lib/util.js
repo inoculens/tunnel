@@ -14,7 +14,7 @@
  *   wallet/meta                     { nextIndex }
  *   rl/<name>/<ip>/<windowMinute>   { count }
  *   feedback/<date>-<ts36>-<rand8>   { id, sessionId, message, createdAt,
- *                                     ipHash, ua }
+ *                                     ip, ua }
  */
 import { getStore, connectLambda } from "@netlify/blobs";
 import { randomBytes } from "node:crypto";

@@ -6217,7 +6217,7 @@
           const preview = msg.length > 180 ? msg.slice(0, 180) + '…' : msg;
           return `<div onclick="feedbackOpen(${escapeJS(r.id)})" title="Open full report" style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; cursor:pointer;">
             <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
-              <div style="font-size:0.75rem; color:var(--text-muted); min-width:0;">session <span style="font-family:monospace; color:var(--text); overflow-wrap:anywhere;">${escapeHTML(r.sessionId || '?')}</span> · ${escapeHTML(when)}</div>
+              <div style="font-size:0.75rem; color:var(--text-muted); min-width:0;">session <span style="font-family:monospace; color:var(--text); overflow-wrap:anywhere;">${escapeHTML(r.sessionId || '?')}</span> · IP <span style="font-family:monospace; color:var(--text); overflow-wrap:anywhere;">${escapeHTML(feedbackIpLabel(r))}</span> · ${escapeHTML(when)}</div>
               <div style="display:flex; gap:6px; flex-shrink:0;" onclick="event.stopPropagation()">
                 <button class="btn-small btn-copy-small" onclick="copyText(${escapeJS(r.sessionId || '')}, this)" title="Copy full session ID">Copy ID</button>
                 <button class="btn-small btn-delete-small" onclick="feedbackDelete(${escapeJS(r.id)})" title="Delete report">Delete</button>
@@ -6272,16 +6272,22 @@
         const all = Array.isArray(window._feedbackReports) ? window._feedbackReports : [];
         return all.find((r) => r && r.id === id) || null;
       }
+      // Plain-text reporter IP.
+      function feedbackIpLabel(r) {
+        return (r && r.ip) ? String(r.ip) : '?';
+      }
       function feedbackOpen(id) {
         const r = feedbackFindCached(id);
         if (!r) { showToast('Report no longer in the list — hit Refresh.', 'error'); return; }
         const overlay = document.getElementById('feedbackDetailOverlay');
         const sessEl = document.getElementById('feedbackDetailSession');
         const whenEl = document.getElementById('feedbackDetailWhen');
+        const ipEl = document.getElementById('feedbackDetailIp');
         const msgEl = document.getElementById('feedbackDetailMessage');
         const delBtn = document.getElementById('feedbackDetailDelete');
         if (sessEl) sessEl.textContent = r.sessionId || '?';
         if (whenEl) whenEl.textContent = r.createdAt ? String(r.createdAt).slice(0, 16).replace('T', ' ') : '?';
+        if (ipEl) ipEl.textContent = feedbackIpLabel(r);
         if (msgEl) { msgEl.textContent = r.message || ''; msgEl.scrollTop = 0; }
         if (delBtn) delBtn.onclick = () => feedbackDelete(r.id);
         if (overlay) {
@@ -8795,7 +8801,11 @@
         <div id="feedbackDetailSession" style="font-family: monospace; font-weight: 700; overflow-wrap: anywhere;"></div>
         <button class="btn-small btn-copy-small" onclick="feedbackCopyDetailSession(this)" title="Copy full session ID">Copy</button>
       </div>
-      <div id="feedbackDetailWhen" style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;"></div>
+      <div id="feedbackDetailWhen" style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;"></div>
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; min-width: 0; flex-wrap: wrap;">
+        <span style="font-size: 0.75rem; color: var(--text-muted);">IP</span>
+        <div id="feedbackDetailIp" style="font-family: monospace; font-weight: 700; overflow-wrap: anywhere;"></div>
+      </div>
       <div id="feedbackDetailMessage" style="font-size: 0.9rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(0,0,0,0.32); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: 40vh; overflow-y: auto;"></div>
       <div style="display: flex; gap: 8px; margin-top: 16px;">
         <button class="modal-btn modal-btn-cancel" onclick="feedbackCloseDetail()" style="flex: 1;">← Back to reports</button>
