@@ -33,6 +33,9 @@ import {
   cfDeleteCustomHostname,
   btcUsdPrice,
   quoteFor,
+  satsFromBtc,
+  satsToBtc,
+  isRenewalQuote,
   checkUrlSafety,
   countDayKey,
   bumpDayCount,
@@ -1539,6 +1542,31 @@ const actions = {
 
   async removeDiscountCode(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    // Funds-in-flight guard: voiding discounted history while a discounted
+    // payment is unconfirmed (or partially confirmed) would make that money
+    // invisible forever. If ANY displayed address shows movement, refuse and
+    // tell the user to wait for confirmation first.
+    try {
+      const addrs = [];
+      if (doc.quote?.address) addrs.push(doc.quote.address);
+      for (const h of Array.isArray(doc.quoteHistory) ? doc.quoteHistory : []) {
+        if (h?.address && h?.discountPercent) addrs.push(h.address);
+      }
+      for (const a of [...new Set(addrs)].slice(0, 5)) {
+        const res = await fetch(`https://mempool.space/api/address/${encodeURIComponent(a)}`);
+        if (!res.ok) continue;
+        const data = await res.json().catch(() => null);
+        const chain = (Number(data?.chain_stats?.funded_txo_sum) || 0) - (Number(data?.chain_stats?.spent_txo_sum) || 0);
+        const mem = (Number(data?.mempool_stats?.funded_txo_sum) || 0) - (Number(data?.mempool_stats?.spent_txo_sum) || 0);
+        if (chain > 0 || mem > 0) {
+          return fail(409, "failed-precondition", "Payment detected to this domain's address — wait for confirmation before removing the code.");
+        }
+      }
+    } catch (e) {
+      console.error(`removeDiscountCode pre-check failed for ${doc.domain}:`, e?.message || e);
+      // Fail-closed here is wrong (price feed hiccup shouldn't trap users),
+      // but log loudly: the void below is irreversible for discounted history.
+    }
     doc.discount = null;
     // Coverage follows the money, not the removed deal: a payment within
     // the last year still covers (recomputed from it); otherwise coverage
@@ -1591,28 +1619,66 @@ const actions = {
       e.code = "resource-exhausted";
       throw e;
     }
+    // Idempotency gate (mirrors the hourly watcher): an already-covered paid
+    // domain is a no-op. Without this, every check would stack another free
+    // year — and concurrent double-fires would double-extend one payment.
+    if (doc.paymentStatus === "paid" && coverageValid(doc)) {
+      return ok({
+        paid: true,
+        alreadyCovered: true,
+        status: doc.status,
+        coverageExpiresAt: doc.coverageExpiresAt || null,
+        coverageLifetime: doc.coverageLifetime === true,
+        coverageValid: true,
+      });
+    }
+    const lastPaidAt = doc.lastPaymentAt ? new Date(doc.lastPaymentAt).getTime() : 0;
     const candidates = [];
-    if (doc.quote?.address && doc.quote?.amount) {
+    // Unpaid domains: current quote always counts (even expired — late payers
+    // must still credit). Paid-but-lapsed domains: only a genuine renewal
+    // quote (unconsumed, issued after the last payment) plus retired history.
+    // Consumed (already-credited) quotes are NEVER re-checked — otherwise
+    // every re-check would instantly "re-pay" and extend coverage for free.
+    if (doc.paymentStatus !== "paid") {
+      if (doc.quote?.address && doc.quote?.amount) {
+        candidates.push({ address: doc.quote.address, amount: doc.quote.amount, current: true });
+      }
+    } else if (doc.quote?.address && doc.quote?.amount && isRenewalQuote(doc.quote, lastPaidAt)) {
       candidates.push({ address: doc.quote.address, amount: doc.quote.amount, current: true });
     }
     for (const h of Array.isArray(doc.quoteHistory) ? doc.quoteHistory : []) {
       if (h?.address && h?.amount) candidates.push({ address: h.address, amount: h.amount, current: false });
     }
     if (!candidates.length) return ok({ paid: false, reason: "no-quote" });
-    const toSatsStr = (v) => {
-      const parts = String(v).split(".");
-      const whole = parts[0] || "0";
-      const frac = (parts[1] || "").padEnd(8, "0").slice(0, 8);
-      return BigInt(whole === "" ? "0" : whole) * 100000000n + BigInt(frac === "" ? "0" : frac);
-    };
+    let seenUnconfirmed = false;
+    let partial = null;
     try {
       for (const c of candidates) {
         const res = await fetch(`https://mempool.space/api/address/${encodeURIComponent(c.address)}`);
         if (!res.ok) continue;
         const data = await res.json().catch(() => null);
         const stats = data?.chain_stats || {};
+        const mem = data?.mempool_stats || {};
         const bal = BigInt(Number(stats.funded_txo_sum) || 0) - BigInt(Number(stats.spent_txo_sum) || 0);
-        if (bal >= toSatsStr(c.amount)) {
+        const memBal = BigInt(Number(mem.funded_txo_sum) || 0) - BigInt(Number(mem.spent_txo_sum) || 0);
+        if (memBal > 0n) seenUnconfirmed = true;
+        const required = satsFromBtc(c.amount);
+        if (bal >= required) {
+          // Race guard: re-read before writing. If another check/watcher
+          // activated between our read and now, take the no-op path instead
+          // of stacking a second year for one payment.
+          const seenPaidAt = doc.lastPaymentAt || null;
+          const latest = await freshGet(s, `domain/${doc.domain}`, { type: "json" }).catch(() => null);
+          if (latest && (latest.lastPaymentAt || null) !== seenPaidAt && latest.paymentStatus === "paid" && coverageValid(latest)) {
+            return ok({
+              paid: true,
+              alreadyCovered: true,
+              status: latest.status,
+              coverageExpiresAt: latest.coverageExpiresAt || null,
+              coverageLifetime: latest.coverageLifetime === true,
+              coverageValid: true,
+            });
+          }
           const now = Date.now();
           doc.paymentStatus = "paid";
           const currentExp = coverageValid(doc) ? new Date(doc.coverageExpiresAt).getTime() : now;
@@ -1651,12 +1717,18 @@ const actions = {
             coverageValid: coverageValid(doc),
           });
         }
+        // Exact amounts are required (copy button shows the full sum, fee is
+        // separate) — but a confirmed shortfall must be REPORTED with numbers
+        // so the user can top up the same address instead of hanging blind.
+        if (bal > 0n && !partial) {
+          partial = { received: satsToBtc(bal), required: c.amount, address: c.address };
+        }
       }
     } catch (e) {
       console.error(`checkPaymentNow failed for ${doc.domain}:`, e?.message || e);
       return fail(503, "unavailable", "Balance check failed, try again.");
     }
-    return ok({ paid: false, status: doc.status, coverageValid: coverageValid(doc) });
+    return ok({ paid: false, status: doc.status, coverageValid: coverageValid(doc), seenUnconfirmed, partial });
   },
 
   async getBtcPrice() {

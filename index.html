@@ -3449,8 +3449,7 @@
             </div>
             <p id="quoteExpiry" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 12px;"></p>
             <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center;">
-              <p style="font-size: 0.75rem; color: #f5a623;">⚡ Payment is automatically detected. Your domain activates
-                within minutes of blockchain confirmation.</p>
+              <p style="font-size: 0.75rem; color: #f5a623;">⚡ Payment is automatically detected — send the exact amount shown (fee is separate). Your domain activates within a couple of minutes of its first blockchain confirmation; keep this tab open.</p>
               <div style="display: flex; gap: 8px; flex-shrink: 0; margin-left: 8px;">
                 <button class="modal-btn modal-btn-ok" id="checkPayBtn" onclick="checkPaymentNow()"
                   style="height: 32px; font-size: 0.75rem; width: auto; padding: 0 12px;">I've paid — Check now</button>
@@ -5677,13 +5676,17 @@
 
       // Instant on-demand check (no admin token): same balance logic as the
       // hourly watcher but scoped to this domain. Hourly covers closed-tab.
-      async function checkPaymentNow() {
+      // Shared guard with the auto-poller below so manual + auto never fire
+      // together (the backend allows ~2 checks/min per domain).
+      async function checkPaymentNow(isAuto = false) {
         const btn = document.getElementById('checkPayBtn');
         const banner = document.getElementById('paymentStatusBanner');
-        if (!pendingDomain || !getSessionId()) return;
+        if (!pendingDomain || !getSessionId()) return false;
+        if (window._checkingNow) return false;
+        window._checkingNow = true;
         try {
           if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
-          if (banner) { banner.style.display = 'block'; banner.textContent = 'Checking blockchain…'; }
+          if (banner && !isAuto) { banner.style.display = 'block'; banner.textContent = 'Checking blockchain…'; }
           const fn = functions.httpsCallable('checkPaymentNow');
           const res = await fn({ domain: pendingDomain, sessionId: getSessionId() });
           if (res.data && res.data.paid) {
@@ -5696,16 +5699,32 @@
             }
             await loadUserDomains();
             setTimeout(() => closeDomainManager(), 2000);
+            return true;
           } else {
             if (banner) {
               banner.style.display = 'block';
-              banner.textContent = 'Not yet seen on-chain. Keep this tab open and try again in a minute.';
+              banner.style.background = 'rgba(255,255,255,0.05)';
+              banner.style.borderColor = 'var(--border)';
+              banner.style.color = '#aaaaaa';
+              const d = res.data || {};
+              if (d.partial && d.partial.received && d.partial.required) {
+                banner.textContent = `Partial payment detected (${escapeHTML(d.partial.received)} of ${escapeHTML(d.partial.required)} BTC confirmed). Send the exact remainder to the same address — then wait for 1 confirmation.`;
+              } else if (d.seenUnconfirmed) {
+                banner.textContent = 'Payment seen in the network — waiting for its first blockchain confirmation, then this activates automatically. Keep this tab open.';
+              } else if (!isAuto) {
+                banner.textContent = 'Not yet seen on-chain. Keep this tab open and try again in a minute.';
+              }
             }
+            return false;
           }
         } catch (e) {
           console.error('checkPaymentNow:', e);
-          showToast(e.message || 'Check failed', 'error');
+          // 429 (auto + manual colliding, or fast double-click) is routine —
+          // stay quiet and let the next cycle handle it.
+          if (!isAuto) showToast(e.message || 'Check failed', 'error');
+          return false;
         } finally {
+          window._checkingNow = false;
           if (btn) { btn.disabled = false; btn.textContent = "I've paid — Check now"; }
         }
       }
@@ -6246,6 +6265,7 @@
         }
 
         const startTime = Date.now();
+        let pollTick = 0;
 
         _paymentPollInterval = setInterval(async () => {
           // Stop if modal was closed or max time exceeded
@@ -6262,6 +6282,15 @@
               banner.style.color = '#f5a623';
             }
             return;
+          }
+          pollTick++;
+          // Every ~60s, run the real chain check (activation within ~1–2 min
+          // of the first confirmation with the tab open; ~1 call/min stays
+          // well under the backend's check budget). The 10s status mirror
+          // below picks up the activation on its next tick.
+          if (pollTick % 6 === 0 && pendingDomain === domain) {
+            try { await checkPaymentNow(true); } catch (e) { /* next cycle */ }
+            if (document.getElementById('paymentStatusBanner')?.textContent?.startsWith('✅')) return;
           }
 
           try {

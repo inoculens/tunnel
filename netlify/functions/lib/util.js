@@ -664,6 +664,35 @@ export function quoteFor(discountPct, price) {
   };
 }
 
+// ---------- Money math (shared, exact — never float) ----------
+// BTC amounts are decimal strings with up to 8 places. Converting through
+// Number()*1e8 can be off by a sat (e.g. 0.00000001 -> 0). String-split is
+// exact. Single implementation used by the watcher and checkPaymentNow so
+// the two paths can never disagree on what "paid in full" means.
+
+export function satsFromBtc(btcAmount) {
+  const parts = String(btcAmount).split(".");
+  const whole = parts[0] || "0";
+  const frac = (parts[1] || "").padEnd(8, "0").slice(0, 8);
+  const w = whole === "" || whole === "-" ? "0" : whole;
+  const f = frac === "" ? "0" : frac;
+  if (!/^\d+$/.test(w) || !/^\d+$/.test(f)) throw new Error("Invalid BTC amount.");
+  return BigInt(w) * 100000000n + BigInt(f);
+}
+
+export const satsToBtc = (sats) => (Number(sats) / 1e8).toFixed(8);
+
+// Genuine renewal quote? Mirrors the hourly watcher: unconsumed, issued after
+// the last payment. Legacy quotes without createdAt count (otherwise old
+// domains stall forever).
+export function isRenewalQuote(quote, lastPaymentAtMs) {
+  if (!quote?.address || !quote?.amount || quote?.paidAt) return false;
+  const lastPaid = Number.isFinite(Number(lastPaymentAtMs)) ? Number(lastPaymentAtMs) : 0;
+  const quoteAt = quote.createdAt ? new Date(quote.createdAt).getTime() : Infinity;
+  if (quote.createdAt && !Number.isFinite(quoteAt)) return false;
+  return quoteAt > lastPaid;
+}
+
 // ---------- URL safety (Safe Browsing proactive at mint) ----------
 // Cache: safety/<sha256(host+path)> -> { safe, reason, at }. TTL 24h default.
 // Fail-open with log when key missing/timeout (don't break youtubers), but

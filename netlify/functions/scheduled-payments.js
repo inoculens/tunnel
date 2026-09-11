@@ -7,16 +7,13 @@
  * Netlify runs this automatically thanks to the `config.schedule` export.
  * No cron service needed. Uses only the public mempool.space API.
  */
-import { store, listAll, cfConfig, cfEnsureCustomHostname, coverageValid, COVERAGE_YEAR_MS, freshGet } from "./lib/util.js";
+import { store, listAll, cfConfig, cfEnsureCustomHostname, coverageValid, COVERAGE_YEAR_MS, freshGet, satsFromBtc } from "./lib/util.js";
 
 export const config = { schedule: "@hourly" };
 
 function toSats(btcAmount) {
-  // String-split to avoid float error: "0.00000001" -> 1n, never 0 from 1e-8 math.
-  const parts = String(btcAmount).split(".");
-  const whole = parts[0] || "0";
-  const frac = (parts[1] || "").padEnd(8, "0").slice(0, 8);
-  return Number(BigInt(whole === "" ? "0" : whole) * 100000000n + BigInt(frac === "" ? "0" : frac));
+  // Exact via shared helper (static import below) — never Number()*1e8 float.
+  return Number(satsFromBtc(btcAmount));
 }
 
 async function addressBalanceSats(address) {
