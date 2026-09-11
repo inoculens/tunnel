@@ -152,6 +152,14 @@
       background: #d9d9d9;
     }
 
+    /* Uniform 16px vertical rhythm: label sits 10px below the char-count
+       (which carries 6px) and the Send button sits 16px below the field. */
+    #reportSend {
+      margin: 1rem auto 0;
+      width: 33%;
+      min-width: 160px;
+    }
+
     #reportError {
       margin-top: 1rem;
       padding: 0.75rem 1rem;
@@ -239,7 +247,7 @@
         <label for="reportText" style="display:block; font-size:0.85rem; font-weight:600; color:var(--text); margin-bottom:8px;">Describe the issue</label>
         <textarea id="reportText" maxlength="5000" placeholder="What happened? What did you expect? Steps to reproduce…"></textarea>
         <div class="char-count"><span id="reportCount">0</span> / 5000</div>
-        <label for="reportContact" style="display:block; font-size:0.85rem; font-weight:600; color:var(--text); margin:1rem 0 8px;">Do you want to be contacted about this?</label>
+        <label for="reportContact" style="display:block; font-size:0.85rem; font-weight:600; color:var(--text); margin:0.65rem 0 8px;">Do you want to be contacted about this?</label>
         <input type="email" id="reportContact" maxlength="254" placeholder="Enter your email or leave blank if not" autocomplete="email">
         <div id="reportError" role="alert"></div>
         <div id="reportOk" role="status"></div>
