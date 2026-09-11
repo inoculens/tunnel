@@ -41,11 +41,15 @@
 
   <!-- Open Graph / Facebook -->
   <meta property="og:type" content="website" />
+  <meta property="og:locale" content="en_US" />
   <meta property="og:url" content="https://tunnel.inoculens.com/" />
   <meta property="og:title" content="INOCULENS Tunnel | Premium URL Shortener & Deep Link Generator" />
   <meta property="og:description"
-    content="The most powerful way to share links. Custom domains, deep link support for social apps, and real-time analytics." />
+    content="Free URL shortener with custom domains. Create deep links that open YouTube, Instagram, TikTok & more directly in their apps — with real-time analytics." />
   <meta property="og:image" content="https://tunnel.inoculens.com/visuals/logo-no-background.png" />
+  <meta property="og:image:width" content="768" />
+  <meta property="og:image:height" content="768" />
+  <meta property="og:image:alt" content="INOCULENS Tunnel — free URL shortener and deep link generator" />
   <meta property="og:site_name" content="INOCULENS Tunnel" />
 
   <!-- Twitter -->
@@ -55,31 +59,10 @@
   <meta name="twitter:description"
     content="Create powerful deep links and custom branded URLs with INOCULENS Tunnel." />
   <meta name="twitter:image" content="https://tunnel.inoculens.com/visuals/logo-no-background.png" />
+  <meta name="twitter:image:alt" content="INOCULENS Tunnel — free URL shortener and deep link generator" />
 
   <!-- Canonical URL -->
   <link rel="canonical" href="https://tunnel.inoculens.com/" />
-
-  <!-- JSON-LD Structured Data -->
-  <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@type": "WebApplication",
-      "name": "INOCULENS Tunnel",
-      "url": "https://tunnel.inoculens.com/",
-      "description": "Premium URL shortener with custom domain support and deep link generation for social media platforms.",
-      "applicationCategory": "Utility",
-      "operatingSystem": "All",
-      "offers": {
-        "@type": "Offer",
-        "price": "0",
-        "priceCurrency": "USD"
-      },
-      "author": {
-        "@type": "Organization",
-        "name": "INOCULENS"
-      }
-    }
-  </script>
 
   <!-- Favicon -->
   <link rel="icon" type="image/x-icon" href="/visuals/favicon.ico" />
@@ -2899,16 +2882,20 @@
     }
   </style>
 
-  <!-- Structured Data (JSON-LD) for SEO -->
+  <!-- Structured Data (JSON-LD) for SEO — single WebApplication entity -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "WebApplication",
+    "@id": "https://tunnel.inoculens.com/#app",
     "name": "INOCULENS Tunnel",
-    "description": "Free URL shortener with custom domain support, deep links for YouTube & Instagram, and detailed link analytics.",
     "url": "https://tunnel.inoculens.com",
+    "description": "Free URL shortener with custom domain support and deep links for YouTube, Instagram, TikTok, Facebook, X and LinkedIn, plus detailed real-time link analytics. No account needed.",
+    "inLanguage": "en",
+    "isAccessibleForFree": true,
     "applicationCategory": "UtilitiesApplication",
     "operatingSystem": "Web Browser",
+    "browserRequirements": "Requires JavaScript",
     "offers": {
       "@type": "Offer",
       "price": "0",
@@ -2920,13 +2907,17 @@
       "url": "https://inoculens.com"
     },
     "featureList": [
-      "Custom domain support",
+      "Free URL shortening with custom slugs",
+      "Custom domain support with automatic SSL",
       "Deep links for YouTube",
       "Deep links for Instagram",
-      "Detailed link analytics",
-      "Click tracking",
-      "Custom short URLs",
-      "Session management"
+      "Deep links for TikTok",
+      "Deep links for Facebook",
+      "Deep links for X (Twitter)",
+      "Deep links for LinkedIn",
+      "Real-time click analytics",
+      "Click tracking and history",
+      "No account required, session-based"
     ]
   }
   </script>
@@ -2944,7 +2935,7 @@
       <div style="position: absolute; width: 40px; height: 40px; background: var(--primary); border-radius: 50%; filter: blur(20px); opacity: 0.4; animation: pulse 2s infinite;"></div>
     </div>
     <div style="text-align: center; animation: fadeInUp 0.8s ease-out;">
-      <h1 style="font-family: 'DM Sans', sans-serif; font-size: 2rem; font-weight: 700; margin-bottom: 8px; background: linear-gradient(to bottom, #ffffff 30%, #b3b8c2 100%); -webkit-background-clip: text; background-clip: text; color: transparent; letter-spacing: -0.02em;">INOCULENS Tunnel</h1>
+      <div style="font-family: 'DM Sans', sans-serif; font-size: 2rem; font-weight: 700; margin-bottom: 8px; background: linear-gradient(to bottom, #ffffff 30%, #b3b8c2 100%); -webkit-background-clip: text; background-clip: text; color: transparent; letter-spacing: -0.02em;">INOCULENS Tunnel</div>
       <p id="syncingSessionText" style="color: var(--text-faint); font-family: 'DM Sans', sans-serif; font-size: 1rem; font-weight: 400; letter-spacing: 0.01em;">Syncing session...</p>
     </div>
   </div>
@@ -2964,7 +2955,7 @@
     <div class="header-content">
       <div class="header-left">
         <a href="/" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
-          <img src="/visuals/logo-no-background.png" alt="INOCULENS" class="header-logo" />
+          <img src="/visuals/logo-no-background.png" alt="INOCULENS Tunnel — free URL shortener and deep link generator" class="header-logo" />
           <span class="header-title">INOCULENS Tunnel</span>
         </a>
       </div>
@@ -3064,6 +3055,11 @@
         raceIn();
       })();
     </script>
+
+    <div class="hero-copy" style="text-align: center; max-width: 720px; margin: 0 auto 1.5rem;">
+      <h1 style="font-family: 'DM Sans', sans-serif; font-size: clamp(1.9rem, 5vw, 2.6rem); font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; background: linear-gradient(to bottom, #ffffff 30%, #b3b8c2 100%); -webkit-background-clip: text; background-clip: text; color: transparent; margin: 0 0 0.75rem;">Free URL Shortener &amp; Deep Link Generator</h1>
+      <p style="color: var(--text-muted); font-size: 1.05rem; line-height: 1.6; margin: 0;">Shorten links with custom slugs and your own domain. YouTube, Instagram, TikTok and Facebook links open directly in their apps — with real-time click analytics, no account needed.</p>
+    </div>
 
     <div class="shorter-box">
       <div class="input-container">

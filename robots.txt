@@ -1,5 +1,8 @@
 User-agent: *
 Allow: /
 
+# Never crawl backend internals (API + edge functions).
+Disallow: /.netlify/
+
 # Sitemap
 Sitemap: https://tunnel.inoculens.com/sitemap.xml
