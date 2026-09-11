@@ -6204,6 +6204,10 @@
         const l = adminFindLink(domain, code);
         if (!l) { showToast('Link no longer in the list — hit Search.', 'error'); return; }
         window._adminLinkDetail = { domain: l.domain, code: l.code };
+        // Always start from a clean state: a previous action may have closed
+        // the modal while locked (success path) — without this reset the
+        // buttons would stay disabled on every reopen until a page reload.
+        setAdminDetailBusy(false);
         const shortEl = document.getElementById('adminLinkDetailShort');
         const origEl = document.getElementById('adminLinkDetailOrig');
         const sessEl = document.getElementById('adminLinkDetailSession');
@@ -6233,6 +6237,8 @@
       function adminCloseLinkDetail() {
         const overlay = document.getElementById('adminLinkDetailOverlay');
         if (overlay) overlay.style.display = 'none';
+        // Defensive: never persist a locked state, however the modal closes.
+        try { setAdminDetailBusy(false); } catch (_) {}
         window.removeEventListener('keydown', handleAdminLinkDetailEsc);
         // Promo admin stays open underneath — keep the scroll lock.
       }
@@ -8007,6 +8013,16 @@
           const safeShortHref = escapeAttr(safeHref(item.short));
           const itemLabel = item.label || '';
           const hasLabel = itemLabel.length > 0;
+          // State badges live pinned to the right edge (label row on
+          // desktop = above the Delete button; header row on mobile) so
+          // they never drift with link length. row-reverse stacks extras
+          // leftward from the right edge, highest priority rightmost.
+          const histBadges = item.quarantined
+            ? `<span class="domain-status status-pending" title="Flagged unsafe — not resolving">Quarantined</span>`
+            : '';
+          const histBadgesWrap = histBadges
+            ? `<span style="margin-left:auto; display:inline-flex; flex-direction:row-reverse; gap:6px; align-items:center; flex-shrink:0; padding-left:8px;">${histBadges}</span>`
+            : '';
           const labelDisplay = hasLabel
             ? `<span id="label-${keyAttr}" class="link-label">${escapeHTML(itemLabel)}</span>`
             : `<span id="label-${keyAttr}" class="label-placeholder">Add label...</span>`;
@@ -8031,15 +8047,18 @@
           html += `
             <tr id="row-${keyAttr}" class="link-item-row">
               <td data-label="Label" colspan="4">
-                <div class="label-cell">
-                  ${editButton}
-                  ${labelDisplay}
+                <div style="display:flex; align-items:center;">
+                  <div class="label-cell">
+                    ${editButton}
+                    ${labelDisplay}
+                  </div>
+                  ${histBadgesWrap}
                 </div>
               </td>
             </tr>
             <tr id="row-${keyAttr}-data" class="link-data-row">
               <td data-label="Original Link"><div class="history-original" title="${escapeAttr(item.original)}">${escapeHTML(item.original)}</div></td>
-              <td data-label="Short Link"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a>${item.quarantined ? ' <span class="domain-status status-pending" title="Flagged unsafe — not resolving">Quarantined</span>' : ''}</td>
+              <td data-label="Short Link"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a></td>
               <td data-label="Clicks">
                 <div class="click-count-wrapper">
                   <span id="clicks-${keyAttr}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
@@ -8065,6 +8084,7 @@
                   ${mobileEditButton}
                   ${mobileLabelDisplay}
                 </div>
+                ${histBadgesWrap}
                 <div class="dropdown-arrow">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polyline points="6 9 12 15 18 9"></polyline>
