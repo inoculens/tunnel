@@ -70,6 +70,10 @@
 #        persist to Blobs feedback/ + admin Feedback tab; mail is skipped when
 #        SMTP vars are absent and never fails a submit. Set real addresses only
 #        in Site settings → Environment variables, never in this file.
+#     CONTACT_EMAIL=<public contact mailbox shown on Terms page>
+#        Revealed only after a Turnstile human check (getContactEmail action);
+#        never appears in served files. Missing = reveal fails with a pointer
+#        to the in-app Report page. Set in env, then redeploy.
 #     AUTO_SSL=1 (default) — with Cloudflare SaaS HTTP validation, routing
 #       validity implies SSL will auto-provision. Set SSL_DELEGATION_TARGET
 #       only if you switch a hostname to TXT/delegated validation.

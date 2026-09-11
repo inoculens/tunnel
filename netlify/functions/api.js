@@ -1011,6 +1011,33 @@ const actions = {
     });
   },
 
+  // Contact-email reveal (Terms page): the address lives only in env, never
+  // in served files, and is disclosed solely after a valid Turnstile token —
+  // static scrapers see nothing, scripted harvesters hit the challenge wall.
+  // Rate-limited; availability wins over strictness (a contact address must
+  // stay reachable, so a missing Turnstile secret degrades to rate-limit).
+  async getContactEmail(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "contact", ip, 5))) {
+      const e = new Error("Too many attempts, wait a moment and try again.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
+    if (process.env.TURNSTILE_SECRET) {
+      const v = await verifyTurnstileToken(p.turnstileToken, ip);
+      if (!v.ok) return fail(412, "failed-precondition", "Human verification required — solve the challenge and try again.");
+    }
+    // Env-only on purpose (no hardcoded fallback): the address must not
+    // appear anywhere in served or bundled files where scrapers could find
+    // it. Set CONTACT_EMAIL in Netlify env, then redeploy.
+    const email = String(process.env.CONTACT_EMAIL || "").trim();
+    if (!email || /[\r\n<>]/.test(email) || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return fail(412, "failed-precondition", "Contact channel is not configured right now — try the in-app Report page instead.");
+    }
+    return ok({ email });
+  },
+
   async addCustomDomain(s, p, event) {
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
     try { await bumpKindCounter(s, "domain-add", clientIp(event)); } catch { /* ignore */ }
