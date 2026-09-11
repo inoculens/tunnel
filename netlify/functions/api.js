@@ -61,6 +61,10 @@ import {
   getWithRetry,
   mapWithConcurrency,
 } from "./lib/util.js";
+// Static import (not dynamic): node_bundler="nft" traces static imports for
+// the function bundle — a dynamic import() can be missed at bundle time and
+// fail at runtime with "cannot find module", silently killing mail notify.
+import nodemailer from "nodemailer";
 
 // Ensure a Cloudflare SaaS custom hostname exists once the domain is
 // verified + paid — identically for every custom domain. Only s./tunnel.
@@ -143,7 +147,6 @@ async function sendFeedbackEmail(doc, s) {
   } catch { /* fail open: still attempt the send */ }
   const port = Number(process.env.SMTP_PORT || 587);
   try {
-    const { default: nodemailer } = await import("nodemailer");
     const transporter = nodemailer.createTransport({
       host,
       port: Number.isFinite(port) && port > 0 ? port : 587,
@@ -742,6 +745,33 @@ const actions = {
     }
     await s.delete(`feedback/${id}`);
     return ok({ deleted: id });
+  },
+
+  // Diagnose mail notify from inside the app (Admin → Feedback → Send test
+  // mail). Sends a real test message via the configured SMTP env and reports
+  // the outcome. Never echoes credentials: only a short reason string.
+  async adminTestFeedbackMail(s, p, event) {
+    await needAdmin(s, p, event);
+    const host = String(process.env.SMTP_HOST || "").trim() || null;
+    const user = String(process.env.SMTP_USER || "").trim() || null;
+    const pass = process.env.SMTP_PASS || null;
+    if (!host || !user || !pass) {
+      return fail(412, "failed-precondition", "Mail not configured: set SMTP_HOST, SMTP_USER and SMTP_PASS in Netlify env, then redeploy.");
+    }
+    const probe = {
+      id: "test-mail",
+      sessionId: "(admin test)",
+      message: "Tunnel feedback mail is working. You can delete this message.",
+      createdAt: new Date().toISOString(),
+      ipHash: null,
+      ua: null,
+    };
+    const r = await sendFeedbackEmail(probe, s);
+    if (r.ok) return ok({ sent: true });
+    const reason = String(r.reason || "send-failed").slice(0, 200);
+    const status = reason === "throttled" ? 429 : 502;
+    const code = reason === "throttled" ? "resource-exhausted" : "unavailable";
+    return fail(status, code, `Test mail failed: ${reason}. Check SMTP_HOST/PORT/user/password in Netlify env (redeploy after changing them) and the function logs.`);
   },
 
   async getLinksBySession(s, p) {

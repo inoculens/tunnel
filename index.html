@@ -5958,6 +5958,9 @@
       function closePromoAdmin() {
         const overlay = document.getElementById('promoAdminOverlay');
         if (overlay) overlay.style.display = 'none';
+        const detail = document.getElementById('feedbackDetailOverlay');
+        if (detail) detail.style.display = 'none';
+        window.removeEventListener('keydown', handleFeedbackDetailEsc);
         document.body.classList.remove('modal-open');
       }
       function adminShowTab(tab) {
@@ -6165,7 +6168,12 @@
         }).join('');
       }
       // --- Feedback reports (admin moderation) ---
-      async function feedbackLoad() {
+      // Client-side paging (10/page): the backend caps the list at 500 and a
+      // Blobs prefix-list is inherently a full scan, so paging lives in the
+      // UI — page turns re-render from cache with no refetch.
+      let feedbackPage = 1;
+      const FEEDBACK_PER_PAGE = 10;
+      async function feedbackLoad(keepPage = false) {
         const list = document.getElementById('feedbackList');
         const btn = document.getElementById('feedbackRefreshBtn');
         if (list) list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">Loading…</div>';
@@ -6173,6 +6181,7 @@
           if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
           const fn = functions.httpsCallable('adminListFeedback');
           const res = await fn({ adminKey: promoAdminKey() });
+          if (!keepPage) feedbackPage = 1;
           renderFeedback(res.data.reports || []);
         } catch (e) {
           console.error('feedbackLoad:', e);
@@ -6184,20 +6193,127 @@
       function renderFeedback(reports) {
         const list = document.getElementById('feedbackList');
         if (!list) return;
-        if (!reports.length) {
+        // Cache for the detail modal + pager (avoids a refetch per open/page).
+        const all = Array.isArray(reports) ? reports : [];
+        window._feedbackReports = all;
+        if (!all.length) {
           list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">No reports yet.</div>';
           return;
         }
-        list.innerHTML = reports.map((r) => {
+        const totalItems = all.length;
+        const totalPages = Math.max(1, Math.ceil(totalItems / FEEDBACK_PER_PAGE));
+        // Clamp: deletes can leave the page past the end.
+        if (feedbackPage > totalPages) feedbackPage = Math.max(1, totalPages);
+        if (feedbackPage < 1) feedbackPage = 1;
+        const startIndex = (feedbackPage - 1) * FEEDBACK_PER_PAGE;
+        const endIndex = Math.min(startIndex + FEEDBACK_PER_PAGE, totalItems);
+        const page = all.slice(startIndex, endIndex);
+        // Admin-only view (gated by ADMIN_KEY): full session ID on purpose,
+        // so reports can be matched to links/domains. Click opens the full
+        // message in a scrollable detail window.
+        let html = page.map((r) => {
           const when = r.createdAt ? String(r.createdAt).slice(0, 16).replace('T', ' ') : '?';
-          return `<div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px;">
+          const msg = String(r.message || '');
+          const preview = msg.length > 180 ? msg.slice(0, 180) + '…' : msg;
+          return `<div onclick="feedbackOpen(${escapeJS(r.id)})" title="Open full report" style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; cursor:pointer;">
             <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
-              <div style="font-size:0.75rem; color:var(--text-muted);">session <span style="font-family:monospace;">${escapeHTML(adminMaskSession(r.sessionId))}</span> · ${escapeHTML(when)}</div>
-              <button class="btn-small btn-delete-small" onclick="feedbackDelete(${escapeJS(r.id)})" title="Delete report">Delete</button>
+              <div style="font-size:0.75rem; color:var(--text-muted); min-width:0;">session <span style="font-family:monospace; color:var(--text); overflow-wrap:anywhere;">${escapeHTML(r.sessionId || '?')}</span> · ${escapeHTML(when)}</div>
+              <div style="display:flex; gap:6px; flex-shrink:0;" onclick="event.stopPropagation()">
+                <button class="btn-small btn-copy-small" onclick="copyText(${escapeJS(r.sessionId || '')}, this)" title="Copy full session ID">Copy ID</button>
+                <button class="btn-small btn-delete-small" onclick="feedbackDelete(${escapeJS(r.id)})" title="Delete report">Delete</button>
+              </div>
             </div>
-            <div style="font-size:0.88rem; margin-top:6px; white-space:pre-wrap; overflow-wrap:anywhere;">${escapeHTML(r.message || '')}</div>
+            <div style="font-size:0.88rem; margin-top:6px; white-space:pre-wrap; overflow-wrap:anywhere;">${escapeHTML(preview)}</div>
           </div>`;
         }).join('');
+        // Same pager pattern as the link-history list (Prev/Next + counts),
+        // rendered only past one page.
+        if (totalPages > 1) {
+          html += `
+          <div id="feedbackPagination" class="pagination-controls" style="display: flex; flex-direction: column; gap: 12px; margin-top: 12px; padding: 1rem; background: rgba(255,255,255,0.02); border-radius: 0.75rem; border: 1px solid var(--border);">
+            <div class="pagination-info" style="font-size: 0.85rem; color: var(--text-muted); font-weight: 500; text-align: center; display: flex; align-items: center; justify-content: center; gap: 4px;">
+              <span>Showing</span> <span style="color: white; font-weight: 600;">${startIndex + 1}-${endIndex}</span> <span>of</span> <span style="color: white; font-weight: 600;">${totalItems}</span>
+              <span style="margin: 0 4px; color: var(--border);">|</span>
+              <span>Page</span> <span style="color: white; font-weight: 600;">${feedbackPage}</span> <span>of</span> <span style="color: white; font-weight: 600;">${totalPages}</span>
+            </div>
+            <div class="pagination-buttons" style="display: flex; gap: 8px; justify-content: center;">
+              <button class="session-item btn-session"
+                style="padding: 0 14px; background: ${feedbackPage === 1 ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${feedbackPage === 1 ? 'var(--text-muted)' : 'white'}; ${feedbackPage === 1 ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                onclick="feedbackChangePage(${feedbackPage - 1})"
+                ${feedbackPage === 1 ? 'disabled' : ''}>
+                ← Prev
+              </button>
+              <button class="session-item btn-session"
+                style="padding: 0 14px; background: ${feedbackPage === totalPages ? 'transparent' : 'rgba(255,255,255,0.05)'}; border: 1px solid var(--border); color: ${feedbackPage === totalPages ? 'var(--text-muted)' : 'white'}; ${feedbackPage === totalPages ? 'opacity: 0.4; cursor: not-allowed;' : ''}"
+                onclick="feedbackChangePage(${feedbackPage + 1})"
+                ${feedbackPage === totalPages ? 'disabled' : ''}>
+                Next →
+              </button>
+            </div>
+          </div>`;
+        }
+        list.innerHTML = html;
+      }
+      function feedbackChangePage(newPage) {
+        const all = Array.isArray(window._feedbackReports) ? window._feedbackReports : [];
+        const totalPages = Math.max(1, Math.ceil(all.length / FEEDBACK_PER_PAGE));
+        if (newPage < 1 || newPage > totalPages) return;
+        feedbackPage = newPage;
+        renderFeedback(all);
+        // Keep the pager visible inside the scrollable admin modal.
+        setTimeout(() => {
+          const pager = document.getElementById('feedbackPagination');
+          if (pager && typeof pager.scrollIntoView === 'function') {
+            try { pager.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {}
+          }
+        }, 50);
+      }
+      function feedbackFindCached(id) {
+        const all = Array.isArray(window._feedbackReports) ? window._feedbackReports : [];
+        return all.find((r) => r && r.id === id) || null;
+      }
+      function feedbackOpen(id) {
+        const r = feedbackFindCached(id);
+        if (!r) { showToast('Report no longer in the list — hit Refresh.', 'error'); return; }
+        const overlay = document.getElementById('feedbackDetailOverlay');
+        const sessEl = document.getElementById('feedbackDetailSession');
+        const whenEl = document.getElementById('feedbackDetailWhen');
+        const msgEl = document.getElementById('feedbackDetailMessage');
+        const delBtn = document.getElementById('feedbackDetailDelete');
+        if (sessEl) sessEl.textContent = r.sessionId || '?';
+        if (whenEl) whenEl.textContent = r.createdAt ? String(r.createdAt).slice(0, 16).replace('T', ' ') : '?';
+        if (msgEl) { msgEl.textContent = r.message || ''; msgEl.scrollTop = 0; }
+        if (delBtn) delBtn.onclick = () => feedbackDelete(r.id);
+        if (overlay) {
+          overlay.style.display = 'flex';
+          window.addEventListener('keydown', handleFeedbackDetailEsc);
+        }
+      }
+      function handleFeedbackDetailEsc(e) {
+        if (e.key === 'Escape') feedbackCloseDetail();
+      }
+      function feedbackCloseDetail() {
+        const overlay = document.getElementById('feedbackDetailOverlay');
+        if (overlay) overlay.style.display = 'none';
+        window.removeEventListener('keydown', handleFeedbackDetailEsc);
+        // Promo admin stays open underneath — keep the scroll lock.
+      }
+      function feedbackCopyDetailSession(btn) {
+        const el = document.getElementById('feedbackDetailSession');
+        if (el) copyText(el.textContent, btn);
+      }
+      async function feedbackTestMail() {
+        const btn = document.getElementById('feedbackTestMailBtn');
+        try {
+          if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+          const fn = functions.httpsCallable('adminTestFeedbackMail');
+          await fn({ adminKey: promoAdminKey() });
+          showToast('Test mail sent — check the notify inbox (and spam).', 'info');
+        } catch (e) {
+          showCustomModal({ title: 'Test mail failed', message: escapeHTML(e.message || 'Send failed') });
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = 'Send test mail'; }
+        }
       }
       async function feedbackDelete(id) {
         const okDel = await showCustomModal({
@@ -6211,7 +6327,8 @@
           const fn = functions.httpsCallable('adminDeleteFeedback');
           await fn({ adminKey: promoAdminKey(), id });
           showToast('Report deleted.', 'info');
-          feedbackLoad();
+          try { feedbackCloseDetail(); } catch (_) {}
+          feedbackLoad(true);
         } catch (e) {
           showToast(e.message || 'Delete failed', 'error');
         }
@@ -8638,8 +8755,11 @@
         <div id="adminLinksList"></div>
       </div>
       <div id="feedbackView" style="display: none;">
-        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Issue reports from the Report page. Newest first. Sessions masked.</p>
-        <button class="modal-btn modal-btn-ok" id="feedbackRefreshBtn" onclick="feedbackLoad()" style="width: 100%; margin-bottom: 12px;">Refresh</button>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Issue reports from the Report page. Newest first. Click a report to read it in full.</p>
+        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+          <button class="modal-btn modal-btn-ok" id="feedbackRefreshBtn" onclick="feedbackLoad(true)" style="flex: 1;">Refresh</button>
+          <button class="modal-btn modal-btn-cancel" id="feedbackTestMailBtn" onclick="feedbackTestMail()" style="flex: 1;">Send test mail</button>
+        </div>
         <div id="feedbackList"></div>
       </div>
     </div>
@@ -8661,6 +8781,26 @@
       </div>
       <div id="promoStatsList" class="stats-table" style="max-height: 40vh; overflow-y: auto;"></div>
       <button class="modal-btn modal-btn-cancel" onclick="promoCloseStats()" style="width: 100%; margin-top: 16px;">← Back to codes</button>
+    </div>
+  </div>
+
+  <div id="feedbackDetailOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 50000; align-items: center; justify-content: center; padding: 20px;">
+    <div class="modal-card" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px;">
+        <h2 class="modal-title" style="margin: 0;">Issue report</h2>
+        <button class="copy-btn" onclick="feedbackCloseDetail()" style="background: transparent; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">&times;</button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px; min-width: 0; flex-wrap: wrap;">
+        <span style="font-size: 0.75rem; color: var(--text-muted);">session</span>
+        <div id="feedbackDetailSession" style="font-family: monospace; font-weight: 700; overflow-wrap: anywhere;"></div>
+        <button class="btn-small btn-copy-small" onclick="feedbackCopyDetailSession(this)" title="Copy full session ID">Copy</button>
+      </div>
+      <div id="feedbackDetailWhen" style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;"></div>
+      <div id="feedbackDetailMessage" style="font-size: 0.9rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(0,0,0,0.32); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: 40vh; overflow-y: auto;"></div>
+      <div style="display: flex; gap: 8px; margin-top: 16px;">
+        <button class="modal-btn modal-btn-cancel" onclick="feedbackCloseDetail()" style="flex: 1;">← Back to reports</button>
+        <button class="modal-btn modal-btn-danger" id="feedbackDetailDelete" style="flex: 1;">Delete</button>
+      </div>
     </div>
   </div>
 
