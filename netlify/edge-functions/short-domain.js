@@ -13,10 +13,15 @@
  * https://s.inoculens.com/<code>). Any non-app hostname hitting this site
  * directly is likewise treated as a short-link host below.
  *
- * Slugs repeat across root domains, so the resolver needs the serving host
- * (?h=, set below). The SaaS Worker MUST forward the original custom host
- * (X-Forwarded-Host header, else ?h=) when proxying — otherwise proxied
- * custom-domain links arrive as s.inoculens.com and miss their scoped slug.
+ * Slugs repeat across root domains, so the resolver needs the serving host.
+ * The SaaS Worker MUST forward the original custom host (X-Forwarded-Host
+ * header, else ?h=) when proxying — otherwise proxied custom-domain links
+ * arrive as s.inoculens.com and miss their scoped slug.
+ *
+ * Code and host are passed via X-Tunnel-Code / X-Tunnel-Host request headers
+ * (not query params). This prevents the platform from grafting internal query
+ * params onto the resolve function's outgoing Location header — which would
+ * corrupt redirect targets containing a # fragment.
  *
  * This edge function is the sole "/" handler for short domains.
  */
@@ -55,12 +60,33 @@ export default async (request, context) => {
     return;
   }
 
-  const extra = url.search ? `&${url.search.slice(1)}` : "";
-  // Forward the serving host explicitly: slugs are scoped per root domain,
-  // so the resolver must know WHICH domain's <code> this is (proxied
-  // custom-domain traffic may otherwise arrive as s.inoculens.com).
+  // Identity for the resolver travels via headers, not query (see header).
+  // Code comes from the path (authoritative for short links). Host prefers a
+  // validated SaaS-forwarded host (?h= / X-Forwarded-Host from the Worker —
+  // custom-domain traffic arrives here as s.inoculens.com), else arrival.
+  // Strict checks keep header values byte-safe (headers.set throws on CRLF).
+  const fwdH = url.searchParams.get("h")
+    || request.headers.get("x-forwarded-host")
+    || request.headers.get("x-original-host")
+    || "";
+  const fwdHost = fwdH.split(",")[0].trim().toLowerCase();
+  const effHost = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(fwdHost) && fwdHost.length <= 253
+    ? fwdHost
+    : host;
+
+  // Header path only for byte-safe ASCII slugs (all real slugs match). Anything
+  // else can never equal a stored code, so it takes the legacy query rewrite
+  // and lands on the branded 404 (whose destination never carries grafts).
+  if (/^[A-Za-z0-9_-]{1,30}$/.test(first)) {
+    request.headers.set("x-tunnel-code", first);
+    request.headers.set("x-tunnel-host", effHost);
+    return context.rewrite("/.netlify/functions/resolve");
+  }
+  // Visitor query params (?utm_source etc.) are intentionally not forwarded:
+  // the resolve function never used them, and the redirect lands on
+  // link.original exactly as stored.
   return context.rewrite(
-    `/.netlify/functions/resolve?c=${encodeURIComponent(first)}&h=${encodeURIComponent(host)}${extra}`
+    `/.netlify/functions/resolve?c=${encodeURIComponent(first)}&h=${encodeURIComponent(effHost)}`
   );
 };
 

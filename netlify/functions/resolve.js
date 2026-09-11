@@ -1,5 +1,5 @@
 /**
- * Short-link resolver: GET /.netlify/functions/resolve?c=<code>
+ * Short-link resolver: GET /.netlify/functions/resolve
  * Logs the click (truncated IP), bumps the counter, then issues an immediate
  * 302 to the original URL — for EVERY link, including social/deep links.
  *
@@ -12,8 +12,11 @@
  * for display, so the page shows the short domain actually visited —
  * s.inoculens.com or the user's custom domain — never tunnel.inoculens.com).
  *
- * Wire-up: netlify/edge-functions/short-domain.js rewrites short-host paths
- * to this function (GET /.netlify/functions/resolve?c=<code>).
+ * Wire-up: netlify/edge-functions/short-domain.js passes code and host via
+ * X-Tunnel-Code / X-Tunnel-Host request headers (no query params, so nothing
+ * can be grafted onto the outgoing Location header by the platform).
+ * Query-param fallback (?c=, ?h=) is permanent for SaaS Worker proxies,
+ * direct function hits, and deploy-skew safety.
  */
 import { store, newClickId, clientIp, trustedRawIp, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard } from "./lib/util.js";
 
@@ -22,7 +25,14 @@ const HOME = process.env.HOME_URL || "https://tunnel.inoculens.com/";
 export async function handler(event) {
   const s = store(event);
   const qs = event.queryStringParameters || {};
-  let code = (qs.c || "").trim();
+  const rawHeaders = event.headers || {};
+  const lowered = {};
+  for (const [k, v] of Object.entries(rawHeaders)) lowered[String(k).toLowerCase()] = v;
+
+  // Prefer X-Tunnel-Code header (set by edge function, carries no query string)
+  // over ?c= query param (SaaS Worker / direct hits / deploy-skew fallback),
+  // then path segment (legacy).
+  let code = (lowered["x-tunnel-code"] || qs.c || "").trim();
   if (!code) {
     const parts = (event.path || "").split("/").filter(Boolean);
     code = parts[parts.length - 1] || "";
@@ -32,14 +42,12 @@ export async function handler(event) {
   }
 
   // Slugs repeat across root domains, so the serving host is part of the
-  // identity. The edge router passes it as ?h=; SaaS Worker proxies must
-  // forward the original host (X-Forwarded-Host) or the lookup 404s.
-  // Direct hits fall back to the request Host header.
-  const headers = event.headers || {};
-  const lowered = {};
-  for (const [k, v] of Object.entries(headers)) lowered[String(k).toLowerCase()] = v;
+  // identity. The edge router passes it as X-Tunnel-Host header; SaaS Worker
+  // proxies forward the original host via X-Forwarded-Host or ?h=.
+  // Query-param fallback (?h=) is permanent: SaaS Worker, direct function
+  // hits, and deploy-skew all depend on it.
   const fwd = (lowered["x-forwarded-host"] || lowered["x-original-host"] || "").toString().split(",")[0].trim();
-  const rawHost = (qs.h || fwd || lowered.host || "").toString().split(",")[0].trim().split(":")[0];
+  const rawHost = (lowered["x-tunnel-host"] || qs.h || fwd || lowered.host || "").toString().split(",")[0].trim().split(":")[0];
   const host = cleanDomain(rawHost);
   if (!host) {
     return { statusCode: 302, headers: { Location: HOME, "Cache-Control": "no-store" } };
