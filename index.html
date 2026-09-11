@@ -1979,6 +1979,13 @@
       cursor: not-allowed;
     }
 
+    /* Disabled small action buttons (admin rows/modals): visibly locked
+       while a server call is in flight, so rapid clicks can't double-fire. */
+    .btn-small:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     .modal-btn.loading {
       position: relative;
       color: transparent;
@@ -3548,19 +3555,39 @@
       // --- GLOBAL STATE ---
       var isSearchActive = false;
 
-      // Utility function for toast notifications
+      // Utility function for toast notifications.
+      // Single fixed stack (bottom-right): concurrent toasts pile upward
+      // instead of painting over each other. Equal lifetimes keep FIFO
+      // dismiss order; the stack caps at 5, oldest dropped first.
+      function toastStack() {
+        let stack = document.getElementById('toastStack');
+        if (!stack) {
+          stack = document.createElement('div');
+          stack.id = 'toastStack';
+          stack.style.cssText = `
+            position: fixed; bottom: 24px; right: 24px; z-index: 100000 !important;
+            display: flex; flex-direction: column; gap: 10px; align-items: flex-end;
+            max-width: min(360px, calc(100vw - 48px)); pointer-events: none;
+          `;
+          // Container itself never sits above modals content-wise; toasts are
+          // appended here so they can't hide behind the modal overlay.
+          document.body.appendChild(stack);
+        }
+        return stack;
+      }
       function showToast(message, type = 'info') {
+        const stack = toastStack();
+        while (stack.children.length >= 5) stack.firstChild.remove();
         const toast = document.createElement('div');
         toast.style.cssText = `
-          position: fixed; bottom: 24px; right: 24px; padding: 14px 28px;
-          border-radius: 12px; color: white; z-index: 100000 !important; 
+          padding: 14px 28px; max-width: 100%;
+          border-radius: 12px; color: white;
           font-family: sans-serif; font-weight: 500;
           background: ${type === 'error' ? '#f04141' : '#2ba640'};
           box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4); animation: slideIn 0.3s ease-out;
         `;
         toast.textContent = message;
-        // Append directly to document.body to ensure it's never hidden behind the modal
-        document.body.appendChild(toast);
+        stack.appendChild(toast);
         setTimeout(() => {
           toast.style.opacity = '0';
           toast.style.transition = 'opacity 0.5s';
@@ -6035,6 +6062,35 @@
         const s = String(u || '');
         return s.length > 60 ? s.slice(0, 60) + '…' : s;
       }
+      // Shared busy-state for admin action buttons: locks the button and
+      // swaps its label while a server call runs, restores after. Prevents
+      // aggressive double-clicks from firing an action twice.
+      function adminBusy(btn, busy, busyText) {
+        if (!btn) return;
+        if (busy) {
+          if (btn.dataset.origText === undefined) btn.dataset.origText = btn.textContent;
+          btn.disabled = true;
+          if (busyText) btn.textContent = busyText;
+        } else {
+          btn.disabled = false;
+          if (btn.dataset.origText !== undefined) {
+            btn.textContent = btn.dataset.origText;
+            delete btn.dataset.origText;
+          }
+        }
+      }
+      // Backend link timestamps are epoch-ms numbers (not ISO strings like
+      // the other docs) — format both shapes as "YYYY-MM-DD HH:MM".
+      function adminFmtTime(t) {
+        if (t === null || t === undefined || t === '') return '?';
+        try {
+          if (typeof t === 'number' && Number.isFinite(t)) {
+            return new Date(t).toISOString().slice(0, 16).replace('T', ' ');
+          }
+          const s = String(t);
+          return s.length >= 16 ? s.slice(0, 16).replace('T', ' ') : s;
+        } catch (_) { return '?'; }
+      }
       let adminLinkPage = 1;
       const ADMIN_LINKS_PER_PAGE = 10;
       function adminLinkKey(l) {
@@ -6158,8 +6214,7 @@
         if (sessEl) sessEl.textContent = l.sessionId || '?';
         if (metaEl) {
           const clicks = Number(l.clickCount) || 0;
-          const created = l.timestamp ? String(l.timestamp).slice(0, 16).replace('T', ' ') : '?';
-          metaEl.textContent = `clicks ${clicks} · created ${created}`;
+          metaEl.textContent = `clicks ${clicks} · created ${adminFmtTime(l.timestamp)}`;
         }
         if (badgesEl) badgesEl.innerHTML = adminLinkBadges(l);
         if (qBtn) qBtn.textContent = l.quarantined ? 'Unquarantine' : 'Quarantine';
@@ -6192,24 +6247,40 @@
         const l = adminFindLink(d.domain, d.code);
         return { d, l };
       }
-      function adminDetailQuarantine() {
+      // Detail-modal actions: lock all action buttons while the confirm +
+      // server round-trip runs; close the modal only on success so a
+      // failure leaves the user in place with buttons restored.
+      function setAdminDetailBusy(active, activeBtn) {
+        const overlay = document.getElementById('adminLinkDetailOverlay');
+        if (!overlay) return;
+        overlay.querySelectorAll('.btn-small').forEach((b) => adminBusy(b, active));
+        if (active && activeBtn) activeBtn.textContent = 'Working…';
+      }
+      async function adminDetailQuarantine(btn) {
         const { d, l } = adminDetailRef();
         if (!d.domain) return;
-        adminCloseLinkDetail();
-        adminQuarantine(d.domain, d.code, !(l && l.quarantined));
+        setAdminDetailBusy(true, btn || null);
+        const done = await adminQuarantine(d.domain, d.code, !(l && l.quarantined));
+        if (done) adminCloseLinkDetail();
+        else setAdminDetailBusy(false);
       }
-      function adminDetailBlock() {
+      async function adminDetailBlock(btn) {
         const { d, l } = adminDetailRef();
         if (!d.domain) return;
-        adminCloseLinkDetail();
-        if (l && l.originalBlocked) adminUnblockOrig(l.original);
-        else adminBlockOrig(l ? l.original : '');
+        setAdminDetailBusy(true, btn || null);
+        const done = (l && l.originalBlocked)
+          ? await adminUnblockOrig(l.original)
+          : await adminBlockOrig(l ? l.original : '');
+        if (done) adminCloseLinkDetail();
+        else setAdminDetailBusy(false);
       }
-      function adminDetailDelete() {
+      async function adminDetailDelete(btn) {
         const { d } = adminDetailRef();
         if (!d.domain) return;
-        adminCloseLinkDetail();
-        adminDeleteLink(d.domain, d.code);
+        setAdminDetailBusy(true, btn || null);
+        const done = await adminDeleteLink(d.domain, d.code);
+        if (done) adminCloseLinkDetail();
+        else setAdminDetailBusy(false);
       }
       async function adminQuarantine(domain, code, q) {
         const ok = await showCustomModal({
@@ -6217,14 +6288,16 @@
           message: `${q ? 'Stop resolving' : 'Restore resolving for'} <strong>${escapeHTML(domain)}/${escapeHTML(code)}</strong>?`,
           showCancel: true, danger: !!q, confirmText: q ? "Quarantine" : "Restore", cancelText: "Cancel"
         });
-        if (!ok) return;
+        if (!ok) return false;
         try {
           const fn = functions.httpsCallable('adminSetQuarantine');
           await fn({ adminKey: promoAdminKey(), domain, shortCode: code, quarantined: q, reason: 'ADMIN' });
           showToast(q ? 'Link quarantined.' : 'Link restored.', 'success');
           await adminSearchLinks(true);
+          return true;
         } catch (e) {
           showToast(e.message || 'Failed', 'error');
+          return false;
         }
       }
       async function adminDeleteLink(domain, code) {
@@ -6233,52 +6306,58 @@
           message: `Permanently delete <strong>${escapeHTML(domain)}/${escapeHTML(code)}</strong> for everyone (plus clicks + counters)?`,
           showCancel: true, danger: true, confirmText: "Delete", cancelText: "Keep"
         });
-        if (!ok) return;
+        if (!ok) return false;
         try {
           const fn = functions.httpsCallable('adminDeleteLink');
           await fn({ adminKey: promoAdminKey(), domain, shortCode: code });
           showToast('Link deleted.', 'success');
           await adminSearchLinks(true);
+          return true;
         } catch (e) {
           showToast(e.message || 'Delete failed', 'error');
+          return false;
         }
       }
       async function adminBlockOrig(original) {
         const orig = String(original || '').trim();
-        if (!orig) { showToast('No original URL on this link.', 'error'); return; }
+        if (!orig) { showToast('No original URL on this link.', 'error'); return false; }
         const ok = await showCustomModal({
           title: "Block URL",
           message: `Quarantine all links with this exact original and block re-mint?<br><span class="modal-url-box">${escapeHTML(adminTruncUrl(orig))}</span>`,
           showCancel: true, danger: true, confirmText: "Block", cancelText: "Cancel"
         });
-        if (!ok) return;
+        if (!ok) return false;
         try {
           const fn = functions.httpsCallable('adminBlockOriginal');
           const res = await fn({ adminKey: promoAdminKey(), original: orig, reason: 'ADMIN' });
           showToast(`Blocked. Quarantined ${res.data.swept || 0} link(s).`, 'success');
           await adminSearchLinks(true);
           try { blockedLoad(); } catch (_) {}
+          return true;
         } catch (e) {
           showToast(e.message || 'Block failed', 'error');
+          return false;
         }
       }
       async function adminUnblockOrig(original) {
         const orig = String(original || '').trim();
-        if (!orig) { showToast('No original URL on this link.', 'error'); return; }
+        if (!orig) { showToast('No original URL on this link.', 'error'); return false; }
         const ok = await showCustomModal({
           title: "Unblock URL",
           message: `Allow minting this original URL again?<br><span class="modal-url-box">${escapeHTML(adminTruncUrl(orig))}</span><br>Already-quarantined links stay quarantined — restore them individually if needed.`,
           showCancel: true, danger: true, confirmText: "Unblock", cancelText: "Cancel"
         });
-        if (!ok) return;
+        if (!ok) return false;
         try {
           const fn = functions.httpsCallable('adminUnblockOriginal');
           await fn({ adminKey: promoAdminKey(), original: orig });
           showToast('URL unblocked — minting allowed again.', 'success');
           await adminSearchLinks(true);
           try { blockedLoad(); } catch (_) {}
+          return true;
         } catch (e) {
           showToast(e.message || 'Unblock failed', 'error');
+          return false;
         }
       }
       // Blob list reads lag behind writes (eventual consistency): a code
@@ -6287,7 +6366,11 @@
       async function promoLoad(awaitCode, expectAbsent, keepPage = false) {
         const list = document.getElementById('promoCodesList');
         if (list) list.innerHTML = '<div style="padding:16px; text-align:center; color:var(--text-muted);">Loading…</div>';
+        const vBtn = document.getElementById('promoViewCodesBtn');
+        const rBtn = document.getElementById('promoCodesRefreshBtn');
         try {
+          adminBusy(vBtn, true);
+          adminBusy(rBtn, true, 'Loading…');
           const fn = functions.httpsCallable('adminListDiscountCodes');
           const res = await fn({ adminKey: promoAdminKey() });
           const codes = res.data.codes || [];
@@ -6307,6 +6390,9 @@
         } catch (e) {
           console.error('promoLoad:', e);
           if (list) list.innerHTML = `<div style="padding:16px; text-align:center; color:var(--danger);">${escapeHTML(e.message || 'Unlock failed')}</div>`;
+        } finally {
+          adminBusy(vBtn, false);
+          adminBusy(rBtn, false);
         }
       }
       // Promo codes list — paged 10/page like every other list. The full
@@ -6340,7 +6426,7 @@
                 <button class="btn-small btn-copy-small" onclick="copyText(${escapeJS(c.code)}, this)" title="Copy code">Copy</button>
               </div>
               <div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">
-                <button class="btn-small btn-delete-small" onclick="promoRevoke(${escapeJS(c.code)})" title="Revoke future use">Revoke</button>
+                <button class="btn-small btn-delete-small" onclick="promoRevoke(${escapeJS(c.code)}, this)" title="Revoke future use">Revoke</button>
                 <button class="btn-small btn-copy-small" onclick="promoOpenStats(${escapeJS(c.code)})" title="Open redemption stats">Stats (${used})</button>
               </div>
             </div>
@@ -6434,7 +6520,7 @@
                 <div style="font-size:0.85rem; overflow-wrap:anywhere; font-family:monospace;">${escapeHTML(label)}</div>
                 <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">${escapeHTML(when)}${old}${b.reason ? ` · ${escapeHTML(b.reason)}` : ''}</div>
               </div>
-              <button class="btn-small btn-copy-small" style="flex-shrink:0;" onclick="blockedUnblock(${escapeJS(b.hash || '')}, ${escapeJS(label)})" title="Allow minting this URL again">Unblock</button>
+              <button class="btn-small btn-copy-small" style="flex-shrink:0;" onclick="blockedUnblock(${escapeJS(b.hash || '')}, ${escapeJS(label)}, this)" title="Allow minting this URL again">Unblock</button>
             </div>
           </div>`;
         }).join('');
@@ -6475,7 +6561,7 @@
           }
         }, 50);
       }
-      async function blockedUnblock(hash, label) {
+      async function blockedUnblock(hash, label, btn) {
         const h = String(hash || '').trim();
         if (!h) return;
         const ok = await showCustomModal({
@@ -6484,7 +6570,9 @@
           showCancel: true, danger: true, confirmText: "Unblock", cancelText: "Cancel"
         });
         if (!ok) return;
+        const el = (btn instanceof HTMLElement) ? btn : null;
         try {
+          adminBusy(el, true, '…');
           const fn = functions.httpsCallable('adminUnblockOriginal');
           await fn({ adminKey: promoAdminKey(), hash: h });
           showToast('URL unblocked — minting allowed again.', 'success');
@@ -6493,6 +6581,8 @@
           try { await adminSearchLinks(true); } catch (_) {}
         } catch (e) {
           showToast(e.message || 'Unblock failed', 'error');
+        } finally {
+          adminBusy(el, false);
         }
       }
       // --- Feedback reports (admin moderation) ---
@@ -6550,7 +6640,7 @@
               <div style="font-size:0.75rem; color:var(--text-muted); min-width:0;">session <span style="font-family:monospace; color:var(--text); overflow-wrap:anywhere;">${escapeHTML(r.sessionId || '?')}</span> · IP <span style="font-family:monospace; color:var(--text); overflow-wrap:anywhere;">${escapeHTML(feedbackIpLabel(r))}</span>${r.contact ? ` · ✉️ <span style="color:var(--text); overflow-wrap:anywhere;">${escapeHTML(r.contact)}</span>` : ''} · ${escapeHTML(when)}</div>
               <div style="display:flex; gap:6px; flex-shrink:0;" onclick="event.stopPropagation()">
                 <button class="btn-small btn-copy-small" onclick="copyText(${escapeJS(r.sessionId || '')}, this)" title="Copy full session ID">Copy ID</button>
-                <button class="btn-small btn-delete-small" onclick="feedbackDelete(${escapeJS(r.id)})" title="Delete report">Delete</button>
+                <button class="btn-small btn-delete-small" onclick="feedbackDelete(${escapeJS(r.id)}, this)" title="Delete report">Delete</button>
               </div>
             </div>
             <div style="font-size:0.88rem; margin-top:6px; white-space:pre-wrap; overflow-wrap:anywhere;">${escapeHTML(preview)}</div>
@@ -6623,7 +6713,7 @@
         if (contactRow) contactRow.style.display = r.contact ? 'flex' : 'none';
         if (contactEl) contactEl.textContent = r.contact || '';
         if (msgEl) { msgEl.textContent = r.message || ''; msgEl.scrollTop = 0; }
-        if (delBtn) delBtn.onclick = () => feedbackDelete(r.id);
+        if (delBtn) delBtn.onclick = () => feedbackDelete(r.id, '#feedbackDetailDelete');
         if (overlay) {
           overlay.style.display = 'flex';
           window.addEventListener('keydown', handleFeedbackDetailEsc);
@@ -6659,7 +6749,7 @@
           if (btn) { btn.disabled = false; btn.textContent = 'Send test mail'; }
         }
       }
-      async function feedbackDelete(id) {
+      async function feedbackDelete(id, btn) {
         const okDel = await showCustomModal({
           title: 'Delete report?',
           message: 'This removes the report from storage. This cannot be undone.',
@@ -6667,7 +6757,9 @@
           danger: true
         });
         if (!okDel) return;
+        const el = (btn instanceof HTMLElement) ? btn : (btn ? document.querySelector(btn) : null);
         try {
+          adminBusy(el, true, '…');
           const fn = functions.httpsCallable('adminDeleteFeedback');
           await fn({ adminKey: promoAdminKey(), id });
           showToast('Report deleted.', 'info');
@@ -6675,6 +6767,8 @@
           feedbackLoad(true);
         } catch (e) {
           showToast(e.message || 'Delete failed', 'error');
+        } finally {
+          adminBusy(el, false);
         }
       }
       async function feedbackDeleteAll() {
@@ -6828,14 +6922,16 @@
           if (btn) { btn.disabled = false; btn.textContent = 'Create'; }
         }
       }
-      async function promoRevoke(code) {
+      async function promoRevoke(code, btn) {
         const ok = await showCustomModal({
           title: "Revoke Code",
           message: `Revoke <strong>${escapeHTML(code)}</strong>? Domains that already used it keep their discount; it just can't be redeemed again.`,
           showCancel: true, danger: true, confirmText: "Revoke", cancelText: "Keep"
         });
         if (!ok) return;
+        const el = (btn instanceof HTMLElement) ? btn : null;
         try {
+          adminBusy(el, true, '…');
           const fn = functions.httpsCallable('adminDeleteDiscountCode');
           await fn({ adminKey: promoAdminKey(), code });
           showToast(`Code ${code} revoked.`, 'success');
@@ -6843,6 +6939,8 @@
         } catch (e) {
           console.error('promoRevoke:', e);
           showToast(e.message || 'Revoke failed', 'error');
+        } finally {
+          adminBusy(el, false);
         }
       }
 
@@ -9174,7 +9272,7 @@
       </div>
       <p id="promoTabHint" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Single-use by default: each code binds to the first domain redeeming it.</p>
       <div id="promoMain">
-      <button class="modal-btn modal-btn-ok" onclick="promoShowCodes()" style="width: 100%; margin-bottom: 16px;">View all codes</button>
+      <button class="modal-btn modal-btn-ok" id="promoViewCodesBtn" onclick="promoShowCodes()" style="width: 100%; margin-bottom: 16px;">View all codes</button>
       <div style="border-top: 1px solid var(--border); padding-top: 16px;">
         <h3 style="margin: 0 0 12px; font-size: 0.95rem;">Create code</h3>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
@@ -9202,7 +9300,7 @@
       <div id="promoCodesView" style="display: none;">
         <div style="display: flex; gap: 8px; margin-bottom: 16px;">
           <button class="modal-btn modal-btn-cancel" onclick="promoShowMain()" style="height: 44px; width: auto; padding: 0 16px;">← Back</button>
-          <button class="modal-btn modal-btn-ok" onclick="promoLoad()" style="height: 44px; flex: 1;">Refresh</button>
+          <button class="modal-btn modal-btn-ok" id="promoCodesRefreshBtn" onclick="promoLoad()" style="height: 44px; flex: 1;">Refresh</button>
         </div>
         <div id="promoCodesList"></div>
       </div>
@@ -9310,9 +9408,9 @@
       </div>
       <div id="adminLinkDetailMeta" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;"></div>
       <div style="display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap;">
-        <button class="btn-small btn-copy-small" id="adminLinkDetailQuarantine" onclick="adminDetailQuarantine()" style="flex: 1; min-width: 120px;">Quarantine</button>
-        <button class="btn-small btn-copy-small" id="adminLinkDetailBlock" onclick="adminDetailBlock()" style="flex: 1; min-width: 120px;">Block URL</button>
-        <button class="btn-small btn-delete-small" onclick="adminDetailDelete()" style="flex: 1; min-width: 120px;">Delete</button>
+        <button class="btn-small btn-copy-small" id="adminLinkDetailQuarantine" onclick="adminDetailQuarantine(this)" style="flex: 1; min-width: 120px;">Quarantine</button>
+        <button class="btn-small btn-copy-small" id="adminLinkDetailBlock" onclick="adminDetailBlock(this)" style="flex: 1; min-width: 120px;">Block URL</button>
+        <button class="btn-small btn-delete-small" id="adminLinkDetailDelete" onclick="adminDetailDelete(this)" style="flex: 1; min-width: 120px;">Delete</button>
       </div>
       <button class="modal-btn modal-btn-cancel" onclick="adminCloseLinkDetail()" style="width: 100%; margin-top: 8px;">← Back to links</button>
     </div>
