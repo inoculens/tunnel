@@ -7312,7 +7312,7 @@
           name: 'YouTube',
           icon: '▶️',
           logo: '/visuals/Youtube_Logo.png',
-          pattern: /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\//i,
+          pattern: /^(https?:\/\/)?(www\.|m\.)?(youtube\.com|youtu\.?be)\//i,
           appScheme: 'vnd.youtube:',
           universalLink: 'https://www.youtube.com/redirect?',
           className: 'youtube'
@@ -7321,7 +7321,7 @@
           name: 'Instagram',
           icon: '📸',
           logo: '/visuals/Instagram_Logo.png',
-          pattern: /^(https?:\/\/)?(www\.)?instagram\.com\//i,
+          pattern: /^(https?:\/\/)?(www\.|m\.)?instagram\.com\//i,
           appScheme: 'instagram:',
           universalLink: 'https://www.instagram.com/_n',
           className: 'instagram'
@@ -7330,7 +7330,7 @@
           name: 'Facebook',
           icon: '📘',
           logo: '/visuals/Facebook_Logo.png',
-          pattern: /^(https?:\/\/)?(www\.)?(facebook\.com|fb\.?com)\//i,
+          pattern: /^(https?:\/\/)?(www\.|m\.|web\.)?(facebook\.com|fb\.?com)\//i,
           appScheme: 'fb://',
           universalLink: 'https://www.facebook.com/',
           className: 'facebook'
@@ -7339,7 +7339,7 @@
           name: 'X (Twitter)',
           icon: '𝕏',
           logo: '/visuals/X_Logo.png',
-          pattern: /^(https?:\/\/)?(www\.)?(twitter\.com|x\.com)\//i,
+          pattern: /^(https?:\/\/)?(www\.|mobile\.)?(twitter\.com|x\.com)\//i,
           appScheme: 'twitter://',
           universalLink: 'https://twitter.com/',
           className: 'x'
@@ -7348,7 +7348,7 @@
           name: 'TikTok',
           icon: '🎵',
           logo: '/visuals/Tiktok_Logo.png',
-          pattern: /^(https?:\/\/)?(www\.)?tiktok\.com\//i,
+          pattern: /^(https?:\/\/)?((www|m|vm|vt)\.)?tiktok\.com\//i,
           appScheme: 'tiktok://',
           universalLink: 'https://www.tiktok.com/',
           className: 'tiktok'

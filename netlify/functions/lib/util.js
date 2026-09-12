@@ -243,22 +243,182 @@ export const newCode = (n = 8) => randFrom(CODE_ALPHABET, n);
 export const newToken = (n = 24) => randFrom(TOKEN_ALPHABET, n);
 export const newClickId = () => `${Date.now().toString(36)}-${randFrom(CODE_ALPHABET, 8)}`;
 
-// ---------- Platform detection (mirrors frontend deep-link badges) ----------
+// ---------- Platform deep links (app-opening targets) ----------
+// detectPlatform() mirrors the frontend badge. buildAppTargets() goes further:
+// for a supported social URL it returns everything the resolver's
+// frictionless interstitial needs to break out of in-app browsers:
+//   - https:         original URL (universal link + install-missing fallback)
+//   - iosScheme:     custom-scheme URL for iOS (instagram://, vnd.youtube:// …)
+//   - androidIntent:  intent:// URL with package + browser fallback for Android
+// Desktop + crawlers keep a direct 302; mobile gets the interstitial which
+// auto-fires these targets and falls back to https when no app is installed.
 
 const PLATFORM_PATTERNS = [
-  ["youtube", /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\//i],
-  ["instagram", /^(https?:\/\/)?(www\.)?instagram\.com\//i],
-  ["facebook", /^(https?:\/\/)?(www\.)?(facebook\.com|fb\.?com)\//i],
-  ["twitter", /^(https?:\/\/)?(www\.)?(twitter\.com|x\.com)\//i],
-  ["tiktok", /^(https?:\/\/)?(www\.)?tiktok\.com\//i],
+  ["youtube", /^(https?:\/\/)?(www\.|m\.)?(youtube\.com|youtu\.?be)\//i],
+  ["instagram", /^(https?:\/\/)?(www\.|m\.)?instagram\.com\//i],
+  ["facebook", /^(https?:\/\/)?(www\.|m\.|web\.)?(facebook\.com|fb\.?com)\//i],
+  ["twitter", /^(https?:\/\/)?(www\.|mobile\.)?(twitter\.com|x\.com)\//i],
+  ["tiktok", /^(https?:\/\/)?((www|m|vm|vt)\.)?tiktok\.com\//i],
   ["linkedin", /^(https?:\/\/)?(www\.)?linkedin\.com\//i],
 ];
+
+const PLATFORM_META = {
+  youtube: { appName: "YouTube", androidPackage: "com.google.android.youtube" },
+  instagram: { appName: "Instagram", androidPackage: "com.instagram.android" },
+  facebook: { appName: "Facebook", androidPackage: "com.facebook.katana" },
+  twitter: { appName: "X", androidPackage: "com.twitter.android" },
+  tiktok: { appName: "TikTok", androidPackage: "com.zhiliaoapp.musically" },
+  linkedin: { appName: "LinkedIn", androidPackage: "com.linkedin.android" },
+};
 
 export function detectPlatform(url) {
   for (const [key, re] of PLATFORM_PATTERNS) {
     if (re.test(String(url))) return key;
   }
   return null;
+}
+
+function parseHttpUrl(v) {
+  try {
+    const t = String(v || "").trim();
+    if (!t || t.length > MAX_ORIGINAL_URL_LEN) return null;
+    const u = new URL(t);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    if (u.username || u.password || !u.hostname) return null;
+    return u;
+  } catch {
+    return null;
+  }
+}
+
+function toIntentUrl(httpsUrl, androidPackage, intentHost) {
+  if (!/^[A-Za-z0-9_.]+$/.test(String(androidPackage || ""))) return null;
+  const u = parseHttpUrl(httpsUrl);
+  if (!u) return null;
+  const host = String(intentHost || u.hostname).toLowerCase();
+  if (!HOST_RE.test(host)) return null;
+  // Intent host part carries path+query only (no fragment); the full https
+  // URL (fragment included) travels as the browser fallback extra.
+  const path = `${u.pathname}${u.search}` || "/";
+  return (
+    `intent://${host}${path}` +
+    `#Intent;package=${androidPackage};scheme=https;` +
+    `S.browser_fallback_url=${encodeURIComponent(httpsUrl)};end`
+  );
+}
+
+function schemeSwap(httpsUrl, scheme) {
+  const u = parseHttpUrl(httpsUrl);
+  if (!u) return null;
+  return `${scheme}://${u.hostname}${u.pathname}${u.search}${u.hash}`;
+}
+
+function youtubeVideoId(u) {
+  try {
+    const host = u.hostname.toLowerCase().replace(/^(www\.|m\.)/, "");
+    if (host === "youtu.be") {
+      const id = u.pathname.split("/").filter(Boolean)[0] || "";
+      return /^[A-Za-z0-9_-]{6,20}$/.test(id) ? id : null;
+    }
+    if (host === "youtube.com") {
+      const v = u.searchParams.get("v");
+      if (v && /^[A-Za-z0-9_-]{6,20}$/.test(v)) return v;
+      const m = u.pathname.match(/^\/(shorts|live|embed|v)\/([A-Za-z0-9_-]{6,20})/);
+      if (m) return m[2];
+    }
+  } catch { /* fall through */ }
+  return null;
+}
+
+export function buildAppTargets(originalUrl) {
+  const platform = detectPlatform(originalUrl);
+  if (!platform || !PLATFORM_META[platform]) return null;
+  const u = parseHttpUrl(originalUrl);
+  if (!u) return null;
+  // Canonical https: upgrade http -> https so intents/schemes are consistent.
+  u.protocol = "https:";
+  const https = u.toString();
+  const { appName, androidPackage } = PLATFORM_META[platform];
+  const bareHost = u.hostname.toLowerCase().replace(/^(www\.|m\.|mobile\.|web\.)/, "");
+
+  let iosScheme = null;
+  let intentHost = u.hostname.toLowerCase();
+  if (platform === "youtube") {
+    const vid = youtubeVideoId(u);
+    if (vid) {
+      // Keep timestamp/playlist context where present (t, list, index).
+      const keep = new URLSearchParams();
+      keep.set("v", vid);
+      for (const k of ["t", "start", "list", "index"]) {
+        const val = u.searchParams.get(k);
+        if (val) keep.set(k, val);
+      }
+      iosScheme = `vnd.youtube://watch?${keep.toString()}`;
+      const intentPath = `/watch?${keep.toString()}`;
+      const androidIntent = `intent://www.youtube.com${intentPath}` +
+        `#Intent;package=${androidPackage};scheme=https;` +
+        `S.browser_fallback_url=${encodeURIComponent(https)};end`;
+      return { platform, appName, https, iosScheme, androidIntent };
+    }
+    iosScheme = schemeSwap(https, "youtube");
+  } else if (platform === "instagram") {
+    iosScheme = schemeSwap(https, "instagram");
+  } else if (platform === "facebook") {
+    iosScheme = schemeSwap(https, "fb");
+    intentHost = bareHost === "fb.com" ? "www.facebook.com" : intentHost;
+  } else if (platform === "twitter") {
+    iosScheme = schemeSwap(https, "twitter");
+  } else if (platform === "tiktok") {
+    iosScheme = schemeSwap(https, "tiktok");
+  } else if (platform === "linkedin") {
+    iosScheme = schemeSwap(https, "linkedin");
+  }
+  if (!iosScheme) return null;
+  const androidIntent = toIntentUrl(https, androidPackage, intentHost);
+  if (!androidIntent) return null;
+  return { platform, appName, https, iosScheme, androidIntent };
+}
+
+// ---------- Redirect policy: who gets the app-open interstitial? ----------
+// - Crawlers/preview bots (incl. curl-like tools) get a direct 302 so link
+//   previews unfurl against the real destination, not our interstitial.
+// - Desktops get a direct 302 (OS already routes installed apps; the page
+//   would be pure friction).
+// - Mobile — or an unknown UA with no desktop token (e.g. a proxy that
+//   stripped it) — gets the frictionless interstitial: it auto-fires the
+//   native target and falls back to https when no app is installed.
+
+const BOT_UA_RE =
+  /facebookexternalhit|facebot|twitterbot|linkedinbot|slackbot|telegrambot|discordbot|whatsapp|googlebot|bingbot|duckduckbot|baiduspider|yandexbot|embedly|quora|pinterestbot|bytespider|applebot|crawler|spider|preview|curl|wget|python-requests|python-urllib|go-http-client|postman|insomnia|httpie/i;
+
+const MOBILE_UA_RE = /android|iphone|ipad|ipod|mobile|phone|musical_ly|tiktok|instagram|fbav|fbios|fb_iab|fban/i;
+
+const DESKTOP_UA_RE = /windows nt|macintosh|cros x11|x11|linux x86_64/i;
+
+export function isBotUA(ua) {
+  return BOT_UA_RE.test(String(ua || ""));
+}
+
+export function isMobileUA(ua) {
+  return MOBILE_UA_RE.test(String(ua || ""));
+}
+
+export function isDesktopUA(ua) {
+  const s = String(ua || "");
+  // Android UAs contain "Linux" — mobile wins over desktop.
+  if (MOBILE_UA_RE.test(s)) return false;
+  return DESKTOP_UA_RE.test(s);
+}
+
+export function shouldServeInterstitial(ua, targets) {
+  if (!targets || !targets.https || !targets.iosScheme || !targets.androidIntent) return false;
+  const s = String(ua || "");
+  if (isBotUA(s)) return false;
+  if (isMobileUA(s)) return true;
+  // Unknown UA (empty / stripped by a proxy): favor app-open over desktop
+  // speed — the interstitial still falls back to the browser automatically.
+  if (!isDesktopUA(s)) return true;
+  return false;
 }
 
 // ---------- Client IP (trusted first, truncated for privacy) ----------

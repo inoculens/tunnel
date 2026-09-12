@@ -4,7 +4,7 @@
  * Traffic:
  *   tunnel.inoculens.com          → app (pass through, never rewritten)
  *   s.inoculens.com/              → 301 to https://tunnel.inoculens.com/
- *   s.inoculens.com/<code>        → rewrite to resolve (click log + instant 302, no interstitial)
+ *   s.inoculens.com/<code>        → rewrite to resolve (click log + app-open handoff or instant 302)
  *   <custom-domain>/              → 301 to https://tunnel.inoculens.com/
  *   <custom-domain>/<code>        → rewrite to resolve (same as s.*)
  *
