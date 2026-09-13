@@ -436,7 +436,7 @@ h1 {
   width: 100%;
   max-width: 1000px;
   margin: auto auto 0;
-  padding: 22px 24px 26px;
+  padding: 22px 24px calc(26px + env(safe-area-inset-bottom, 0px));
   text-align: center;
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border);
