@@ -66,7 +66,11 @@
 
   <!-- Favicon -->
   <link rel="icon" type="image/x-icon" href="/visuals/favicon.ico" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/visuals/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/visuals/favicon-16x16.png" />
   <link rel="apple-touch-icon" href="/visuals/logo-no-background.png" />
+  <!-- First-paint hint: the header logo is above the fold on every load -->
+  <link rel="preload" as="image" href="/visuals/logo-no-background.png" fetchpriority="high" />
 
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'; frame-src 'self' https://challenges.cloudflare.com; child-src 'self' https://challenges.cloudflare.com;">
@@ -766,6 +770,28 @@
     .purge-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    /* Export button: same pill geometry as .purge-btn (so the mobile
+       flex-weight + search-active contraction rules apply), but neutral
+       accent tint — it is non-destructive, unlike Delete All. */
+    .purge-btn.export-btn {
+      background: rgba(62, 166, 255, 0.12);
+      border-color: rgba(62, 166, 255, 0.35);
+      color: var(--accent);
+    }
+
+    @media (hover: hover) {
+      .purge-btn.export-btn:hover:not(:disabled) {
+        background: rgba(62, 166, 255, 0.22);
+        color: #fff;
+      }
+    }
+
+    .purge-btn.export-btn:active:not(:disabled) {
+      background: rgba(62, 166, 255, 0.28);
+      color: #fff;
+      transform: scale(0.97);
     }
 
     /* Hide purge controls when empty */
@@ -2940,9 +2966,6 @@
   }
   </script>
 
-  <!-- Alternative icon for better visibility -->
-  <link rel="shortcut icon"
-    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔗</text></svg>" />
 </head>
 
 <body class="initial-loading">
@@ -2973,7 +2996,7 @@
     <div class="header-content">
       <div class="header-left">
         <a href="/" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
-          <img src="/visuals/logo-no-background.png" alt="INOCULENS Tunnel — free URL shortener and deep link generator" class="header-logo" />
+          <img src="/visuals/logo-no-background.png" alt="INOCULENS Tunnel — free URL shortener and deep link generator" class="header-logo" width="30" height="30" fetchpriority="high" decoding="async" />
           <span class="header-title">INOCULENS Tunnel</span>
         </a>
       </div>
@@ -3151,6 +3174,9 @@
             <span class="search-count" id="searchCount"></span>
           </div>
         </div>
+        <button class="purge-btn export-btn" id="exportBtn" onclick="exportCustomLinks()" title="Export custom-domain links as .txt">
+          <span class="btn-emoji">⤓</span><span class="btn-text"> Export</span>
+        </button>
         <button class="purge-btn" id="deleteAllBtn" onclick="deleteAllLinks()" title="Delete all links for everyone">
           <span class="btn-emoji">🔥</span><span class="btn-text"> Delete All Links</span>
         </button>
@@ -3206,6 +3232,10 @@
       </div>
     </div>
 
+    <footer class="footer footer-elevated">
+      <span class="footer-tag">Built for creators.</span>
+      <span class="footer-copy">&copy; 2026 INOCULENS Tunnel. All rights reserved.</span>
+    </footer>
 
   </div>
 
@@ -3452,7 +3482,7 @@
 
       <div id="addDomainStepPayment" style="display: none;">
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
-          <img src="/visuals/Bitcoin_Logo.png" alt="Bitcoin" width="22" height="22" style="flex-shrink: 0;">
+          <img src="/visuals/Bitcoin_Logo.png" alt="Bitcoin" width="22" height="22" loading="lazy" decoding="async" style="flex-shrink: 0;">
           <h3 style="margin: 0; font-size: 1rem;">Pay with Bitcoin</h3>
         </div>
         <p class="modal-message" style="font-size: 0.9rem; margin-bottom: 16px;">
@@ -3752,7 +3782,6 @@
           return [];
         }
       }
-      // Init with legacy data for migration check
       let currentLinks = loadLocalHistory();
       // Per-operation locks (a shared flag blocked unrelated actions, e.g. a
       // stats purge blocking link deletion). Keys: 'link', 'links', 'stats', 'entry'.
@@ -3963,8 +3992,8 @@
         throw new Error('Secure random unavailable — use HTTPS.');
       }
 
-      // Strict split (no legacy): sessions are exactly 10 alphanumerics
-      // without "1" and without specials. Admin keys are exactly 10 chars,
+      // Sessions are exactly 10 alphanumerics without "1" and without
+      // specials. Admin keys are exactly 10 chars,
       // always contain "1", specials "@#$" allowed (never valid as session).
       const SESSION_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ023456789';
       const SESSION_REGEX_STRICT = /^[A-Za-z023456789]{10}$/;
@@ -4009,8 +4038,8 @@
 
       function getSessionId() {
         // Storage can throw when blocked (private mode, disabled cookies).
-        // Synchronous strict check only (no network): malformed stored IDs
-        // (hand-edited, legacy with "1"/specials) are purged immediately so
+          // Synchronous strict check only (no network): malformed stored IDs
+          // (hand-edited IDs with "1"/specials) are purged immediately so
         // boot skips a wasted backend round-trip — faster on slow connections.
         try {
           const v = localStorage.getItem(SESSION_KEY);
@@ -5089,7 +5118,7 @@
       function updateRoutingUI(routable) {
         // false = definitive: no usable edge address, domain cannot serve.
         // true/null/undefined = resolvable or unknown (fail-open: lookup
-        // hiccups and legacy docs without the flag never block).
+        // hiccups and domains not yet checked never block).
         verificationState.routable = (routable === false) ? false : null;
         const note = document.getElementById('routingNote');
         if (note) note.style.display = (routable === false) ? 'block' : 'none';
@@ -5995,6 +6024,16 @@
       function hasPromoAccess() {
         return validAdminKeyFrontend(promoAdminKey());
       }
+      // Shared fresh-session bootstrap for admin-first boot (no session yet):
+      // mirrors the domain-manager flow — generate + persist a session, then
+      // hand it to the caller. Shows its own loader swaps; caller must NOT
+      // hold a loader open across this call (it closes + re-shows).
+      async function bootstrapSessionForAdmin() {
+        const newSid = await generateSessionId();
+        await createSessionInDb(newSid);
+        setSessionId(newSid);
+        return newSid;
+      }
       function promoLock() {
         try { sessionStorage.removeItem('tunnel_admin_key'); } catch (e) {}
         updateSessionUI();
@@ -6003,7 +6042,7 @@
       }
       function openPromoAdmin() {
         if (!hasPromoAccess()) {
-          showToast('Admin locked — unlock via Merge with admin key.', 'error');
+          showToast('Admin locked — unlock via Merge (or the Load box on a fresh device) with admin key.', 'error');
           return;
         }
         const overlay = document.getElementById('promoAdminOverlay');
@@ -7102,6 +7141,46 @@
           const val = sid.trim();
           const sessionRegex = /^[A-Za-z023456789]{10}$/;
           if (!sessionRegex.test(val) || val.length !== SESSION_ID_LENGTH || val.includes('1')) {
+            // Fresh-instance admin path: the Load box doubles as the admin
+            // entry when there is no session yet (Merge is unreachable without
+            // one). Valid admin keys auto-create an empty session first —
+            // exactly like adding a domain does — then unlock admin on it.
+            if (validAdminKeyFrontend(val)) {
+              showLoadingModal({ title: "Verifying admin key…", message: "Checking, please wait" });
+              let adminOk = false;
+              try {
+                const adminFn = functions.httpsCallable('adminListDiscountCodes');
+                await adminFn({ adminKey: val });
+                adminOk = true;
+              } catch (e) {
+                adminOk = false;
+              }
+              if (!adminOk) {
+                closeLoadingModal();
+                showCustomModal({ title: "Not Found", message: "Unknown Session ID." });
+                return;
+              }
+              try {
+                closeLoadingModal();
+                showLoadingModal({ title: "Creating Session", message: "Creating a new session with admin unlocked, please wait" });
+                const newSid = await bootstrapSessionForAdmin();
+                try { sessionStorage.setItem('tunnel_admin_key', val); } catch (e) {}
+                updateSessionUI();
+                await fetchAndRenderSession(newSid, true);
+                try { await loadUserDomains(); } catch (e) {}
+              } catch (e) {
+                console.error('Admin bootstrap failed:', e);
+                closeLoadingModal();
+                showCustomModal({ title: "Error", message: "Failed to create a session. Please try again." });
+                return;
+              }
+              closeLoadingModal();
+              showCustomModal({
+                title: "Admin Unlocked",
+                message: "A new session was created (no links yet) with admin already unlocked. Use the <strong>Admin</strong> button next to your session controls."
+              });
+              return;
+            }
             showCustomModal({
               title: "Invalid Format",
               message: `Session IDs must be ${SESSION_ID_LENGTH} characters, letters and numbers only (no 1, no specials).`
@@ -7430,7 +7509,7 @@
             // Brand logo when provided, otherwise the emoji fallback icon.
             // Static trusted strings only — never user input.
             if (iconEl) iconEl.innerHTML = platform.logo
-              ? '<img src="' + platform.logo + '" alt="' + platform.name + ' logo">'
+              ? '<img src="' + platform.logo + '" alt="' + platform.name + ' logo" width="26" height="26" loading="lazy" decoding="async">'
               : platform.icon;
             if (textEl) textEl.textContent = `This link will open in the ${platform.name} app`;
             if (badgeEl) badgeEl.textContent = 'Deep Link';
@@ -7821,6 +7900,7 @@
 
         if (currentLinks && currentLinks.length > 0) {
           searchContainer.classList.add('visible');
+          try { updateExportVisibility(); } catch (e) {}
         } else {
           searchContainer.classList.remove('visible');
           // Reset search state without calling clearSearch() to avoid infinite recursion
@@ -7840,6 +7920,7 @@
           const searchCount = document.getElementById('searchCount');
           if (searchInput) searchInput.value = '';
           if (searchCount) searchCount.textContent = '';
+          try { updateExportVisibility(); } catch (e) {}
         }
       }
 
@@ -8815,6 +8896,64 @@
         releaseOp('link');
       }
 
+      // --- EXPORT CUSTOM-DOMAIN LINKS (.txt backup) ---
+      // Custom domains are portable (the user owns the DNS), the system
+      // host is not — so only custom-domain links are exported. One line
+      // per pair:  custom.domain.com/userSlug : originalHost/originalPath
+      // (schemes stripped on both sides).
+      function customExportLinks() {
+        const sys = (publicConfig && publicConfig.systemHost ? String(publicConfig.systemHost) : 's.inoculens.com').toLowerCase();
+        return (Array.isArray(currentLinks) ? currentLinks : []).filter((l) => {
+          if (!l || !l.code) return false;
+          const d = String(itemDomain(l) || '').toLowerCase();
+          return d && d !== sys;
+        });
+      }
+
+      function updateExportVisibility() {
+        const btn = document.getElementById('exportBtn');
+        if (!btn) return;
+        btn.disabled = customExportLinks().length === 0;
+      }
+
+      async function exportCustomLinks() {
+        const items = customExportLinks();
+        if (items.length === 0) {
+          showCustomModal({
+            title: "Nothing to export",
+            message: "Only <strong>custom-domain</strong> links can be exported (your domain moves with you — <strong>s.inoculens.com</strong> links do not). Shorten a link on a custom domain first.",
+            showCancel: false
+          });
+          return;
+        }
+        const stripScheme = (u) => String(u || '').trim().replace(/^https?:\/\//i, '').replace(/[\r\n]+/g, '');
+        const lines = items.map((l) => {
+          const domain = stripScheme(itemDomain(l));
+          const code = String(l.code || '').replace(/[\r\n]+/g, '');
+          return `${domain}/${code} : ${stripScheme(l.original)}`;
+        });
+        const text = lines.join('\n') + '\n';
+        try {
+          const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          const day = new Date().toISOString().slice(0, 10);
+          a.href = url;
+          a.download = `tunnel-custom-links-${day}.txt`;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => { try { document.body.removeChild(a); URL.revokeObjectURL(url); } catch (e) {} }, 500);
+          showCustomModal({
+            title: "Exported",
+            message: `Exported <strong>${items.length}</strong> custom-domain link${items.length === 1 ? '' : 's'} to a .txt file (one <strong>domain/slug : original</strong> pair per line). Re-create each pair on your next provider.`,
+            showCancel: false
+          });
+        } catch (e) {
+          console.error('Export failed:', e);
+          showCustomModal({ title: "Export failed", message: "Could not generate the file. Please try again." });
+        }
+      }
+
       // --- DELETE ALL LINKS ---
       async function deleteAllLinks() {
         // Per-operation lock (see opLocks)
@@ -9053,8 +9192,8 @@
           localStorage.removeItem('tunnel_session_id');
           localStorage.removeItem('tunnel_history');
           // A fresh start logs out of everything: drop the promo admin key
-          // too (reload alone preserves sessionStorage, which is why the
-          // Promo button used to survive Start Fresh).
+          // too (reload alone preserves sessionStorage, so without this the
+          // Admin button would stay unlocked after Start Fresh).
           try { sessionStorage.removeItem('tunnel_admin_key'); } catch (e) {}
           window.location.reload();
         }

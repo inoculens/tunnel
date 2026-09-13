@@ -75,7 +75,7 @@ export default async (request, context) => {
     : host;
 
   // Header path only for byte-safe ASCII slugs (all real slugs match). Anything
-  // else can never equal a stored code, so it takes the legacy query rewrite
+  // else can never equal a stored code, so it takes the fallback query rewrite
   // and lands on the branded 404 (whose destination never carries grafts).
   if (/^[A-Za-z0-9_-]{1,30}$/.test(first)) {
     request.headers.set("x-tunnel-code", first);

@@ -418,6 +418,76 @@ h1 {
   text-decoration: underline;
 }
 
+/* ============ Footer — elevated glass island ============
+   Contained (never full-bleed), two-line stack: tagline above,
+   copyright below. A curved gradient hairline rides the top edge
+   with a faint aura rising from beneath — quiet, not invasive. */
+.footer.footer-elevated {
+  position: relative;
+  max-width: 1000px;
+  margin: 3.5rem auto 0;
+  padding: 22px 24px 20px;
+  background: rgba(33, 33, 36, 0.55);
+  backdrop-filter: blur(24px) saturate(130%);
+  -webkit-backdrop-filter: blur(24px) saturate(130%);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow-1), inset 0 1px 0 var(--stroke-top);
+  overflow: hidden;
+  animation: footerRise 0.7s cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+.footer.footer-elevated::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 8%;
+  right: 8%;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent,
+    rgba(138, 180, 255, 0.55),
+    rgba(255, 255, 255, 0.35),
+    rgba(138, 180, 255, 0.55),
+    transparent);
+}
+
+.footer.footer-elevated::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -130px;
+  width: 440px;
+  height: 170px;
+  transform: translateX(-50%);
+  background: radial-gradient(closest-side, rgba(62, 166, 255, 0.1), transparent);
+  pointer-events: none;
+}
+
+.footer-elevated .footer-tag {
+  display: block;
+  font-size: 0.86rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.footer-elevated .footer-copy {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+@keyframes footerRise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .footer.footer-elevated { animation: none; }
+}
+
 /* ============ Analytics consent banner — Win11 dialog mini ============ */
 #consentBanner {
   position: fixed;

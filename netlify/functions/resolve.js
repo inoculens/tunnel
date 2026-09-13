@@ -102,7 +102,7 @@ export async function handler(event) {
 
   // Prefer X-Tunnel-Code header (set by edge function, carries no query string)
   // over ?c= query param (SaaS Worker / direct hits / deploy-skew fallback),
-  // then path segment (legacy).
+  // then path segment (direct function hits).
   let code = (lowered["x-tunnel-code"] || qs.c || "").trim();
   if (!code) {
     const parts = (event.path || "").split("/").filter(Boolean);

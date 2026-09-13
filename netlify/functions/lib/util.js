@@ -4,9 +4,9 @@
  *
  * Key layout:
  *   sessions/<sessionId>            { createdAt }
- *   link/<code>                     { code, original, short, domain, sessionId,
+ *   link/<host>/<code>              { code, original, short, domain, sessionId,
  *                                     deleteToken, label, clickCount, platform, createdAt }
- *   clicks/<code>/<clickId>         { id, timestamp, ip }
+ *   clicks/<host>/<code>/<clickId>  { id, timestamp, ip }
  *   domain/<hostname>               { domain, sessionId, status, paymentStatus,
  *                                     isVerified, verificationToken, sslTarget,
  *                                     dnsVerification:{cnameValid,txtVerified,sslVerified},
@@ -167,8 +167,8 @@ export function fail(statusCode, code, message) {
 }
 
 // ---------- Validation ----------
-// Strict split (no legacy): sessions are exactly 10 alphanumerics without "1"
-// and without specials. Admin keys are exactly 10 chars, always contain "1",
+// Sessions are exactly 10 alphanumerics without "1" and without specials.
+// Admin keys are exactly 10 chars, always contain "1",
 // specials "@#$" allowed (never valid as session, so auto-routes to admin).
 export const SESSION_RE = /^[A-Za-z023456789]{10}$/;
 export const ADMIN_RE = /^[A-Za-z0-9\-_!@#$]{10}$/;
@@ -625,7 +625,7 @@ export async function cfDeleteCustomHostname(domain) {
 
 export async function verifyDns(domain, token) {
   const target = routingTarget().toLowerCase().replace(/\.$/, "");
-  // Only the live SaaS target is accepted (pre-launch: no legacy records exist).
+  // Only the live SaaS target is accepted.
   const acceptedTargets = new Set([target]);
   const checks = { cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null, cfSslStatus: null };
 
@@ -845,8 +845,8 @@ export function satsFromBtc(btcAmount) {
 export const satsToBtc = (sats) => (Number(sats) / 1e8).toFixed(8);
 
 // Genuine renewal quote? Mirrors the hourly watcher: unconsumed, issued after
-// the last payment. Legacy quotes without createdAt count (otherwise old
-// domains stall forever).
+// the last payment. Quotes without an issuance timestamp count as
+// outstanding (fail-open: never stall a renewal on a missing field).
 export function isRenewalQuote(quote, lastPaymentAtMs) {
   if (!quote?.address || !quote?.amount || quote?.paidAt) return false;
   const lastPaid = Number.isFinite(Number(lastPaymentAtMs)) ? Number(lastPaymentAtMs) : 0;
@@ -951,16 +951,11 @@ async function liveSafetyCheck(url, apiKey) {
 
 // ---------- Ledger helpers (forever, sharded counts, throttled logging) ----------
 
-export function countDayKey(host, code, when = Date.now()) {
-  const d = new Date(when);
-  const day = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-  return `counts/${cleanDomain(host) || "unknown"}/${code}/${day}`;
-}
-
 // Exact counters without read-modify-write races: each click writes one tiny
 // shard doc (pure write, never lost under concurrency). Totals are derived by
 // KEY COUNTING (no body fetches): minute shards +1, adj shards -1.
-// Legacy day-aggs (pre-shard `counts/<h>/<c>/<day>` {count}) are history only.
+// Rolled-up day totals (`counts/<h>/<c>/<day>` {count}) are written by the
+// stats rollup and read back as graph history.
 export function minuteShardKey(host, code, delta = 1) {
   const now = new Date();
   const day = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
@@ -988,7 +983,7 @@ export function sumShardsFromKeys(countKeys) {
     const key = String(b.key || b || "");
     const parts = key.split("/");
     // Minute shards: counts/<h>/<c>/<day>/<leaf> (4 segments after counts).
-    // Legacy day-aggs: counts/<h>/<c>/<day> (3) — excluded here (history only).
+    // Rolled-up day totals: counts/<h>/<c>/<day> (3) — excluded here.
     if (parts.length !== 5) continue;
     const day = parts[3];
     const leaf = parts[4] || "";
@@ -997,19 +992,6 @@ export function sumShardsFromKeys(countKeys) {
     byDay.set(day, (byDay.get(day) || 0) + d);
   }
   return { delta, byDay };
-}
-
-export async function bumpDayCount(s, host, code, n = 1) {
-  // Legacy day-agg path (kept for old graph history). New clicks use
-  // writeCountShard instead — exact under concurrency.
-  const key = countDayKey(host, code);
-  try {
-    const cur = (await s.get(key, { type: "json" })) || { count: 0 };
-    cur.count = (Number(cur.count) || 0) + n;
-    await s.setJSON(key, cur);
-  } catch (e) {
-    console.error(`bumpDayCount failed:`, e?.message || e);
-  }
 }
 
 // Per-IP-per-link-per-minute logging bucket (redirect never blocked).

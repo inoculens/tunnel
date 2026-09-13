@@ -37,8 +37,6 @@ import {
   satsToBtc,
   isRenewalQuote,
   checkUrlSafety,
-  countDayKey,
-  bumpDayCount,
   writeCountShard,
   sumShardsFromKeys,
   shouldStoreClickDetail,
@@ -813,11 +811,6 @@ const actions = {
     const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
     await s.delete(linkKey(host, link.code));
-    // Delete by alternate legacy key too (domain field mismatch).
-    try {
-      const alt = new URL(link.short).hostname.toLowerCase();
-      if (alt && alt !== host.toLowerCase()) await s.delete(linkKey(alt, link.code));
-    } catch { /* ignore */ }
     await deleteClickKeys(s, host, link.code);
     await bumpSessionLinkCount(s, link.sessionId, -1);
     return ok({});
@@ -853,7 +846,7 @@ const actions = {
     );
     const clicks = docs.filter(Boolean);
     clicks.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    // Exact total: legacy baseline + write-only shard delta (key-counted, no
+    // Exact total: link-doc baseline + write-only shard delta (key-counted, no
     // body reads, lossless under concurrency). Badge clickCount stays approx.
     let clickCount = link.clickCount || 0;
     let daily = [];
@@ -863,17 +856,17 @@ const actions = {
       const base = link.baseCount !== undefined ? Number(link.baseCount) || 0 : (link.clickCount || 0);
       const hasShards = countBlobs.some((b) => String(b.key || "").split("/").length === 5);
       clickCount = hasShards ? base + delta : (link.clickCount || 0);
-      // Daily graph: minute-shard grouping first; legacy day-aggs fill days
-      // with no shards (history only, never double-counted).
+      // Daily graph: minute-shard grouping first; rolled-up day totals fill
+      // days with no shards (never double-counted).
       const days = new Map(byDay);
-      const legacyDays = countBlobs.filter((b) => String(b.key || "").split("/").length === 4).slice(-90);
-      if (legacyDays.length) {
-        const legacyDocs = await mapWithConcurrency(legacyDays, 6, (b) =>
+      const dayAggs = countBlobs.filter((b) => String(b.key || "").split("/").length === 4).slice(-90);
+      if (dayAggs.length) {
+        const dayDocs = await mapWithConcurrency(dayAggs, 6, (b) =>
           freshGet(s, b.key, { type: "json" }).catch(() => null)
         );
-        legacyDays.forEach((b, i) => {
+        dayAggs.forEach((b, i) => {
           const day = String(b.key || "").split("/").pop();
-          if (day && !days.has(day)) days.set(day, Number(legacyDocs[i]?.count) || 0);
+          if (day && !days.has(day)) days.set(day, Number(dayDocs[i]?.count) || 0);
         });
       }
       daily = [...days.entries()].map(([day, count]) => ({ day, count }))
@@ -1313,7 +1306,8 @@ const actions = {
         try { if (new URL(l.short).hostname.toLowerCase() === target) match = true; } catch { /* no */ }
       }
       if (!match) continue;
-      // Delete by BOTH possible keys (legacy docs may have mismatched domain field).
+      // Delete by both key derivations (domain field and short-URL host),
+      // so a doc with a mismatched domain field can't orphan its link.
       const keys = new Set([linkKey(l.domain || doc.domain, l.code)]);
       try { keys.add(linkKey(new URL(l.short).hostname, l.code)); } catch { /* ignore */ }
       for (const k of keys) {

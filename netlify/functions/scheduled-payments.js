@@ -55,8 +55,8 @@ export async function handler(event) {
       // "re-pay" every renewal.)
       const unpaid = d.paymentStatus !== "paid";
       const lastPaidAt = d.lastPaymentAt ? new Date(d.lastPaymentAt).getTime() : 0;
-      // Legacy quotes without createdAt still count as renewal candidates
-      // (otherwise old domains stall forever).
+      // Quotes without createdAt count as renewal candidates (fail-open:
+      // never stall a renewal on a missing field).
       const quoteAt = d.quote?.createdAt ? new Date(d.quote.createdAt).getTime() : (d.quote?.address ? Infinity : 0);
       const renewalQuote = d.quote?.address && d.quote?.amount && !d.quote?.paidAt && quoteAt > lastPaidAt;
       const renewalDue = d.paymentStatus === "paid" && !coverageValid(d) && renewalQuote;
