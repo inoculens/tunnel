@@ -86,160 +86,184 @@
       margin: 0 auto;
     }
 
-    /* Scrollytelling — sticky stacking steps that blend into each other.
-       Each step pins while the next one glides over it; ghost numerals,
-       ambient orbs and the glass card fade/blur/scale with scroll. */
+    /* Scrollytelling — borderless editorial flow. Each step is a
+       full-height passage set directly on the page, paced by a hairline
+       kicker, a ghost numeral and an ambient tint orb. Passages melt in
+       on entry and soften on exit. */
     .story {
       position: relative;
       display: flex;
       flex-direction: column;
-      margin-bottom: 4rem;
     }
 
     .story-step {
-      position: sticky;
-      top: 13vh;
-      min-height: 78vh;
+      position: relative;
+      min-height: 92vh;
       display: flex;
       align-items: center;
-      padding: 2rem 0;
+      justify-content: center;
+      padding: 5rem 0;
+      overflow: hidden;
     }
-
-    .story-step:nth-child(odd) { justify-content: flex-start; }
-    .story-step:nth-child(even) { justify-content: flex-end; }
 
     .story-orb {
       position: absolute;
       top: 50%;
-      width: min(560px, 90vw);
-      height: min(560px, 90vw);
-      transform: translateY(-50%) scale(0.9);
+      left: 50%;
+      width: min(720px, 115vw);
+      height: min(720px, 115vw);
+      transform: translate(-50%, -50%) scale(0.92);
       border-radius: 50%;
-      filter: blur(70px) saturate(120%);
+      filter: blur(90px) saturate(120%);
       opacity: 0;
-      transition: opacity 0.9s ease, transform 0.9s ease;
+      transition: opacity 1s ease, transform 1.1s ease;
       pointer-events: none;
-      mix-blend-mode: screen;
     }
 
-    .story-step:nth-child(odd) .story-orb { left: -12%; }
-    .story-step:nth-child(even) .story-orb { right: -12%; }
-
-    .story-step[data-tint="blue"] .story-orb { background: radial-gradient(closest-side, rgba(62, 166, 255, 0.2), transparent); }
-    .story-step[data-tint="violet"] .story-orb { background: radial-gradient(closest-side, rgba(138, 180, 255, 0.18), transparent); }
-    .story-step[data-tint="green"] .story-orb { background: radial-gradient(closest-side, rgba(43, 166, 64, 0.18), transparent); }
-    .story-step[data-tint="amber"] .story-orb { background: radial-gradient(closest-side, rgba(245, 166, 35, 0.2), transparent); }
+    .story-step[data-tint="blue"] .story-orb { background: radial-gradient(closest-side, rgba(62, 166, 255, 0.16), transparent); }
+    .story-step[data-tint="violet"] .story-orb { background: radial-gradient(closest-side, rgba(138, 180, 255, 0.14), transparent); }
+    .story-step[data-tint="green"] .story-orb { background: radial-gradient(closest-side, rgba(43, 166, 64, 0.13), transparent); }
+    .story-step[data-tint="amber"] .story-orb { background: radial-gradient(closest-side, rgba(245, 166, 35, 0.15), transparent); }
 
     .story-num {
       position: absolute;
-      top: 6%;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -58%);
       font-family: 'Lexend Giga', sans-serif;
-      font-size: clamp(5rem, 18vw, 11rem);
+      font-size: clamp(11rem, 30vw, 23rem);
       font-weight: 800;
       line-height: 1;
       letter-spacing: -0.04em;
-      background: linear-gradient(to bottom, rgba(255, 255, 255, 0.32), rgba(255, 255, 255, 0.02));
+      background: linear-gradient(to bottom, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0));
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
       opacity: 0;
-      transform: translateY(24px);
-      transition: opacity 0.9s ease, transform 0.9s ease;
+      filter: blur(1px);
+      transition: opacity 1s ease;
       pointer-events: none;
       user-select: none;
+      white-space: nowrap;
     }
 
-    .story-step:nth-child(odd) .story-num { right: 2%; }
-    .story-step:nth-child(even) .story-num { left: 2%; }
-
-    .story-card {
+    .story-passage {
       position: relative;
-      width: min(560px, 100%);
-      background: rgba(30, 30, 34, 0.78);
-      backdrop-filter: blur(30px) saturate(135%);
-      -webkit-backdrop-filter: blur(30px) saturate(135%);
-      padding: 2.5rem;
-      border-radius: 22px;
-      border: 1px solid var(--border);
-      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.07);
-      opacity: 0;
-      transform: translateY(48px) scale(0.96);
-      filter: blur(8px);
-      transition: opacity 0.8s cubic-bezier(0.32, 0.72, 0, 1),
-        transform 0.8s cubic-bezier(0.32, 0.72, 0, 1),
-        filter 0.8s cubic-bezier(0.32, 0.72, 0, 1);
+      z-index: 1;
+      max-width: 700px;
+      padding: 0 1.5rem;
+      text-align: center;
     }
 
-    .story-step.inview .story-card {
+    .story-passage > * {
+      opacity: 0;
+      transform: translateY(30px);
+      filter: blur(6px);
+      transition: opacity 0.85s cubic-bezier(0.32, 0.72, 0, 1),
+        transform 0.85s cubic-bezier(0.32, 0.72, 0, 1),
+        filter 0.85s cubic-bezier(0.32, 0.72, 0, 1);
+    }
+
+    .story-step.inview .story-passage > *,
+    .story-step.inview .story-orb,
+    .story-step.inview .story-num {
       opacity: 1;
-      transform: translateY(0) scale(1);
+    }
+
+    .story-step.inview .story-passage > * {
+      transform: translateY(0);
       filter: blur(0);
     }
 
+    .story-step.inview .story-passage > *:nth-child(1) { transition-delay: 0.05s; }
+    .story-step.inview .story-passage > *:nth-child(2) { transition-delay: 0.15s; }
+    .story-step.inview .story-passage > *:nth-child(3) { transition-delay: 0.25s; }
+    .story-step.inview .story-passage > *:nth-child(4) { transition-delay: 0.35s; }
+    .story-step.inview .story-passage > *:nth-child(5) { transition-delay: 0.45s; }
+
     .story-step.inview .story-orb {
-      opacity: 1;
-      transform: translateY(-50%) scale(1);
+      transform: translate(-50%, -50%) scale(1);
     }
 
-    .story-step.inview .story-num {
-      opacity: 1;
-      transform: translateY(0);
-    }
-
-    .story-icon {
+    .story-glyph {
       display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 56px;
-      height: 56px;
-      border-radius: 16px;
-      margin-bottom: 1.5rem;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--border-strong);
+      margin-bottom: 1.6rem;
       color: var(--accent-secondary);
+      opacity: 0.9;
     }
 
-    .story-step[data-tint="green"] .story-icon { color: #6fcf7f; }
-    .story-step[data-tint="amber"] .story-icon { color: #f5a623; }
-
-    .story-icon svg {
-      width: 28px;
-      height: 28px;
+    .story-glyph svg {
+      width: 30px;
+      height: 30px;
     }
 
-    .story-btc {
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      margin-bottom: 1.5rem;
-      display: block;
-      border: 1px solid rgba(245, 166, 35, 0.45);
-      box-shadow: 0 0 32px rgba(245, 166, 35, 0.25);
-    }
-
-    .story-card h3 {
-      font-family: 'Lexend Giga', sans-serif;
-      font-size: 1.5rem;
-      font-weight: 700;
-      margin-bottom: 1rem;
-      color: var(--text);
-      letter-spacing: -0.01em;
-    }
-
-    .story-card p {
-      color: var(--text-muted);
-      font-size: 1.05rem;
-      line-height: 1.7;
-    }
+    .story-step[data-tint="green"] .story-glyph { color: #6fcf7f; }
+    .story-step[data-tint="violet"] .story-glyph { color: #b9c8ff; }
 
     .story-kicker {
-      display: block;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
       font-size: 0.72rem;
       font-weight: 700;
-      letter-spacing: 0.14em;
+      letter-spacing: 0.24em;
       text-transform: uppercase;
-      color: var(--text-faint);
-      margin-bottom: 0.9rem;
+      margin-bottom: 1.4rem;
+    }
+
+    .story-kicker::before,
+    .story-kicker::after {
+      content: '';
+      width: 44px;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, currentColor, transparent);
+      opacity: 0.55;
+    }
+
+    .story-step[data-tint="blue"] .story-kicker { color: var(--accent-secondary); }
+    .story-step[data-tint="violet"] .story-kicker { color: #b9c8ff; }
+    .story-step[data-tint="green"] .story-kicker { color: #6fcf7f; }
+    .story-step[data-tint="amber"] .story-kicker { color: #f5a623; }
+
+    .story-passage h3 {
+      font-family: 'DM Sans', sans-serif;
+      font-size: clamp(2.1rem, 5.4vw, 3rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.12;
+      background: linear-gradient(to bottom, #ffffff 30%, #b3b8c2 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      margin-bottom: 1.3rem;
+      padding-bottom: 0.08em;
+    }
+
+    .story-passage p {
+      color: var(--text-muted);
+      font-size: 1.08rem;
+      line-height: 1.8;
+      max-width: 62ch;
+      margin: 0 auto;
+    }
+
+    .story-btc-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 2rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: #f5a623;
+    }
+
+    .story-btc-row img {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      box-shadow: 0 0 28px rgba(245, 166, 35, 0.3);
     }
 
     .story-cta {
@@ -249,15 +273,11 @@
 
     @media (max-width: 768px) {
       .story-step {
-        top: 11vh;
-        min-height: 82vh;
-        justify-content: center;
-      }
-      .story-card {
-        padding: 2rem 1.5rem;
+        min-height: 84vh;
+        padding: 4rem 0;
       }
       .story-num {
-        top: 0;
+        font-size: clamp(8rem, 44vw, 12rem);
       }
       .hero h1 {
         font-size: 2.5rem;
@@ -265,33 +285,20 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .story-card, .story-orb, .story-num {
+      .story-passage > *, .story-orb, .story-num {
         transition: none;
         opacity: 1;
         transform: none;
         filter: none;
       }
+      .story-step.inview .story-orb {
+        transform: translate(-50%, -50%);
+      }
+      .story-step.inview .story-num {
+        transform: translate(-50%, -58%);
+      }
     }
 
-
-    .bitcoin-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      background: rgba(245, 166, 35, 0.1);
-      color: #f5a623;
-      padding: 8px 16px;
-      border-radius: 999px;
-      font-weight: 700;
-      font-size: 0.85rem;
-      margin-top: 1.5rem;
-      border: 1px solid rgba(245, 166, 35, 0.3);
-    }
-
-    .btc-icon {
-        width: 18px;
-        height: 18px;
-    }
 
     /* Footer design lives in /assets/common.css (.footer-elevated). */
   </style>
@@ -331,14 +338,14 @@
       <section class="story-step" data-tint="blue">
         <div class="story-orb" aria-hidden="true"></div>
         <span class="story-num" aria-hidden="true">01</span>
-        <div class="story-card">
-          <span class="story-kicker">Deep links</span>
-          <span class="story-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <div class="story-passage">
+          <span class="story-glyph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
               <path d="M10 13.5a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.7 1.7" />
               <path d="M14 10.5a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.7-1.7" />
             </svg>
           </span>
+          <span class="story-kicker">Deep links</span>
           <h3>Deep Link Magic</h3>
           <p>Our Tunnel Technology detects the platform and opens YouTube, Instagram, and TikTok apps directly, skyrocketing your engagement.</p>
         </div>
@@ -347,16 +354,16 @@
       <section class="story-step" data-tint="violet">
         <div class="story-orb" aria-hidden="true"></div>
         <span class="story-num" aria-hidden="true">02</span>
-        <div class="story-card">
-          <span class="story-kicker">Branding</span>
-          <span class="story-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <div class="story-passage">
+          <span class="story-glyph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="9" />
               <path d="M3 12h18" />
               <path d="M12 3a14 14 0 0 1 0 18" />
               <path d="M12 3a14 14 0 0 0 0 18" />
             </svg>
           </span>
+          <span class="story-kicker">Branding</span>
           <h3>Custom Domains</h3>
           <p>Shorten links using your own brand. We handle the SSL certificates, DNS routing, and management so you can look like a pro without the technical headache.</p>
         </div>
@@ -365,13 +372,13 @@
       <section class="story-step" data-tint="green">
         <div class="story-orb" aria-hidden="true"></div>
         <span class="story-num" aria-hidden="true">03</span>
-        <div class="story-card">
-          <span class="story-kicker">Insights</span>
-          <span class="story-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <div class="story-passage">
+          <span class="story-glyph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 12h4l3-8 4 16 3-8h4" />
             </svg>
           </span>
+          <span class="story-kicker">Insights</span>
           <h3>Real-time Analytics</h3>
           <p>Know exactly when, where, and how your audience is interacting with your content. Every click is a data point helping you grow.</p>
         </div>
@@ -380,14 +387,19 @@
       <section class="story-step" data-tint="amber">
         <div class="story-orb" aria-hidden="true"></div>
         <span class="story-num" aria-hidden="true">04</span>
-        <div class="story-card">
+        <div class="story-passage">
+          <span class="story-glyph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6z" />
+              <path d="M9.5 12l2 2 3.5-4" />
+            </svg>
+          </span>
           <span class="story-kicker">Privacy &amp; freedom</span>
-          <img class="story-btc" src="/visuals/Bitcoin_Logo.png" alt="Bitcoin" width="56" height="56" loading="lazy" decoding="async">
           <h3>Bitcoin-Native</h3>
           <p>We believe in a decentralised future. That's why INOCULENS Tunnel is Bitcoin-only from the ground up. Complex redirects, custom domains — everything is paid in the one true currency, decentralized and censorship resistant — Bitcoin.</p>
-          <div class="bitcoin-badge">
-            <img class="btc-icon" src="/visuals/Bitcoin_Logo.png" alt="" width="18" height="18" loading="lazy" decoding="async" aria-hidden="true">
-            Bitcoin Accepted
+          <div class="story-btc-row">
+            <img src="/visuals/Bitcoin_Logo.png" alt="Bitcoin" width="40" height="40" loading="lazy" decoding="async">
+            <span>Bitcoin Accepted</span>
           </div>
         </div>
       </section>
@@ -404,9 +416,9 @@
   </footer>
 
   <script>
-    // Scrollytelling blend: steps toggle .inview both ways so cards melt
-    // in and out while scrolling up or down. Pure CSS transitions do the
-    // motion; rAF-throttled so fast scrolls can't thrash the observer.
+    // Scrollytelling blend: steps toggle .inview both ways so passages
+    // melt in and out while scrolling up or down. Pure CSS transitions do
+    // the motion; rAF-throttled so fast scrolls can't thrash the observer.
     (function () {
       var steps = Array.prototype.slice.call(document.querySelectorAll('.story-step'));
       if (!steps.length) return;
