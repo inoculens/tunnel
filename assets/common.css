@@ -460,6 +460,10 @@ h1 {
   color: var(--text-faint);
 }
 
+.footer-elevated .footer-copy .nowrap {
+  white-space: nowrap;
+}
+
 /* ============ Analytics consent banner — Win11 dialog mini ============ */
 #consentBanner {
   position: fixed;
