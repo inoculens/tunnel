@@ -88,8 +88,11 @@
 
     /* Scrollytelling — borderless editorial flow. Each step is a
        full-height passage set directly on the page, paced by a hairline
-       kicker, a ghost numeral and an ambient tint orb. Passages melt in
-       on entry and soften on exit. */
+       kicker, a ghost numeral and an ambient tint orb. The reveal is
+       scroll-linked: JS writes each step's live visibility to --p (0..1)
+       every frame, and every fade, rise and deblur below derives from it —
+       so the motion always matches scroll speed and completes exactly when
+       the passage is fully in view. No timers, no transitions. */
     .story {
       position: relative;
       display: flex;
@@ -97,13 +100,89 @@
     }
 
     .story-step {
+      --p: 1;
       position: relative;
-      min-height: 92vh;
+      min-height: 78vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 5rem 0;
+      padding: 3.5rem 0;
       overflow: hidden;
+    }
+
+    /* Thread: a short gradient filament with a glowing bead at its tip
+       joins each passage to the next, so the points read as one
+       continuous descent instead of isolated blocks. */
+    .story-step:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      width: 1px;
+      height: 60px;
+      transform: translateX(-50%);
+      opacity: clamp(0, calc((var(--p, 1) - 0.6) / 0.4), 1);
+    }
+
+    .story-step:not(:last-child)::before {
+      content: '';
+      position: absolute;
+      bottom: 4px;
+      left: 50%;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      transform: translateX(-50%);
+      opacity: clamp(0, calc((var(--p, 1) - 0.7) / 0.3), 1);
+    }
+
+    .story-step[data-tint="blue"]:not(:last-child)::after { background: linear-gradient(to bottom, rgba(62, 166, 255, 0.55), transparent); }
+    .story-step[data-tint="blue"]:not(:last-child)::before { background: #3ea6ff; box-shadow: 0 0 12px rgba(62, 166, 255, 0.8); }
+    .story-step[data-tint="violet"]:not(:last-child)::after { background: linear-gradient(to bottom, rgba(185, 200, 255, 0.55), transparent); }
+    .story-step[data-tint="violet"]:not(:last-child)::before { background: #b9c8ff; box-shadow: 0 0 12px rgba(185, 200, 255, 0.8); }
+    .story-step[data-tint="green"]:not(:last-child)::after { background: linear-gradient(to bottom, rgba(111, 207, 127, 0.5), transparent); }
+    .story-step[data-tint="green"]:not(:last-child)::before { background: #6fcf7f; box-shadow: 0 0 12px rgba(111, 207, 127, 0.8); }
+
+
+
+    /* Scroll cue: invitations to descend, docked at the end of the hero. */
+    .scroll-cue {
+      margin-top: 3rem;
+      text-align: center;
+    }
+
+    .scroll-cue span {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+    }
+
+    .scroll-cue i {
+      display: block;
+      width: 1px;
+      height: 54px;
+      margin: 14px auto 0;
+      background: rgba(255, 255, 255, 0.12);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .scroll-cue i::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: -40%;
+      width: 1px;
+      height: 40%;
+      background: var(--accent-secondary);
+      animation: cueDrop 2.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+    }
+
+    @keyframes cueDrop {
+      0% { top: -40%; }
+      60%, 100% { top: 100%; }
     }
 
     .story-orb {
@@ -112,11 +191,10 @@
       left: 50%;
       width: min(720px, 115vw);
       height: min(720px, 115vw);
-      transform: translate(-50%, -50%) scale(0.92);
+      transform: translate(-50%, -50%) scale(calc(0.92 + var(--p, 1) * 0.08));
       border-radius: 50%;
       filter: blur(90px) saturate(120%);
-      opacity: 0;
-      transition: opacity 1s ease, transform 1.1s ease;
+      opacity: calc(var(--p, 1) * 0.9);
       pointer-events: none;
     }
 
@@ -131,7 +209,7 @@
       left: 50%;
       transform: translate(-50%, -58%);
       font-family: 'Lexend Giga', sans-serif;
-      font-size: clamp(11rem, 30vw, 23rem);
+      font-size: clamp(8rem, 24vw, 17rem);
       font-weight: 800;
       line-height: 1;
       letter-spacing: -0.04em;
@@ -139,9 +217,8 @@
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
-      opacity: 0;
+      opacity: calc(var(--p, 1) * 0.9);
       filter: blur(1px);
-      transition: opacity 1s ease;
       pointer-events: none;
       user-select: none;
       white-space: nowrap;
@@ -156,34 +233,16 @@
     }
 
     .story-passage > * {
-      opacity: 0;
-      transform: translateY(30px);
-      filter: blur(6px);
-      transition: opacity 0.85s cubic-bezier(0.32, 0.72, 0, 1),
-        transform 0.85s cubic-bezier(0.32, 0.72, 0, 1),
-        filter 0.85s cubic-bezier(0.32, 0.72, 0, 1);
+      --q: var(--p, 1);
+      opacity: var(--q);
+      transform: translateY(calc((1 - var(--q)) * 30px));
+      filter: blur(calc((1 - var(--q)) * 6px));
     }
 
-    .story-step.inview .story-passage > *,
-    .story-step.inview .story-orb,
-    .story-step.inview .story-num {
-      opacity: 1;
-    }
-
-    .story-step.inview .story-passage > * {
-      transform: translateY(0);
-      filter: blur(0);
-    }
-
-    .story-step.inview .story-passage > *:nth-child(1) { transition-delay: 0.05s; }
-    .story-step.inview .story-passage > *:nth-child(2) { transition-delay: 0.15s; }
-    .story-step.inview .story-passage > *:nth-child(3) { transition-delay: 0.25s; }
-    .story-step.inview .story-passage > *:nth-child(4) { transition-delay: 0.35s; }
-    .story-step.inview .story-passage > *:nth-child(5) { transition-delay: 0.45s; }
-
-    .story-step.inview .story-orb {
-      transform: translate(-50%, -50%) scale(1);
-    }
+    .story-passage > *:nth-child(2) { --q: clamp(0, calc((var(--p, 1) - 0.07) / 0.93), 1); }
+    .story-passage > *:nth-child(3) { --q: clamp(0, calc((var(--p, 1) - 0.14) / 0.86), 1); }
+    .story-passage > *:nth-child(4) { --q: clamp(0, calc((var(--p, 1) - 0.21) / 0.79), 1); }
+    .story-passage > *:nth-child(5) { --q: clamp(0, calc((var(--p, 1) - 0.28) / 0.72), 1); }
 
     .story-glyph {
       display: inline-flex;
@@ -273,8 +332,8 @@
 
     @media (max-width: 768px) {
       .story-step {
-        min-height: 84vh;
-        padding: 4rem 0;
+        min-height: 76vh;
+        padding: 3rem 0;
       }
       .story-num {
         font-size: clamp(8rem, 44vw, 12rem);
@@ -285,17 +344,22 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .story-passage > *, .story-orb, .story-num {
-        transition: none;
+      .scroll-cue i::after {
+        animation: none;
+      }
+      .story-passage > * {
         opacity: 1;
         transform: none;
         filter: none;
       }
-      .story-step.inview .story-orb {
+      .story-orb {
+        opacity: 0.9;
         transform: translate(-50%, -50%);
       }
-      .story-step.inview .story-num {
-        transform: translate(-50%, -58%);
+      .story-num,
+      .story-step:not(:last-child)::after,
+      .story-step:not(:last-child)::before {
+        opacity: 1;
       }
     }
 
@@ -332,6 +396,7 @@
     <section class="hero">
       <h1>Let Your Audience Engage the Right Way.</h1>
       <p>INOCULENS Tunnel isn't just a URL shortener. It's a premium link-sharing layer designed to make your links more powerful, professional, and accessible.</p>
+      <div class="scroll-cue" aria-hidden="true"><span>Scroll</span><i></i></div>
     </section>
 
     <div class="story">
@@ -416,34 +481,39 @@
   </footer>
 
   <script>
-    // Scrollytelling blend: steps toggle .inview both ways so passages
-    // melt in and out while scrolling up or down. Pure CSS transitions do
-    // the motion; rAF-throttled so fast scrolls can't thrash the observer.
+    // Scroll-linked reveal: every frame measures each step's live
+    // visibility and writes it to --p (0..1), which drives all fades,
+    // rises and deblurs in CSS. Fast scrolls scrub through the motion;
+    // the passage completes exactly when fully in view. Without JS the
+    // --p: 1 default keeps everything visible.
     (function () {
       var steps = Array.prototype.slice.call(document.querySelectorAll('.story-step'));
-      if (!steps.length) return;
-      if (!('IntersectionObserver' in window)) {
-        steps.forEach(function (el) { el.classList.add('inview'); });
-        return;
-      }
+      if (!steps.length || !window.requestAnimationFrame) return;
       var ticking = false;
-      var pending = [];
-      function flush() {
-        ticking = false;
-        pending.forEach(function (job) {
-          if (job.isIntersecting) job.target.classList.add('inview');
-          else job.target.classList.remove('inview');
-        });
-        pending = [];
+      function progress(step) {
+        var r = step.getBoundingClientRect();
+        var vh = window.innerHeight || 1;
+        var visible = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+        var span = Math.min(Math.max(1, r.height), vh * 0.92);
+        var v = Math.max(0, Math.min(1, visible / span));
+        var t = Math.max(0, Math.min(1, (v - 0.3) / (0.92 - 0.3)));
+        return t * t * (3 - 2 * t);
       }
-      var observer = new IntersectionObserver(function (entries) {
-        pending = pending.concat(entries);
+      function update() {
+        ticking = false;
+        for (var i = 0; i < steps.length; i++) {
+          steps[i].style.setProperty('--p', progress(steps[i]).toFixed(3));
+        }
+      }
+      function request() {
         if (!ticking) {
           ticking = true;
-          requestAnimationFrame(flush);
+          window.requestAnimationFrame(update);
         }
-      }, { threshold: 0.35 });
-      steps.forEach(function (el) { observer.observe(el); });
+      }
+      window.addEventListener('scroll', request, { passive: true });
+      window.addEventListener('resize', request);
+      update();
     })();
   </script>
   <script src="/assets/common.js"></script>
