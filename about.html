@@ -107,7 +107,11 @@
       align-items: center;
       justify-content: center;
       padding: 2rem 0;
-      overflow: hidden;
+      /* Visible (not hidden): each tint orb bleeds across the step
+         boundary and melts into its neighbour, so there is never a
+         clipped full-width edge between points. Page-level overflow-x
+         on body still contains horizontal bleed. */
+      overflow: visible;
     }
 
     /* Thread: a short gradient filament with a glowing bead at its tip
@@ -189,12 +193,15 @@
       position: absolute;
       top: 50%;
       left: 50%;
-      width: min(720px, 115vw);
-      height: min(720px, 115vw);
+      /* Smaller than before so the tint reads as an ambient halo around
+         the passage — never a full-bleed wash whose clipped rim draws a
+         hard horizontal seam at the step boundary. */
+      width: min(600px, 92vw);
+      height: min(600px, 92vw);
       transform: translate(-50%, -50%) scale(calc(0.92 + var(--p, 1) * 0.08));
       border-radius: 50%;
-      filter: blur(90px) saturate(120%);
-      opacity: calc(var(--p, 1) * 0.9);
+      filter: blur(100px) saturate(130%);
+      opacity: calc(var(--p, 1) * 0.85);
       pointer-events: none;
     }
 
