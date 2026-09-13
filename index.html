@@ -2935,6 +2935,17 @@
         width: 100% !important;
       }
     }
+
+    /* Consent floats above the bottom-docked footer on this page only,
+       so the two never overlap. Other pages keep the default. */
+    #consentBanner {
+      bottom: 112px;
+    }
+    @media (max-width: 520px) {
+      #consentBanner {
+        bottom: 140px;
+      }
+    }
   </style>
 
   <!-- Structured Data (JSON-LD) for SEO — single WebApplication entity -->
