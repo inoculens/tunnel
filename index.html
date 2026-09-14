@@ -80,7 +80,7 @@
   <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap" media="print" onload="this.media='all'">
   <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap"></noscript>
-  <!-- APP_VERSION 20260914: bump ?v= on app.css/app.js below whenever either file changes -->
+  <!-- CACHE BUST: bump ?v= on a bundle below whenever THAT file changes (per-file versions are fine) -->
   <link rel="stylesheet" href="/assets/app.css?v=20260914">
 
   <!-- Structured Data (JSON-LD) for SEO — single WebApplication entity -->
@@ -631,7 +631,7 @@
       </div>
     </div>
 
-    <script src="/assets/app.js?v=20260914" defer></script>
+    <script src="/assets/app.js?v=20260914-2" defer></script>
     <script>
       // Last-resort watchdog: if the main script above threw before boot
       // (e.g. storage blocked, unexpected error), never strand the user on

@@ -4686,10 +4686,15 @@
         window._statsOffset = 0;
 
         const overlay = document.getElementById('statsOverlay');
+        // Re-entrancy guard: refresh callers (e.g. after a delete) run while
+        // the overlay is already open and its lock already held — locking
+        // again would leak +1 that closeStats() never releases (dead scroll).
+        const alreadyOpen = overlay.style.display === 'flex';
         overlay.style.display = 'flex';
-        lockScroll();
-
-        window.addEventListener('keydown', handleStatsEsc);
+        if (!alreadyOpen) {
+          lockScroll();
+          window.addEventListener('keydown', handleStatsEsc);
+        }
         refreshStatsView();
       }
 
@@ -4973,7 +4978,11 @@
                 message: "Click record has been deleted successfully.",
                 showCancel: false
               });
-              viewStats(shortCode, itemDomain(item));
+              // Refresh in place: the stats overlay is already open (and its
+              // scroll lock already held), so re-entering viewStats() here
+              // would stack a second lock that closeStats() never releases.
+              // Same pattern as the purge-all path below.
+              refreshStatsView();
             } catch (e) {
               // Close loading modal first
               closeLoadingModal();
