@@ -1006,6 +1006,7 @@
         const myDomain = pendingDomain;
         const myToken = ++paymentScreenToken;
         resetPaymentScreen();
+        ensureWithdrawalConsentListener();
         const stepLoading = document.getElementById('paymentStepLoading');
         const instructions = document.getElementById('paymentInstructions');
         const discountSection = document.getElementById('discountCodeSection');
@@ -1058,6 +1059,12 @@
           removeBtn.disabled = false;
           removeBtn.textContent = 'Remove';
         }
+        const consentBox = document.getElementById('withdrawalConsent');
+        const consentNote = document.getElementById('withdrawalConsentNote');
+        const consentWrap = document.getElementById('withdrawalConsentBox');
+        if (consentBox) { consentBox.checked = false; consentBox.disabled = false; }
+        if (consentNote) consentNote.style.display = 'none';
+        if (consentWrap) consentWrap.style.borderColor = '';
         if (backBtn) {
           backBtn.disabled = false;
           backBtn.style.opacity = '';
@@ -1119,6 +1126,44 @@
           removeBtn.style.display = 'block';
         }
         setDiscountBanner(bannerEl, data.discountPercent);
+        if (data.withdrawalConsent === true) paintWithdrawalConsent(true);
+      }
+
+      // EU withdrawal consent (Terms 3.3): checkbox state helpers.
+      function withdrawalConsentChecked() {
+        const box = document.getElementById('withdrawalConsent');
+        return !!box && box.checked === true;
+      }
+      function paintWithdrawalConsent(recorded) {
+        const box = document.getElementById('withdrawalConsent');
+        const note = document.getElementById('withdrawalConsentNote');
+        const wrap = document.getElementById('withdrawalConsentBox');
+        if (box) {
+          if (recorded === true) { box.checked = true; box.disabled = true; }
+          else if (recorded === false) { box.checked = false; box.disabled = false; }
+        }
+        if (note) note.style.display = 'none';
+        if (wrap) wrap.style.borderColor = '';
+      }
+      function flagWithdrawalConsent() {
+        const note = document.getElementById('withdrawalConsentNote');
+        const wrap = document.getElementById('withdrawalConsentBox');
+        if (note) note.style.display = 'block';
+        if (wrap) wrap.style.borderColor = '#f5a623';
+      }
+      function isWithdrawalConsentError(e) {
+        return !!e && typeof e.message === 'string' && e.message.indexOf('WITHDRAWAL_CONSENT') !== -1;
+      }
+      // One-shot wiring (guarded): ticking the box reloads the quote so
+      // consent takes effect without hunting for a button.
+      function ensureWithdrawalConsentListener() {
+        if (window._withdrawalListen) return;
+        window._withdrawalListen = true;
+        const box = document.getElementById('withdrawalConsent');
+        if (box) box.addEventListener('change', () => {
+          const details = document.getElementById('paymentDetails');
+          if (box.checked && details && details.style.display === 'none') loadPaymentScreen();
+        });
       }
 
       // Discount snapshot for the coverage box: refresh from the backend
@@ -2027,7 +2072,8 @@
         const res = await genFn({
           domain: pendingDomain,
           sessionId: getSessionId(),
-          forceRefresh: forceRefresh
+          forceRefresh: forceRefresh,
+          withdrawalConsent: withdrawalConsentChecked()
         });
         return res.data;
       }
@@ -2040,6 +2086,7 @@
         const quoteExpiryEl = document.getElementById('quoteExpiry');
         if (loadingState) loadingState.style.display = 'none';
         if (paymentDetails) paymentDetails.style.display = 'block';
+        if (data.withdrawalConsent === true) paintWithdrawalConsent(true);
         if (data.discountPercent && data.originalAmount) {
           setQuoteAmount(quoteAmountEl, data.amount, data.originalAmount);
         } else {
@@ -2059,6 +2106,12 @@
         const paymentDetails = document.getElementById('paymentDetails');
         if (paymentDetails) paymentDetails.style.display = 'none';
         if (!loadingState) return;
+        if (isWithdrawalConsentError(err)) {
+          loadingState.style.display = 'block';
+          loadingState.innerHTML = '<span style="color: var(--text-muted);">Tick the consent box below to load your payment address.</span>';
+          flagWithdrawalConsent();
+          return;
+        }
         loadingState.style.display = 'block';
         if (err && err.code === 'failed-precondition' && err.message && err.message.includes('DNS verification')) {
           loadingState.innerHTML = '<span style="color: #f5a623;">DNS verification required before payment.</span>';
@@ -2210,7 +2263,8 @@
             code: code,
             domain: pendingDomain,
             sessionId: getSessionId(),
-            forceRefresh: true
+            forceRefresh: true,
+            withdrawalConsent: withdrawalConsentChecked()
           });
           if (pendingDomain !== myDomain) return;
 
@@ -2303,7 +2357,10 @@
 
         } catch (err) {
           console.error('Discount code error:', err);
-          const errorMessage = err.message || 'Failed to apply discount code';
+          const errorMessage = isWithdrawalConsentError(err)
+            ? 'Tick the consent box below first — it is required before any discount can be applied.'
+            : (err.message || 'Failed to apply discount code');
+          if (isWithdrawalConsentError(err)) flagWithdrawalConsent();
           messageEl.textContent = errorMessage;
           messageEl.style.color = '#f04141';
           messageEl.style.display = 'block';

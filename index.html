@@ -585,6 +585,15 @@
           </div>
         </div>
 
+        <div id="withdrawalConsentBox"
+          style="margin-bottom: 16px; padding: 12px 14px; background: rgba(0, 0, 0, 0.32); border: 1px solid var(--border); border-radius: 8px;">
+          <label style="display: flex; gap: 10px; align-items: flex-start; cursor: pointer; font-size: 0.85rem; color: var(--text);">
+            <input type="checkbox" id="withdrawalConsent" style="margin-top: 3px; width: 16px; height: 16px; flex-shrink: 0; accent-color: #6fcf7f;">
+            <span>I consent to performance beginning immediately and acknowledge that I will lose my 14-day right of withdrawal once the service has started. See <a href="/terms" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">Terms §3.3</a>.</span>
+          </label>
+          <div id="withdrawalConsentNote" style="display: none; margin-top: 8px; font-size: 0.8rem; color: #f5a623;">Tick the box above to load your payment address.</div>
+        </div>
+
         <button class="modal-btn modal-btn-cancel" id="paymentBackBtn" onclick="showStep(2)"
           style="width: 100%;">Back</button>
       </div>

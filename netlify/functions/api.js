@@ -512,6 +512,24 @@ async function addressTakenByOtherDomain(s, ownDomain, address) {
   return false;
 }
 
+// Terms version pinned to the withdrawal-consent record below.
+const TERMS_VERSION = "2026-09-14";
+
+// EU withdrawal gate (Directive 2011/83 Art. 16(m)): no quote or discount
+// may be issued until the owner consents to immediate performance and
+// acknowledges losing the 14-day withdrawal right. Recorded once per domain;
+// later calls pass on the stored record. Returns a fail response or null.
+async function withdrawalConsentGate(s, doc, p, what) {
+  if (doc.withdrawalConsent && doc.withdrawalConsent.at) return null;
+  if (p.withdrawalConsent !== true) {
+    // Exact prefix the frontend matches on — keep stable.
+    return fail(412, "failed-precondition", `WITHDRAWAL_CONSENT_REQUIRED: tick the consent box before ${what}.`);
+  }
+  doc.withdrawalConsent = { at: new Date().toISOString(), termsVersion: TERMS_VERSION, sessionId: p.sessionId };
+  await s.setJSON(`domain/${doc.domain}`, doc);
+  return null;
+}
+
 // ---------- actions ----------
 
 const actions = {
@@ -1433,6 +1451,8 @@ const actions = {
     if (!(dns.cnameValid && dns.txtVerified)) {
       return fail(412, "failed-precondition", "DNS verification required before payment.");
     }
+    const consentBlock = await withdrawalConsentGate(s, doc, p, "requesting a payment address");
+    if (consentBlock) return consentBlock;
     const now = Date.now();
     // A consumed quote (already paid) is never re-shown: renewals always get
     // a fresh address, otherwise the user would pay an address the watcher
@@ -1448,6 +1468,7 @@ const actions = {
         coverageExpiresAt: doc.coverageExpiresAt || null,
         coverageLifetime: doc.coverageLifetime === true,
         coverageValid: coverageValid(doc),
+        withdrawalConsent: true,
       });
     }
     const price = await btcUsdPrice().catch((e) => {
@@ -1516,12 +1537,13 @@ const actions = {
       await s.setJSON(`domain/${doc.domain}`, doc);
       reverified++;
     }
-    return ok({ amount: doc.quote.amount, address: doc.quote.address, expiresAt: doc.quote.expiresAt, index: doc.quote.index, ...(q.discountPercent ? { discountPercent: q.discountPercent, originalAmount: q.originalAmount } : {}), coverageExpiresAt: doc.coverageExpiresAt || null, coverageLifetime: doc.coverageLifetime === true, coverageValid: coverageValid(doc) });
+    return ok({ amount: doc.quote.amount, address: doc.quote.address, expiresAt: doc.quote.expiresAt, index: doc.quote.index, ...(q.discountPercent ? { discountPercent: q.discountPercent, originalAmount: q.originalAmount } : {}), coverageExpiresAt: doc.coverageExpiresAt || null, coverageLifetime: doc.coverageLifetime === true, coverageValid: coverageValid(doc), withdrawalConsent: true });
   },
 
   async checkDomainDiscount(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
     if (refreshCoverage(doc)) await s.setJSON(`domain/${doc.domain}`, doc);
+    const consentRecorded = !!(doc.withdrawalConsent && doc.withdrawalConsent.at);
     if (doc.discount && doc.discount.percent > 0) {
       return ok({
         hasDiscount: true,
@@ -1532,6 +1554,7 @@ const actions = {
         coverageExpiresAt: doc.coverageExpiresAt || null,
         coverageLifetime: doc.coverageLifetime === true,
         coverageValid: coverageValid(doc),
+        withdrawalConsent: consentRecorded,
       });
     }
     return ok({
@@ -1539,6 +1562,7 @@ const actions = {
       coverageExpiresAt: doc.coverageExpiresAt || null,
       coverageLifetime: doc.coverageLifetime === true,
       coverageValid: coverageValid(doc),
+      withdrawalConsent: consentRecorded,
     });
   },
 
@@ -1803,6 +1827,7 @@ const actions = {
           coverageExpiresAt: doc.coverageExpiresAt || null,
           coverageLifetime: doc.coverageLifetime === true,
           coverageValid: coverageValid(doc),
+          withdrawalConsent: true,
         });
       }
       if (doc.quote && doc.quote.address) {
@@ -1817,6 +1842,7 @@ const actions = {
           coverageExpiresAt: doc.coverageExpiresAt || null,
           coverageLifetime: doc.coverageLifetime === true,
           coverageValid: coverageValid(doc),
+          withdrawalConsent: true,
         });
       }
     }
@@ -1832,6 +1858,8 @@ const actions = {
     if (used >= (stored.maxUses || 1)) {
       return fail(400, "invalid-argument", "This code has already been redeemed.");
     }
+    const consentBlock = await withdrawalConsentGate(s, doc, p, "applying a discount code");
+    if (consentBlock) return consentBlock;
     const pct = stored.percent;
     const promo = stored;
     // Reserve BEFORE applying (use stays burned if doc save fails — a code can
@@ -1889,6 +1917,7 @@ const actions = {
         coverageExpiresAt: doc.coverageExpiresAt,
         coverageLifetime: doc.coverageLifetime,
         coverageValid: coverageValid(doc),
+        withdrawalConsent: true,
       });
     }
     // Regenerate quote at the discounted price.
@@ -1950,6 +1979,7 @@ const actions = {
       coverageExpiresAt: doc.coverageExpiresAt || null,
       coverageLifetime: doc.coverageLifetime === true,
       coverageValid: coverageValid(doc),
+      withdrawalConsent: true,
     });
   },
 
