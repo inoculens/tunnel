@@ -429,8 +429,9 @@ h1 {
 /* ============ Footer — discreet gradient hairline ============
    Borderless and transparent so it melts into the page background
    like the glass header. A single 1px gradient hairline (with a soft
-   glow echoing the page's top radial) is the only divider — no card,
-   no solid border, no loading-panel feel. Still bottom-docked via
+   top-cone glow) is the only divider — no card, no solid border, no
+   loading-panel feel. The wash is a centered radial cone so it fades
+   on ALL sides (no left/right seams). Still bottom-docked via
    margin-top: auto in the body flex column. */
 .footer.footer-elevated {
   position: relative;
@@ -440,7 +441,7 @@ h1 {
   padding: 36px 24px calc(30px + env(safe-area-inset-bottom, 0px));
   text-align: center;
   background:
-    linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.015));
+    radial-gradient(520px 110px at 50% 0%, rgba(255, 255, 255, 0.045), transparent 70%);
   border: none;
   border-radius: 0;
   overflow: visible;
