@@ -445,13 +445,33 @@ export function trustedRawIp(event) {
   );
 }
 
+function expandIPv6Groups(ip) {
+  const noSuffix = String(ip || "").trim().toLowerCase().split("/")[0];
+  if (!noSuffix.includes(":")) return null;
+  const halves = noSuffix.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const valid = (g) => /^[0-9a-f]{0,4}$/.test(g);
+  if (!head.every(valid) || !tail.every(valid)) return null;
+  const missing = 8 - (head.length + tail.length);
+  if (missing < 0) return null;
+  const full = [...head, ...Array(missing).fill("0"), ...tail];
+  if (full.length !== 8) return null;
+  return full.map((g) => {
+    const n = g.replace(/^0+(?=[0-9a-f])/, "");
+    return n === "" ? "0" : n;
+  });
+}
+
 export function clientIp(event) {
   const raw = trustedRawIp(event);
   if (raw.includes(":") && raw.includes(".")) return raw; // unexpected mix, keep
   if (raw.includes(":")) {
-    // IPv6 → /64
-    const parts = raw.split(":");
-    return parts.slice(0, 4).join(":") + "::/64";
+    // IPv6 → /64, expanded first so compressed spellings share one bucket.
+    const groups = expandIPv6Groups(raw);
+    if (!groups) return "v6invalid";
+    return groups.slice(0, 4).join(":") + "::/64";
   }
   if (/^\d+\.\d+\.\d+\.\d+$/.test(raw)) {
     // IPv4 → zero last octet
@@ -474,12 +494,19 @@ export async function checkRate(s, name, ip, limit) {
 // ---------- DNS verification via DNS-over-HTTPS (no Cloudflare key needed) ----------
 
 async function doh(name, type) {
-  const res = await fetch(
-    `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=${type}`
-  );
-  if (!res.ok) throw new Error(`DoH lookup failed (${res.status})`);
-  const data = await res.json();
-  return (data.Answer || []).map((a) => String(a.data));
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    const res = await fetch(
+      `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=${type}`,
+      { signal: ctrl.signal }
+    );
+    if (!res.ok) throw new Error(`DoH lookup failed (${res.status})`);
+    const data = await res.json();
+    return (data.Answer || []).map((a) => String(a.data));
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 export function routingTarget() {
@@ -560,14 +587,22 @@ async function cfFetch(path, { method = "GET", body } = {}) {
     e.code = "failed-precondition";
     throw e;
   }
-  const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${cfg.zoneId}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${cfg.token}`,
-      "Content-Type": "application/json",
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 8000);
+  let res;
+  try {
+    res = await fetch(`https://api.cloudflare.com/client/v4/zones/${cfg.zoneId}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        "Content-Type": "application/json",
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(t);
+  }
   let data = null;
   try { data = await res.json(); } catch { /* non-JSON */ }
   if (!res.ok || !data?.success) {
@@ -880,12 +915,39 @@ export async function originalHash(url) {
   }
 }
 
+export function canonicalOriginalForms(url) {
+  try {
+    const u = new URL(String(url).trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") return [];
+    u.hostname = u.hostname.toLowerCase();
+    u.hash = "";
+    if ((u.protocol === "https:" && u.port === "443") || (u.protocol === "http:" && u.port === "80")) u.port = "";
+    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, "");
+    const full = u.toString();
+    const bare = u.origin + (u.pathname === "/" ? "" : u.pathname);
+    return [...new Set([full, bare])];
+  } catch {
+    return [];
+  }
+}
+
 export async function isBlockedOriginal(s, url) {
   try {
+    const forms = canonicalOriginalForms(url);
+    const candidates = forms.length ? forms : [String(url).trim()];
+    const { createHash } = await import("node:crypto");
+    for (const f of candidates) {
+      const h = createHash("sha256").update(f).digest("hex");
+      const doc = await s.get(`blocked/${h}`, { type: "json" });
+      if (doc) return true;
+    }
+    // Legacy exact entry (pre-canonical): check trimmed form once.
     const h = await originalHash(url);
-    if (!h) return false;
-    const doc = await s.get(`blocked/${h}`, { type: "json" });
-    return !!doc;
+    if (h) {
+      const doc = await s.get(`blocked/${h}`, { type: "json" });
+      if (doc) return true;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -1002,14 +1064,10 @@ export function sumShardsFromKeys(countKeys) {
 export function throttleBucketForIp(rawIp) {
   const raw = String(rawIp || "unknown").trim();
   if (raw.includes(":")) {
-    // IPv6 (or already-truncated /64 like "2001:db8:abcd:12::/64"): take the
-    // first 4 hextets as the /64 identity so rotation inside it shares budget.
-    const noSuffix = raw.split("/")[0];
-    // Expand "::" minimally: split and take leading groups; already-truncated
-    // forms like "a:b:c:d::/64" yield ["a","b","c","d","",""] -> first 4.
-    const parts = noSuffix.split(":").filter((x) => x !== "");
-    const prefix = parts.slice(0, 4).join(":").toLowerCase() || "v6unknown";
-    return `v6:${prefix}`;
+    // IPv6 bucketed by expanded /64 so compressed spellings share one budget.
+    const groups = expandIPv6Groups(raw);
+    if (!groups) return "v6:v6invalid";
+    return `v6:${groups.slice(0, 4).join(":")}`;
   }
   return `v4:${raw.toLowerCase()}`;
 }

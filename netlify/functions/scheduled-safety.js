@@ -7,7 +7,7 @@
  * Like scheduled-payments, this has no HTTP event and needs NETLIFY_SITE_ID
  * + NETLIFY_BLOBS_TOKEN (or NETLIFY_TOKEN) for Blobs access.
  */
-import { store, listAll, freshGet, mapWithConcurrency, checkUrlSafety } from "./lib/util.js";
+import { store, listAll, freshGet, mapWithConcurrency, checkUrlSafety, linkKey } from "./lib/util.js";
 
 export const config = { schedule: "@hourly" };
 
@@ -42,8 +42,7 @@ export async function handler(event) {
           link.quarantined = true;
           link.quarantineReason = verdict.reason || "UNSAFE";
           link.quarantineAt = new Date().toISOString();
-          const host = link.domain || "unknown";
-          await s.setJSON(`link/${host}/${link.code}`, link);
+          await s.setJSON(linkKey(link.domain || "unknown", link.code), link);
           quarantined++;
         }
       } catch (e) {

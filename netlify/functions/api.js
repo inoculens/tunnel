@@ -49,6 +49,7 @@ import {
   turnstileRequired,
   bumpKindCounter,
   originalHash,
+  canonicalOriginalForms,
   isBlockedOriginal,
   listAll,
   coverageValid,
@@ -70,11 +71,21 @@ import nodemailer from "nodemailer";
 // Best effort: DNS ownership remains the source of truth; SaaS failures are
 // logged and surfaced via cf fields, never block payment.
 
+async function fetchWithTimeoutMs(url, ms, opts = {}) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 // Turnstile gate (mint-family only, never resolve): lenient risk-based.
 // Throws 412 turnstile-required when a widget must be solved.
 async function requireTurnstile(s, p, event, kind) {
   if (!(await turnstileRequired(s, kind, clientIp(event), p.sessionId || null))) return;
-  const v = await verifyTurnstileToken(p.turnstileToken, clientIp(event));
+  const v = await verifyTurnstileToken(p.turnstileToken, trustedRawIp(event));
   if (!v.ok) {
     const e = new Error("TURNSTILE_REQUIRED");
     e.statusCode = 412;
@@ -237,7 +248,7 @@ async function getLink(s, host, code) {
 }
 
 async function needLink(s, host, code) {
-  if (typeof code !== "string" || !code) {
+  if (typeof code !== "string" || !code || !validSlug(code)) {
     const e = new Error("Link not found. It may have been deleted.");
     e.statusCode = 404;
     e.code = "not-found";
@@ -648,19 +659,40 @@ const actions = {
     });
   },
 
-  async checkSessionExists(s, p) {
+  async checkSessionExists(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "check-sess", ip, 60))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
     return ok({ exists: !!(await getSession(s, p.sessionId)) });
   },
 
-  async createSession(s, p) {
+  async createSession(s, p, event) {
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session ID.");
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "create-sess", ip, 20))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
     if (!(await getSession(s, p.sessionId))) {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
     return ok({});
   },
 
-  async validateSession(s, p) {
+  async validateSession(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "check-sess", ip, 60))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
     return ok({ exists: !!(await getSession(s, p.sessionId)) });
   },
 
@@ -800,7 +832,14 @@ const actions = {
     return fail(status, code, `Test mail failed: ${reason}. Check SMTP_HOST/PORT/user/password in Netlify env (redeploy after changing them) and the function logs.`);
   },
 
-  async getLinksBySession(s, p) {
+  async getLinksBySession(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "list-links", ip, 60))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
     await needSession(s, p.sessionId);
     const links = await listLinksOfSession(s, p.sessionId);
     return ok({ links: links.map(linkShape) });
@@ -914,7 +953,7 @@ const actions = {
     const host = needLinkHost(p);
     const link = await needLink(s, host, p.shortCode);
     needToken(link, p.deleteToken);
-    if (!p.clickId || typeof p.clickId !== "string") {
+    if (!p.clickId || typeof p.clickId !== "string" || p.clickId.length > 80 || !/^[A-Za-z0-9._-]+$/.test(p.clickId) || p.clickId.includes("..")) {
       return fail(400, "invalid-argument", "Missing click ID.");
     }
     const key = `${clicksPrefix(host, link.code)}${p.clickId}`;
@@ -963,8 +1002,11 @@ const actions = {
     const toMove = domainDocs.filter((d) => d && d.sessionId === oldSessionId);
     await mapWithConcurrency(toMove, 12, (d) => {
       d.sessionId = newSessionId;
-      // A merge moves the whole account: clear any pending claim the source
-      // filed elsewhere (it was theirs, now it moves with them).
+      return s.setJSON(`domain/${d.domain}`, d);
+    });
+    const outgoingClaims = domainDocs.filter((d) => d && d.pendingClaim && d.pendingClaim.sessionId === oldSessionId && d.sessionId !== newSessionId);
+    await mapWithConcurrency(outgoingClaims, 12, (d) => {
+      d.pendingClaim.sessionId = newSessionId;
       return s.setJSON(`domain/${d.domain}`, d);
     });
     try {
@@ -976,7 +1018,14 @@ const actions = {
 
   // ----- custom domains -----
 
-  async getUserDomains(s, p) {
+  async getUserDomains(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "list-domains", ip, 60))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
     await needSession(s, p.sessionId);
     const blobs = await listAll(s, "domain/");
     const docs = await mapWithConcurrency(blobs, 12, (b) =>
@@ -1018,7 +1067,7 @@ const actions = {
       throw e;
     }
     if (process.env.TURNSTILE_SECRET) {
-      const v = await verifyTurnstileToken(p.turnstileToken, ip);
+      const v = await verifyTurnstileToken(p.turnstileToken, trustedRawIp(event));
       if (!v.ok) return fail(412, "failed-precondition", "Human verification required — solve the challenge and try again.");
     }
     // Env-only on purpose (no hardcoded fallback): the address must not
@@ -1340,7 +1389,14 @@ const actions = {
   // whoever saved second re-issues. This runs server-side before the
   // response, so no duplicate ever reaches a screen — no flash needed.
 
-  async generatePaymentAddress(s, p) {
+  async generatePaymentAddress(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "pay-addr", `${ip}:${cleanDomain(p.domain) || "nodomain"}`, 10))) {
+      const e = new Error("Too many address requests, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
     // Drop dead discounts first so a renewal after code expiry prices full
     // again (a renewal payment is always allowed — it is how lapsed domains
@@ -1608,22 +1664,38 @@ const actions = {
     await needAdmin(s, p, event);
     const original = String(p.original || "").trim();
     if (!original || original.length > 2048) return fail(400, "invalid-argument", "Invalid URL.");
-    const h = await originalHash(original);
+    const forms = canonicalOriginalForms(original);
+    const primary = forms[0] || original;
+    const h = await originalHash(primary);
     if (!h) return fail(400, "invalid-argument", "Invalid URL.");
     let host = "";
     try { host = new URL(original).hostname.toLowerCase().slice(0, 120); } catch { /* keep empty */ }
-    // Persist the exact original too (not just host+hash) so the admin
-    // Blocked-URLs list can show and unblock entries whose links are all
-    // gone. Older records without it fall back to host display.
     await s.setJSON(`blocked/${h}`, { hash: h, host, original: original.slice(0, 2048), at: new Date().toISOString(), reason: String(p.reason || "ADMIN").slice(0, 40) });
-    // Sweep existing links with the exact same original (bounded).
+    try {
+      const { createHash } = await import("node:crypto");
+      const bare = forms[1] || null;
+      if (bare && bare !== primary) {
+        const h2 = createHash("sha256").update(bare).digest("hex");
+        if (h2 !== h) await s.setJSON(`blocked/${h2}`, { hash: h2, host, original: bare.slice(0, 2048), at: new Date().toISOString(), reason: String(p.reason || "ADMIN").slice(0, 40) });
+      }
+    } catch { /* companion bare entry best effort */ }
     let swept = 0;
     try {
       const blobs = await listAll(s, "link/");
       const docs = await mapWithConcurrency(blobs.slice(0, 2000), 12, (b) =>
         freshGet(s, b.key, { type: "json" }).catch(() => null)
       );
-      const matches = docs.filter((l) => l && String(l.original || "").trim() === original).slice(0, 200);
+      const normSet = new Set(forms.map((f) => f.toLowerCase()));
+      normSet.add(original.trim().toLowerCase());
+      const matches = docs.filter((l) => {
+        if (!l || !l.original) return false;
+        const lo = String(l.original).trim().toLowerCase();
+        if (normSet.has(lo)) return true;
+        try {
+          const lf = canonicalOriginalForms(l.original);
+          return lf.some((f) => normSet.has(f.toLowerCase()));
+        } catch { return false; }
+      }).slice(0, 200);
       await mapWithConcurrency(matches, 12, (l) => {
         l.quarantined = true;
         l.quarantineReason = "BLOCKLISTED";
@@ -1646,9 +1718,17 @@ const actions = {
     await needAdmin(s, p, event);
     const original = String(p.original || "").trim();
     const hash = typeof p.hash === "string" ? p.hash.trim().toLowerCase() : null;
-    const h = hash && /^[0-9a-f]{64}$/.test(hash) ? hash : await originalHash(original);
+    const h = hash && /^[0-9a-f]{64}$/.test(hash) ? hash : await originalHash(canonicalOriginalForms(original)[0] || original);
     if (!h) return fail(400, "invalid-argument", "Invalid URL or hash.");
     await s.delete(`blocked/${h}`);
+    try {
+      const forms = canonicalOriginalForms(original);
+      const { createHash } = await import("node:crypto");
+      for (const f of forms) {
+        const hh = createHash("sha256").update(f).digest("hex");
+        if (hh !== h) await s.delete(`blocked/${hh}`).catch(() => null);
+      }
+    } catch { /* companion cleanup best effort */ }
     return ok({ unblocked: true });
   },
 
@@ -1674,7 +1754,14 @@ const actions = {
     return ok({ blocked: out.slice(0, 500) });
   },
 
-  async applyDiscountCode(s, p) {
+  async applyDiscountCode(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "discount", ip, 10))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
     const code = String(p.code || "").trim().toUpperCase();
     if (!cleanPromoCode(code)) return fail(400, "invalid-argument", "Invalid or expired discount code.");
@@ -1853,7 +1940,7 @@ const actions = {
         if (h?.address && h?.discountPercent) addrs.push(h.address);
       }
       for (const a of [...new Set(addrs)].slice(0, 5)) {
-        const res = await fetch(`https://mempool.space/api/address/${encodeURIComponent(a)}`);
+        const res = await fetchWithTimeoutMs(`https://mempool.space/api/address/${encodeURIComponent(a)}`, 6000);
         if (!res.ok) continue;
         const data = await res.json().catch(() => null);
         const chain = (Number(data?.chain_stats?.funded_txo_sum) || 0) - (Number(data?.chain_stats?.spent_txo_sum) || 0);
@@ -1954,7 +2041,7 @@ const actions = {
     let partial = null;
     try {
       for (const c of candidates) {
-        const res = await fetch(`https://mempool.space/api/address/${encodeURIComponent(c.address)}`);
+        const res = await fetchWithTimeoutMs(`https://mempool.space/api/address/${encodeURIComponent(c.address)}`, 6000);
         if (!res.ok) continue;
         const data = await res.json().catch(() => null);
         const stats = data?.chain_stats || {};
@@ -1995,7 +2082,7 @@ const actions = {
           if (doc.isVerified && coverageValid(doc)) doc.status = "active";
           doc.paidAddress = c.address;
           doc.paidAmount = c.amount;
-          if (doc.quote) doc.quote.paidAt = new Date().toISOString();
+          if (c.current && doc.quote) doc.quote.paidAt = new Date().toISOString();
           if (cfConfig() && doc.isVerified) {
             try {
               const cf = await cfEnsureCustomHostname(doc.domain);
@@ -2031,7 +2118,14 @@ const actions = {
     return ok({ paid: false, status: doc.status, coverageValid: coverageValid(doc), seenUnconfirmed, partial });
   },
 
-  async getBtcPrice() {
+  async getBtcPrice(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "btc-price", ip, 20))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
     try {
       return ok({ price: await btcUsdPrice() });
     } catch (e) {

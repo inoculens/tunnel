@@ -3861,6 +3861,8 @@
         const json = JSON.stringify(String(str === null || str === undefined ? '' : str));
         const inner = json.slice(1, -1).replace(/'/g, "\\'");
         return ("'" + inner + "'")
+          .replace(/\\"/g, '\\u0022')
+          .replace(/"/g, '\\u0022')
           .replace(/&/g, '\\u0026')
           .replace(/</g, '\\u003c')
           .replace(/>/g, '\\u003e')

@@ -17,11 +17,17 @@ function toSats(btcAmount) {
 }
 
 async function addressBalanceSats(address) {
-  const res = await fetch(`https://mempool.space/api/address/${encodeURIComponent(address)}`);
-  if (!res.ok) throw new Error(`mempool.space ${res.status}`);
-  const data = await res.json();
-  const stats = data?.chain_stats || {};
-  return (Number(stats.funded_txo_sum) || 0) - (Number(stats.spent_txo_sum) || 0);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const res = await fetch(`https://mempool.space/api/address/${encodeURIComponent(address)}`, { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`mempool.space ${res.status}`);
+    const data = await res.json();
+    const stats = data?.chain_stats || {};
+    return (Number(stats.funded_txo_sum) || 0) - (Number(stats.spent_txo_sum) || 0);
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 export async function handler(event) {
@@ -84,6 +90,11 @@ export async function handler(event) {
           }
         }
         if (paidBy) {
+          const seenPaidAt = d.lastPaymentAt || null;
+          const latest = await freshGet(s, `domain/${d.domain}`, { type: "json" }).catch(() => null);
+          if (latest && (latest.lastPaymentAt || null) !== seenPaidAt && latest.paymentStatus === "paid" && coverageValid(latest)) {
+            continue;
+          }
           const now = Date.now();
           d.paymentStatus = "paid";
           // Coverage: a payment buys a year, stacking onto any time left so
@@ -106,7 +117,7 @@ export async function handler(event) {
           if (d.isVerified && coverageValid(d)) d.status = "active";
           d.paidAddress = paidBy.address;
           d.paidAmount = paidBy.amount;
-          if (d.quote) d.quote.paidAt = new Date().toISOString();
+          if (paidBy.current && d.quote) d.quote.paidAt = new Date().toISOString();
           // Provision Cloudflare SaaS hostname so TLS issues immediately after payment.
           if (cfConfig() && d.isVerified) {
             try {

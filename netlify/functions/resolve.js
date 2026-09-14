@@ -199,6 +199,8 @@ export async function handler(event) {
           "Cache-Control": "no-store",
           "X-Content-Type-Options": "nosniff",
           "Referrer-Policy": "strict-origin-when-cross-origin",
+          "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+          "X-Frame-Options": "DENY",
         },
         body: interstitialPage(targets),
       };
