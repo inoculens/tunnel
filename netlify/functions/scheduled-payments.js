@@ -7,7 +7,7 @@
  * Netlify runs this automatically thanks to the `config.schedule` export.
  * No cron service needed. Uses only the public mempool.space API.
  */
-import { store, listAll, cfConfig, cfEnsureCustomHostname, coverageValid, COVERAGE_YEAR_MS, freshGet, satsFromBtc } from "./lib/util.js";
+import { store, listAll, cfConfig, cfEnsureCustomHostname, coverageValid, COVERAGE_YEAR_MS, freshGet, satsFromBtc, ignoredAddresses, markIgnored } from "./lib/util.js";
 
 export const config = { schedule: "@hourly" };
 
@@ -56,9 +56,9 @@ export async function handler(event) {
       if (swept) await s.setJSON(`domain/${d.domain}`, d);
       // Balance check candidates: unpaid domains always; paid domains only
       // when a renewal is actually outstanding — coverage lapsed plus a
-      // fresh, unconsumed quote issued after the last payment. (A consumed
-      // quote's address was already credited; re-checking it would instantly
-      // "re-pay" every renewal.)
+      // fresh, unconsumed quote issued after the last payment. Settled
+      // addresses (ignoredAddresses, seeded from past triggers) are skipped
+      // below: re-checking them would instantly "re-pay" every renewal.
       const unpaid = d.paymentStatus !== "paid";
       const lastPaidAt = d.lastPaymentAt ? new Date(d.lastPaymentAt).getTime() : 0;
       // Quotes without createdAt count as renewal candidates (fail-open:
@@ -70,13 +70,17 @@ export async function handler(event) {
       // Candidates: the current quote address ALWAYS (even expired — the user
       // saw it and may pay late) + retired quotes. Retired addresses were
       // displayed to this session, so late payments to them must still credit
-      // the domain — amounts locked at display time.
+      // the domain — amounts locked at display time. Settled addresses are
+      // skipped in both lists: their funds already bought coverage, and chain
+      // balances only grow, so re-checking them would renew lapsed domains
+      // for free.
+      const ignored = ignoredAddresses(d);
       const candidates = [];
-      if (d.quote?.address && d.quote?.amount) {
+      if (d.quote?.address && d.quote?.amount && !ignored.has(d.quote.address)) {
         candidates.push({ address: d.quote.address, amount: d.quote.amount, current: true });
       }
       for (const h of Array.isArray(d.quoteHistory) ? d.quoteHistory : []) {
-        if (h?.address && h?.amount) candidates.push({ address: h.address, amount: h.amount, current: false });
+        if (h?.address && h?.amount && !ignored.has(h.address)) candidates.push({ address: h.address, amount: h.amount, current: false });
       }
       if (!candidates.length) continue;
       checked++;
@@ -115,6 +119,9 @@ export async function handler(event) {
           }
           d.lastPaymentAt = new Date(now).toISOString();
           if (d.isVerified && coverageValid(d)) d.status = "active";
+          // Settle the triggering address (plus the previous trigger, if any)
+          // so its on-chain funds can never buy another year on their own.
+          markIgnored(d, paidBy.address, d.paidAddress);
           d.paidAddress = paidBy.address;
           d.paidAmount = paidBy.amount;
           if (paidBy.current && d.quote) d.quote.paidAt = new Date().toISOString();

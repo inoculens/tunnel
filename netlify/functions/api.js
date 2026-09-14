@@ -54,6 +54,8 @@ import {
   listAll,
   coverageValid,
   COVERAGE_YEAR_MS,
+  ignoredAddresses,
+  markIgnored,
   linkKey,
   clicksPrefix,
   freshGet,
@@ -1476,7 +1478,12 @@ const actions = {
     });
     const pct = doc.discount ? doc.discount.percent : 0;
     const q = quoteFor(pct, price);
-    let address = doc.quote && doc.quote.address && !p.forceRefresh && !quoteConsumed ? doc.quote.address : null;
+    // New money always gets a fresh address: a consumed quote (already paid)
+    // or an address that already bought coverage (ignored) is never re-issued.
+    // Unpaid persistence is unaffected — an outstanding unpaid quote keeps its
+    // address so in-flight and late payments still land.
+    const ignored = ignoredAddresses(doc);
+    let address = doc.quote && doc.quote.address && !p.forceRefresh && !quoteConsumed && !ignored.has(doc.quote.address) ? doc.quote.address : null;
     if (!address) {
       // Retire the quote being replaced (if any) so late payments to an
       // address the user already saw are still credited by the watcher.
@@ -1892,6 +1899,10 @@ const actions = {
     doc.discount = { code, percent: pct, expiresAt: promo.expiresAt || null };
     if (pct >= 100) {
       doc.paymentStatus = "paid";
+      // Settle the previous trigger, if any, so its funds can never buy a
+      // later year on their own. (The cleared quote below was never payable
+      // through this path, so there is no new trigger address to record.)
+      markIgnored(doc, doc.paidAddress);
       doc.quote = null;
       // Full grant covers until the code's expiry — lifetime when the code
       // itself never expires. It never shortens coverage already in force
@@ -1925,8 +1936,28 @@ const actions = {
       throw Object.assign(new Error(e.message), { statusCode: 503, code: "unavailable" });
     });
     const q = quoteFor(pct, price);
-    let address = doc.quote && doc.quote.address ? doc.quote.address : null;
+    // New money always gets a fresh address here too: a consumed quote or an
+    // address that already bought coverage is retired, never re-issued. The
+    // retired entry stays in history (ignored thereafter) for the audit trail.
+    const ignored = ignoredAddresses(doc);
+    let address = doc.quote && doc.quote.address && !doc.quote.paidAt && !ignored.has(doc.quote.address) ? doc.quote.address : null;
     if (!address) {
+      // Retire the displaced quote (if any) exactly like generatePaymentAddress
+      // so the audit trail matches; it stays ignored thereafter.
+      if (doc.quote && doc.quote.address) {
+        doc.quoteHistory = Array.isArray(doc.quoteHistory) ? doc.quoteHistory : [];
+        if (!doc.quoteHistory.some((h) => h && h.address === doc.quote.address)) {
+          doc.quoteHistory.push({
+            address: doc.quote.address,
+            amount: doc.quote.amount,
+            index: doc.quote.index,
+            expiresAt: doc.quote.expiresAt,
+            supersededAt: new Date().toISOString(),
+            ...(doc.quote.discountPercent ? { discountPercent: doc.quote.discountPercent } : {}),
+          });
+          if (doc.quoteHistory.length > 50) doc.quoteHistory = doc.quoteHistory.slice(-50);
+        }
+      }
       let idx = await nextWalletIndex(s);
       try {
         address = await deriveAddress(idx);
@@ -2034,14 +2065,23 @@ const actions = {
     // Re-price the current quote at full price in place (same address), so
     // the displayed amount can never be a stale discount. If the price feed
     // is down, drop the quote so the next call mints a fresh full-price one.
-    if (doc.quote && doc.quote.address) {
+    // Keep the shown address only if it never bought coverage: re-pricing onto
+    // an ignored address would leave a renewal quote no checker may honor.
+    // (Removal is refused while any displayed address shows movement, so no
+    // in-flight money is stranded by minting fresh here.)
+    const keepAddr = doc.quote && doc.quote.address && !ignoredAddresses(doc).has(doc.quote.address)
+      ? { address: doc.quote.address, index: doc.quote.index }
+      : null;
+    if (keepAddr) {
       try {
         const price = await btcUsdPrice();
         const q = quoteFor(0, price);
-        doc.quote = { ...q, address: doc.quote.address, index: doc.quote.index };
+        doc.quote = { ...q, address: keepAddr.address, index: keepAddr.index };
       } catch (e) {
         doc.quote = null;
       }
+    } else {
+      doc.quote = null;
     }
     await s.setJSON(`domain/${doc.domain}`, doc);
     // NOTE: promo uses are intentionally NOT freed — a consumed single-use
@@ -2077,20 +2117,25 @@ const actions = {
     }
     const lastPaidAt = doc.lastPaymentAt ? new Date(doc.lastPaymentAt).getTime() : 0;
     const candidates = [];
+    // Settled money never re-triggers: skipped addresses bought coverage in
+    // an earlier activation (chain balances only grow, so re-checking them
+    // would renew every lapsed domain for free). Unpaid money — including
+    // late payments to retired quotes and top-ups — always counts.
+    const ignored = ignoredAddresses(doc);
     // Unpaid domains: current quote always counts (even expired — late payers
     // must still credit). Paid-but-lapsed domains: only a genuine renewal
     // quote (unconsumed, issued after the last payment) plus retired history.
-    // Consumed (already-credited) quotes are NEVER re-checked — otherwise
-    // every re-check would instantly "re-pay" and extend coverage for free.
+    // Settled addresses are NEVER re-checked — otherwise every re-check
+    // would instantly "re-pay" and extend coverage for free.
     if (doc.paymentStatus !== "paid") {
-      if (doc.quote?.address && doc.quote?.amount) {
+      if (doc.quote?.address && doc.quote?.amount && !ignored.has(doc.quote.address)) {
         candidates.push({ address: doc.quote.address, amount: doc.quote.amount, current: true });
       }
-    } else if (doc.quote?.address && doc.quote?.amount && isRenewalQuote(doc.quote, lastPaidAt)) {
+    } else if (doc.quote?.address && doc.quote?.amount && isRenewalQuote(doc.quote, lastPaidAt) && !ignored.has(doc.quote.address)) {
       candidates.push({ address: doc.quote.address, amount: doc.quote.amount, current: true });
     }
     for (const h of Array.isArray(doc.quoteHistory) ? doc.quoteHistory : []) {
-      if (h?.address && h?.amount) candidates.push({ address: h.address, amount: h.amount, current: false });
+      if (h?.address && h?.amount && !ignored.has(h.address)) candidates.push({ address: h.address, amount: h.amount, current: false });
     }
     if (!candidates.length) return ok({ paid: false, reason: "no-quote" });
     let seenUnconfirmed = false;
@@ -2136,6 +2181,9 @@ const actions = {
           }
           doc.lastPaymentAt = new Date(now).toISOString();
           if (doc.isVerified && coverageValid(doc)) doc.status = "active";
+          // Settle the triggering address (plus the previous trigger, if any)
+          // so its on-chain funds can never buy another year on their own.
+          markIgnored(doc, c.address, doc.paidAddress);
           doc.paidAddress = c.address;
           doc.paidAmount = c.amount;
           if (c.current && doc.quote) doc.quote.paidAt = new Date().toISOString();

@@ -1213,6 +1213,40 @@ export function coverageValid(doc) {
   return Number.isFinite(t) && t > Date.now();
 }
 
+// ---------- Settled payment addresses (never re-trigger) ----------
+// One payment buys one coverage period: once an address's funds trigger an
+// activation, that address is ignored by every future balance check (chain
+// balances only grow — nothing sweeps funds away — so without this list an
+// old funded address would re-activate every lapsed renewal for free).
+// Scope is activation checks ONLY (late payments, top-ups, admin views and
+// the remove-discount funds guard all keep reading every address).
+// The list is append-only and deliberately uncapped: dropping an old entry
+// would re-arm its (still funded) address, so growth (~1-2 short strings
+// per paid year) is accepted over correctness.
+export function ignoredAddresses(doc) {
+  const s = new Set(Array.isArray(doc && doc.ignoredAddresses) ? doc.ignoredAddresses : []);
+  // Self-healing for pre-list domains, no migration needed: the last
+  // recorded trigger and any consumed current quote are always settled.
+  if (doc && typeof doc.paidAddress === "string" && doc.paidAddress) s.add(doc.paidAddress);
+  if (doc && doc.quote && doc.quote.paidAt && doc.quote.address) s.add(doc.quote.address);
+  return s;
+}
+
+// Record freshly settled addresses on the doc. Returns true when the doc
+// changed (caller persists it with its own save).
+export function markIgnored(doc, ...addrs) {
+  const s = ignoredAddresses(doc);
+  const before = s.size;
+  for (const a of addrs) {
+    if (typeof a === "string" && a) s.add(a);
+  }
+  if (s.size !== before) {
+    doc.ignoredAddresses = [...s];
+    return true;
+  }
+  return false;
+}
+
 // ---------- Scoped link keys ----------
 // Slugs are unique PER root domain, not globally: s.inoculens.com/slug1 and
 // custom.com/slug1 coexist. Storage keys (and click-log prefixes) therefore
