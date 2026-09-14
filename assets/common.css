@@ -426,42 +426,88 @@ h1 {
   text-decoration: underline;
 }
 
-/* ============ Footer — bottom-docked, minimal ============
-   Glued to the bottom of the page on any screen size (margin-top: auto
-   in the body flex column; the main-page container grows to fill).
-   Square bottom corners run straight out of the screen edge; only the
-   top corners round. */
+/* ============ Footer — discreet gradient hairline ============
+   Borderless and transparent so it melts into the page background
+   like the glass header. A single 1px gradient hairline (with a soft
+   glow echoing the page's top radial) is the only divider — no card,
+   no solid border, no loading-panel feel. Still bottom-docked via
+   margin-top: auto in the body flex column. */
 .footer.footer-elevated {
   position: relative;
   width: 100%;
   max-width: 1000px;
   margin: auto auto 0;
-  padding: 22px 24px calc(26px + env(safe-area-inset-bottom, 0px));
+  padding: 36px 24px calc(30px + env(safe-area-inset-bottom, 0px));
   text-align: center;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--border);
-  border-bottom: none;
-  border-radius: 20px 20px 0 0;
-  overflow: hidden;
+  background:
+    linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.015));
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+}
+
+/* Crisp 1px hairline that fades out at both ends */
+.footer.footer-elevated::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(100%, 520px);
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.14) 50%, transparent);
+  pointer-events: none;
+}
+
+/* Soft glow under the hairline — echoes the page's ambient top light */
+.footer.footer-elevated::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(100%, 520px);
+  height: 18px;
+  background:
+    linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05) 50%, transparent),
+    radial-gradient(60% 100% at 50% 0%, rgba(62, 166, 255, 0.06), transparent 70%);
+  filter: blur(8px);
+  opacity: 0.35;
+  pointer-events: none;
 }
 
 .footer-elevated .footer-tag {
   display: block;
-  font-size: 0.84rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  background: linear-gradient(to bottom, #9a9a9a 0%, #6a6a6a 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
   margin-bottom: 6px;
 }
 
 .footer-elevated .footer-copy {
   display: block;
-  font-size: 0.76rem;
-  color: var(--text-faint);
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.28);
 }
 
 .footer-elevated .footer-copy .nowrap {
   white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  .footer.footer-elevated {
+    padding: 28px 16px calc(26px + env(safe-area-inset-bottom, 0px));
+  }
+  .footer.footer-elevated::before,
+  .footer.footer-elevated::after {
+    width: 78%;
+  }
 }
 
 /* ============ Analytics consent banner — Win11 dialog mini ============ */
