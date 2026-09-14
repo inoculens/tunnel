@@ -3284,7 +3284,7 @@
 
   <!-- Manage Domains Modal -->
   <div id="domainManagerOverlay" class="modal-overlay"
-    style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.62); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 30000; align-items: center; justify-content: center; padding: 20px;">
+    style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.62); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 30000; align-items: center; justify-content: center; padding: 20px; overscroll-behavior: contain;">
     <div class="modal-card" style="width: 550px; min-width: 380px; max-width: 600px; max-height: 90vh; overflow-y: auto; position: relative;">
       <button class="copy-btn" onclick="closeDomainManager()"
         style="position: absolute; top: 1.5rem; right: 1.5rem; background: transparent; color: var(--text-muted); font-size: 1.5rem; line-height: 1; padding: 0; border: none; z-index: 10;">&times;</button>
@@ -3756,7 +3756,7 @@
         if (!sitekey) return Promise.resolve(null);
         return new Promise((resolve) => {
           const overlay = document.createElement('div');
-          overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:60000;display:flex;align-items:center;justify-content:center;padding:20px;';
+          overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:60000;display:flex;align-items:center;justify-content:center;padding:20px;overscroll-behavior:contain;';
           overlay.innerHTML = '<div class="modal-card" style="max-width:360px;text-align:center;">'
             + '<div class="modal-title">Quick human check</div>'
             + '<div class="modal-message">Unusual pace detected — solve once to continue.</div>'
@@ -3764,11 +3764,11 @@
             + '<button class="modal-btn modal-btn-cancel" id="turnstileCancel" style="width:100%;">Cancel</button></div>';
           const done = (token) => {
             try { overlay.remove(); } catch (e) {}
-            document.body.classList.remove('modal-open');
+            unlockScroll();
             resolve(token || null);
           };
           document.body.appendChild(overlay);
-          document.body.classList.add('modal-open');
+          lockScroll();
           overlay.querySelector('#turnstileCancel').onclick = () => done(null);
           ensureTurnstileScript().then((ok) => {
             if (!ok || !window.turnstile) { done(null); return; }
@@ -4435,7 +4435,7 @@
         }
         showStep('loading'); // Reset to loading BEFORE showing the overlay
         domainManagerOverlay.style.display = 'flex';
-        document.body.classList.add('modal-open');
+        lockScroll();
         window.addEventListener('keydown', handleDomainManagerEsc);
 
         // Reset inputs
@@ -4459,7 +4459,7 @@
       function closeDomainManager() {
         stopPaymentPolling();
         domainManagerOverlay.style.display = 'none';
-        document.body.classList.remove('modal-open');
+        unlockScroll();
         window.removeEventListener('keydown', handleDomainManagerEsc);
         pendingDomain = '';
         showStep('loading');
@@ -5493,9 +5493,6 @@
               return;
             }
 
-            // Hide the verification modal and move to payment
-            document.body.classList.remove('modal-open');
-
             showStep('payment'); // Go to Payment screen
           } else {
             showToast("Verification records not yet detected. Please click the 'Verify' buttons first.", "error");
@@ -6067,7 +6064,7 @@
         const overlay = document.getElementById('promoAdminOverlay');
         if (!overlay) return;
         overlay.style.display = 'flex';
-        document.body.classList.add('modal-open');
+        lockScroll();
         window.addEventListener('keydown', handlePromoAdminEsc);
         promoShowMain();
       }
@@ -6087,16 +6084,16 @@
         closePromoAdmin();
       }
       function closePromoAdmin() {
+        const detail = document.getElementById('feedbackDetailOverlay');
+        if (detail && detail.style.display === 'flex') feedbackCloseDetail();
+        const linkDetail = document.getElementById('adminLinkDetailOverlay');
+        if (linkDetail && linkDetail.style.display === 'flex') adminCloseLinkDetail();
+        const stats = document.getElementById('promoStatsOverlay');
+        if (stats && stats.style.display === 'flex') promoCloseStats();
         const overlay = document.getElementById('promoAdminOverlay');
         if (overlay) overlay.style.display = 'none';
-        const detail = document.getElementById('feedbackDetailOverlay');
-        if (detail) detail.style.display = 'none';
-        const linkDetail = document.getElementById('adminLinkDetailOverlay');
-        if (linkDetail) linkDetail.style.display = 'none';
-        window.removeEventListener('keydown', handleFeedbackDetailEsc);
-        window.removeEventListener('keydown', handleAdminLinkDetailEsc);
         window.removeEventListener('keydown', handlePromoAdminEsc);
-        document.body.classList.remove('modal-open');
+        unlockScroll();
       }
       function adminShowTab(tab) {
         const main = document.getElementById('promoMain');
@@ -6309,6 +6306,7 @@
         const overlay = document.getElementById('adminLinkDetailOverlay');
         if (overlay) {
           overlay.style.display = 'flex';
+          lockScroll();
           window.addEventListener('keydown', handleAdminLinkDetailEsc);
         }
       }
@@ -6321,7 +6319,7 @@
         // Defensive: never persist a locked state, however the modal closes.
         try { setAdminDetailBusy(false); } catch (_) {}
         window.removeEventListener('keydown', handleAdminLinkDetailEsc);
-        // Promo admin stays open underneath — keep the scroll lock.
+        unlockScroll();
       }
       function adminCopyDetailShort(btn) {
         const el = document.getElementById('adminLinkDetailShort');
@@ -6805,6 +6803,7 @@
         if (delBtn) delBtn.onclick = () => feedbackDelete(r.id, '#feedbackDetailDelete');
         if (overlay) {
           overlay.style.display = 'flex';
+          lockScroll();
           window.addEventListener('keydown', handleFeedbackDetailEsc);
         }
       }
@@ -6815,7 +6814,7 @@
         const overlay = document.getElementById('feedbackDetailOverlay');
         if (overlay) overlay.style.display = 'none';
         window.removeEventListener('keydown', handleFeedbackDetailEsc);
-        // Promo admin stays open underneath — keep the scroll lock.
+        unlockScroll();
       }
       function feedbackCopyDetailSession(btn) {
         const el = document.getElementById('feedbackDetailSession');
@@ -6917,7 +6916,7 @@
         renderPromoStatsUses();
         if (overlay) {
           overlay.style.display = 'flex';
-          document.body.classList.add('modal-open');
+          lockScroll();
           window.addEventListener('keydown', handlePromoStatsEsc);
         }
       }
@@ -6978,7 +6977,7 @@
         const overlay = document.getElementById('promoStatsOverlay');
         if (overlay) overlay.style.display = 'none';
         window.removeEventListener('keydown', handlePromoStatsEsc);
-        // Promo admin stays open underneath — keep the scroll lock.
+        unlockScroll();
       }
       async function promoCreate() {
         const codeEl = document.getElementById('promoNewCode');
@@ -8321,7 +8320,7 @@
 
         const overlay = document.getElementById('statsOverlay');
         overlay.style.display = 'flex';
-        document.body.classList.add('modal-open');
+        lockScroll();
 
         window.addEventListener('keydown', handleStatsEsc);
         refreshStatsView();
@@ -8467,17 +8466,7 @@
       function closeStats() {
         document.getElementById('statsOverlay').style.display = 'none';
 
-        // Only remove scroll lock if no other modals are open
-        // NOTE: the overlay id is domainManagerOverlay (not domainManagerModal)
-        const domainManager = document.getElementById('domainManagerOverlay');
-        const modalOverlay = document.getElementById('modalOverlay');
-
-        const isAnyOtherModalOpen = (domainManager && domainManager.style.display === 'flex') ||
-          (modalOverlay && modalOverlay.style.display === 'flex');
-
-        if (!isAnyOtherModalOpen) {
-          document.body.classList.remove('modal-open');
-        }
+        unlockScroll();
 
         window.removeEventListener('keydown', handleStatsEsc);
         // Release the stats lock in case the user closed during an operation
@@ -9013,7 +9002,7 @@
           </div>
           `;
             document.body.appendChild(progressModal);
-            document.body.classList.add('modal-open');
+            lockScroll();
 
             let successCount = 0;
             let failedCount = 0;
@@ -9048,7 +9037,7 @@
               if (progressModal && progressModal.parentNode) {
                 document.body.removeChild(progressModal);
               }
-              document.body.classList.remove('modal-open');
+              unlockScroll();
             }
 
             // Keep only the failed links so the user can retry
@@ -9293,14 +9282,14 @@
           inputEl: document.getElementById('modalInput'),
         };
       }
-      function modalRestoreScroll() {
-        const statsOverlay = document.getElementById('statsOverlay');
-        const domainManager = document.getElementById('domainManagerOverlay');
-        const isAnyOtherModalOpen = (statsOverlay && statsOverlay.style.display === 'flex') ||
-          (domainManager && domainManager.style.display === 'flex');
-        if (!isAnyOtherModalOpen) {
-          document.body.classList.remove('modal-open');
-        }
+      let scrollLockCount = 0;
+      function lockScroll() {
+        scrollLockCount++;
+        document.body.classList.add('modal-open');
+      }
+      function unlockScroll() {
+        scrollLockCount = Math.max(0, scrollLockCount - 1);
+        if (!scrollLockCount) document.body.classList.remove('modal-open');
       }
       function modalClearEsc() {
         if (window.modalEscHandler) {
@@ -9330,7 +9319,7 @@
           const peekBox = peekWrap ? peekWrap.parentElement : null;
 
           // Lock Nested Scroll Logic
-          document.body.classList.add('modal-open');
+          lockScroll();
 
           // Use textContent for title (plain text from callers — safe).
           // NOTE: message intentionally uses innerHTML to support formatted content (<strong>, <span> etc).
@@ -9370,7 +9359,7 @@
 
           const handleAction = (result) => {
             overlay.style.display = 'none';
-            modalRestoreScroll();
+            unlockScroll();
             modalClearEsc();
             resolve(result);
           };
@@ -9404,7 +9393,7 @@
           const { overlay, titleEl, messageEl, cancelBtn, okBtn, inputEl } = modalEls();
 
           // Lock scroll
-          document.body.classList.add('modal-open');
+          lockScroll();
 
           titleEl.textContent = title;
           messageEl.innerHTML = `<div class="modal-spinner ${danger ? 'danger' : ''}"></div><div class="modal-loading-text">${escapeHTML(message)}</div>`;
@@ -9435,7 +9424,7 @@
           const { overlay, titleEl, messageEl, cancelBtn, okBtn, inputEl } = modalEls();
 
           // Lock scroll
-          document.body.classList.add('modal-open');
+          lockScroll();
 
           titleEl.textContent = title;
           messageEl.innerHTML = message;
@@ -9457,7 +9446,7 @@
 
           const handleAction = (result) => {
             overlay.style.display = 'none';
-            modalRestoreScroll();
+            unlockScroll();
             modalClearEsc();
             resolve(result);
           };
@@ -9484,7 +9473,7 @@
           if (overlay) overlay.style.display = 'none';
           const resolve = window.loadingModalResolve;
           window.loadingModalResolve = null;
-          modalRestoreScroll();
+          unlockScroll();
           resolve(true);
         }
       }
@@ -9508,7 +9497,7 @@
     </script>
     <script src="/assets/common.js"></script>
 
-  <div id="promoAdminOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 40000; align-items: center; justify-content: center; padding: 20px;">
+  <div id="promoAdminOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 40000; align-items: center; justify-content: center; padding: 20px; overscroll-behavior: contain;">
     <div class="modal-card" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
         <h2 class="modal-title" style="margin: 0;">Admin</h2>
@@ -9592,7 +9581,7 @@
     </div>
   </div>
 
-  <div id="promoStatsOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 50000; align-items: center; justify-content: center; padding: 20px;">
+  <div id="promoStatsOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 50000; align-items: center; justify-content: center; padding: 20px; overscroll-behavior: contain;">
     <div class="modal-card" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px;">
         <h2 class="modal-title" style="margin: 0;">Code stats</h2>
@@ -9611,7 +9600,7 @@
     </div>
   </div>
 
-  <div id="feedbackDetailOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 50000; align-items: center; justify-content: center; padding: 20px;">
+  <div id="feedbackDetailOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 50000; align-items: center; justify-content: center; padding: 20px; overscroll-behavior: contain;">
     <div class="modal-card" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px;">
         <h2 class="modal-title" style="margin: 0;">Issue report</h2>
@@ -9640,7 +9629,7 @@
     </div>
   </div>
 
-  <div id="adminLinkDetailOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 50000; align-items: center; justify-content: center; padding: 20px;">
+  <div id="adminLinkDetailOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 50000; align-items: center; justify-content: center; padding: 20px; overscroll-behavior: contain;">
     <div class="modal-card" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px;">
         <h2 class="modal-title" style="margin: 0;">Link details</h2>

@@ -44,6 +44,7 @@
     href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap">
 
   <style>
+    body.modal-open { overflow: hidden; }
     .report-card {
       background: rgba(33, 33, 36, 0.62);
       backdrop-filter: blur(28px) saturate(135%);
@@ -355,7 +356,7 @@
         if (!sitekey) return Promise.resolve(null);
         return new Promise(function (resolve) {
           var overlay = document.createElement('div');
-          overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:60000;display:flex;align-items:center;justify-content:center;padding:20px;';
+          overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:60000;display:flex;align-items:center;justify-content:center;padding:20px;overscroll-behavior:contain;';
           overlay.innerHTML = '<div class="modal-card" style="background:rgba(32,32,35,0.88);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;max-width:360px;text-align:center;color:#f1f1f1;">'
             + '<div style="font-weight:700;margin-bottom:8px;">Quick human check</div>'
             + '<div style="color:#aaa;font-size:0.9rem;margin-bottom:16px;">Unusual pace detected — solve once to continue.</div>'
@@ -366,9 +367,11 @@
             if (finished) return;
             finished = true;
             try { overlay.remove(); } catch (e) {}
+            document.body.classList.remove('modal-open');
             resolve(token || null);
           };
           document.body.appendChild(overlay);
+          document.body.classList.add('modal-open');
           overlay.querySelector('#turnstileCancel').onclick = function () { finish(null); };
           ensureTurnstileScript().then(function (ok) {
             if (!ok || !window.turnstile) { finish(null); return; }
