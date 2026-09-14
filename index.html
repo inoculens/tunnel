@@ -805,6 +805,12 @@
       transform: scale(0.97);
     }
 
+    /* Dimmed but still pressable when there is nothing to export —
+       the click opens the "Nothing to export" explainer dialog. */
+    .purge-btn.export-btn.is-empty {
+      opacity: 0.65;
+    }
+
     /* Hide purge controls when empty */
     .purge-controls.hidden {
       display: none;
@@ -4791,21 +4797,21 @@
         const claimCnameName = String(pendingDomain || '');
         const claimTxtHost = `verification.${String(pendingDomain || '')}`;
         const copySvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-        const copyBtnStyle = 'background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;';
-        const copyRow = (value) => `<div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;"><div style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${escapeHTML(value)}</div><button class="copy-btn" onclick="copyText(${escapeJS(value)}, this)" title="Copy" style="${copyBtnStyle}">${copySvg}</button></div>`;
+        const copyBtnStyle = 'background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 30px; height: 30px;';
+        const copyRow = (id, value) => `<div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;"><div id="${id}" style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${escapeHTML(value)}</div><button class="copy-btn" onclick="copyTextFromElement('${id}')" title="Copy" style="${copyBtnStyle}">${copySvg}</button></div>`;
         showCustomModal({
           title: "Domain held by another session",
           message: `This name is attached to a different session. To reclaim it (plus its links + stats), prove DNS control:`
             + `<div style="margin: 16px 0; display: flex; flex-direction: column; gap: 8px; text-align: left;">`
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
             + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">CNAME Record (Routing)</label>`
-            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Record name:</div>${copyRow(claimCnameName)}`
-            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to:</div>${copyRow(cname)}`
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Record name:</div>${copyRow('claimCnameName', claimCnameName)}`
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to:</div>${copyRow('claimCnameTarget', cname)}`
             + `</div>`
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
             + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">TXT Record (Ownership)</label>`
-            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>${copyRow(claimTxtHost)}`
-            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Value:</div>${copyRow(txt)}`
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>${copyRow('claimTxtHost', claimTxtHost)}`
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Value:</div>${copyRow('claimTxtValue', txt)}`
             + `</div></div>`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); text-align: center;">Old owner keeps full rights until you verify. <strong>s.inoculens.com</strong> links never move.<br>DNS changes can take a few minutes.</div>`,
           showCancel: true,
@@ -8972,7 +8978,16 @@
       function updateExportVisibility() {
         const btn = document.getElementById('exportBtn');
         if (!btn) return;
-        btn.disabled = customExportLinks().length === 0;
+        // Never disable: a disabled button swallows the click, so a new user
+        // with no custom-domain links gets silence instead of an explanation.
+        // Keep it pressable and let exportCustomLinks show the
+        // "Nothing to export" dialog; dim slightly as a visual cue.
+        const empty = customExportLinks().length === 0;
+        btn.disabled = false;
+        btn.classList.toggle('is-empty', empty);
+        btn.title = empty
+          ? "No custom-domain links yet — press to learn more"
+          : "Export custom-domain links as .txt";
       }
 
       async function exportCustomLinks() {
