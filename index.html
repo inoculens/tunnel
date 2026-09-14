@@ -3550,7 +3550,7 @@
               <p style="font-size: 0.75rem; color: #f5a623;">⚡ Payment is automatically detected — send the exact amount shown (fee is separate). Your domain activates within a couple of minutes of its first blockchain confirmation; keep this tab open.</p>
               <div style="display: flex; gap: 8px; flex-shrink: 0; margin-left: 8px;">
                 <button class="modal-btn modal-btn-ok" id="checkPayBtn" onclick="checkPaymentNow()"
-                  style="height: 32px; font-size: 0.75rem; width: auto; padding: 0 12px;">I've paid — Check now</button>
+                  style="height: 32px; font-size: 0.75rem; width: auto; min-width: 20ch; padding: 0 12px;">I've paid — Check now</button>
               </div>
             </div>
             <div id="paymentStatusBanner"
@@ -4456,6 +4456,7 @@
 
       function closeDomainManager() {
         stopPaymentPolling();
+        clearCheckCooldown();
         domainManagerOverlay.style.display = 'none';
         unlockScroll();
         window.removeEventListener('keydown', handleDomainManagerEsc);
@@ -5760,6 +5761,7 @@
           }
 
           // Start polling the backend for domain activation
+          clearCheckCooldown();
           startPaymentPolling(pendingDomain);
         } catch (err) {
           console.error(err);
@@ -5796,6 +5798,7 @@
         const banner = document.getElementById('paymentStatusBanner');
         if (!pendingDomain || !getSessionId()) return false;
         if (window._checkingNow) return false;
+        if (!isAuto && Date.now() < checkCooldownUntil) return false;
         window._checkingNow = true;
         try {
           if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
@@ -5834,11 +5837,18 @@
           console.error('checkPaymentNow:', e);
           // 429 (auto + manual colliding, or fast double-click) is routine —
           // stay quiet and let the next cycle handle it.
-          if (!isAuto) showToast(e.message || 'Check failed', 'error');
+          const rateLimited = e && (e.code === 'resource-exhausted' || /wait 30s/i.test(e.message || ''));
+          if (!isAuto && rateLimited) {
+            setCheckCooldown(30000);
+          } else if (!isAuto) {
+            showToast(e.message || 'Check failed', 'error');
+          }
           return false;
         } finally {
           window._checkingNow = false;
-          if (btn) { btn.disabled = false; btn.textContent = "I've paid — Check now"; }
+          if (Date.now() < checkCooldownUntil) {
+            setCheckCooldown(checkCooldownUntil - Date.now());
+          } else if (btn) { btn.disabled = false; btn.textContent = "I've paid — Check now"; }
         }
       }
 
@@ -5856,6 +5866,9 @@
           messageEl.textContent = 'Please enter a discount code';
           messageEl.style.color = '#f04141';
           messageEl.style.display = 'block';
+          setTimeout(() => {
+            if (messageEl.textContent === 'Please enter a discount code') messageEl.style.display = 'none';
+          }, 15000);
           return;
         }
 
@@ -7036,6 +7049,26 @@
       let _paymentPollInterval = null;
       const PAYMENT_POLL_INTERVAL_MS = 10000; // 10 seconds
       const PAYMENT_POLL_MAX_MS = 2 * 60 * 60 * 1000; // 2 hours max
+      let checkCooldownUntil = 0;
+      let checkCooldownTimer = null;
+      function clearCheckCooldown() {
+        checkCooldownUntil = 0;
+        if (checkCooldownTimer) { clearInterval(checkCooldownTimer); checkCooldownTimer = null; }
+        const btn = document.getElementById('checkPayBtn');
+        if (btn) { btn.disabled = false; btn.textContent = "I've paid — Check now"; }
+      }
+      function setCheckCooldown(ms) {
+        checkCooldownUntil = Date.now() + ms;
+        if (checkCooldownTimer) clearInterval(checkCooldownTimer);
+        const tick = () => {
+          const left = Math.ceil((checkCooldownUntil - Date.now()) / 1000);
+          const btn = document.getElementById('checkPayBtn');
+          if (left <= 0) { clearCheckCooldown(); return; }
+          if (btn) { btn.disabled = true; btn.textContent = `Wait ${left}s…`; }
+        };
+        tick();
+        checkCooldownTimer = setInterval(tick, 1000);
+      }
 
       function stopPaymentPolling() {
         if (_paymentPollInterval) {
