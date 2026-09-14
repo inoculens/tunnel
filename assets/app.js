@@ -1005,7 +1005,14 @@
         if (!pendingDomain || !getSessionId()) return;
         const myDomain = pendingDomain;
         const myToken = ++paymentScreenToken;
+        // Snapshot BEFORE reset: resetPaymentScreen() unchecks the box, so a
+        // just-made tick must be captured here or it can never reach the request.
+        const consentFlag = withdrawalConsentChecked();
         resetPaymentScreen();
+        if (consentFlag) {
+          const consentBox = document.getElementById('withdrawalConsent');
+          if (consentBox) consentBox.checked = true;
+        }
         ensureWithdrawalConsentListener();
         const stepLoading = document.getElementById('paymentStepLoading');
         const instructions = document.getElementById('paymentInstructions');
@@ -1015,7 +1022,7 @@
         if (discountSection) discountSection.style.display = 'none';
         const [discountRes, quoteRes] = await Promise.allSettled([
           fetchDiscountState(),
-          fetchQuote(false),
+          fetchQuote(false, consentFlag),
         ]);
         if (pendingDomain !== myDomain || myToken !== paymentScreenToken) return;
         paintDiscountState(discountRes.status === 'fulfilled' ? discountRes.value : null);
@@ -2067,13 +2074,16 @@
       }
 
       // Quote read (no DOM): shared by the atomic loader and refreshes.
-      async function fetchQuote(forceRefresh = false) {
+      // consentOverride lets callers pass a pre-reset snapshot; otherwise the
+      // live checkbox state is read (safe on paths without a reset, e.g. refresh).
+      async function fetchQuote(forceRefresh = false, consentOverride = null) {
+        const flag = consentOverride === null ? withdrawalConsentChecked() : consentOverride;
         const genFn = functions.httpsCallable('generatePaymentAddress');
         const res = await genFn({
           domain: pendingDomain,
           sessionId: getSessionId(),
           forceRefresh: forceRefresh,
-          withdrawalConsent: withdrawalConsentChecked()
+          withdrawalConsent: flag
         });
         return res.data;
       }
@@ -2144,7 +2154,7 @@
         }
         if (paymentDetails) paymentDetails.style.display = 'none';
         try {
-          const data = await fetchQuote(forceRefresh);
+          const data = await fetchQuote(forceRefresh, withdrawalConsentChecked());
           if (pendingDomain !== myDomain || myToken !== paymentScreenToken) return;
           paintQuoteSuccess(data);
         } catch (err) {
