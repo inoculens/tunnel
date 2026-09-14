@@ -4681,6 +4681,27 @@
         setDiscountBanner(bannerEl, data.discountPercent);
       }
 
+      // Discount snapshot for the coverage box: refresh from the backend
+      // and repaint. Fire-and-forget with a domain guard; safe to call
+      // from any domain-data sync point.
+      async function refreshDiscountWindowState() {
+        const d = window.currentDomain || pendingDomain;
+        if (!d || !getSessionId()) return;
+        try {
+          const checkFn = functions.httpsCallable('checkDomainDiscount');
+          const res = await checkFn({ domain: d, sessionId: getSessionId() });
+          if ((window.currentDomain || pendingDomain) !== d) return;
+          const data = res.data || null;
+          window.domainDiscount = (data && data.hasDiscount)
+            ? { hasDiscount: true, percent: data.discountPercent || 0, code: data.discountCode || '' }
+            : null;
+        } catch (err) {
+          return;
+        }
+        if ((window.currentDomain || pendingDomain) !== d) return;
+        renderCoverageStatus();
+      }
+
       // Apex (naked) domains can't serve short links — DNS forbids CNAME at
       // the apex. Client-side mirror of the backend psl check (common
       // two-level suffixes); the backend remains authoritative.
@@ -4918,7 +4939,7 @@
 
         // Store the isVerified state globally for use in updateContinueButton
         window.domainIsVerified = domainDoc.isVerified === true;
-        window.domainIsActive = domainDoc.status === 'active';
+        window.domainIsActive = domainDoc.status === 'active' || domainDoc.paymentStatus === 'paid';
         window.domainPaymentStatus = domainDoc.paymentStatus || null;
         window.domainCoverage = {
           valid: domainDoc.coverageValid === true,
@@ -5039,6 +5060,7 @@
 
         // Update continue button state
         updateContinueButton();
+        refreshDiscountWindowState();
       }
 
       // PERSISTENT UI SYNC: Manually sync verification UI based on database state
@@ -5087,6 +5109,7 @@
 
         // Update continue button state
         updateContinueButton();
+        refreshDiscountWindowState();
       }
 
       // Render ACME records as separate items
@@ -5314,10 +5337,15 @@
           } else {
             el.innerHTML = box(`Covered until <b style="color: var(--text);">${escapeHTML(when)}</b>.`);
           }
+        } else if (window.domainDiscount && window.domainDiscount.hasDiscount) {
+          const pct = Number(window.domainDiscount.percent) || 0;
+          el.innerHTML = box(`<b>${pct}% promo code applied</b> — complete the remaining payment to activate.`);
         } else if (window.domainPaymentStatus === 'paid') {
           el.innerHTML = box('<b style="color: #f28b82;">Coverage expired</b> — renew below to reactivate your links.');
+        } else if (window.domainIsVerified === true) {
+          el.innerHTML = box('Domain verified — one step left: activate coverage with payment or a promo code.');
         } else {
-          el.innerHTML = box('No coverage yet — payment activates the domain ($10/year).');
+          el.innerHTML = box('Verify ownership first, then activate coverage with payment or a promo code.');
         }
         el.style.display = 'block';
       }
@@ -5388,6 +5416,7 @@
         }
 
         updateContinueButton();
+        refreshDiscountWindowState();
       }
 
       async function verifyCnameOnly() {
@@ -6009,6 +6038,14 @@
             bannerEl.style.background = 'rgba(43,166,64,0.12)';
             bannerEl.style.borderColor = '#6fcf7f';
             bannerEl.style.color = '#6fcf7f';
+            window.domainPaymentStatus = 'paid';
+            window.domainCoverage = {
+              valid: res.data.coverageValid === true,
+              lifetime: res.data.coverageLifetime === true,
+              expiresAt: res.data.coverageExpiresAt || null
+            };
+            window.domainDiscount = { hasDiscount: true, percent: 100, code: code };
+            renderCoverageStatus();
 
             // Refresh the domain list and close the modal
             await loadUserDomains();
@@ -6058,6 +6095,13 @@
               backBtn.style.opacity = '1';
               backBtn.style.cursor = 'pointer';
             }
+            window.domainDiscount = { hasDiscount: true, percent: res.data.discountPercent || 0, code: code };
+            window.domainCoverage = {
+              valid: res.data.coverageValid === true,
+              lifetime: res.data.coverageLifetime === true,
+              expiresAt: res.data.coverageExpiresAt || null
+            };
+            renderCoverageStatus();
           }
 
         } catch (err) {
@@ -6121,6 +6165,9 @@
 
           // Refresh the quote to get full price again
           await updateQuote(true);
+          window.domainDiscount = null;
+          checkCurrentDomainStatus();
+          refreshDiscountWindowState();
 
         } catch (err) {
           console.error('Remove discount code error:', err);
