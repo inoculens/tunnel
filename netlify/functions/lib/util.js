@@ -999,7 +999,7 @@ async function liveSafetyCheck(url, apiKey) {
   };
   const res = await fetchWithTimeout(
     `https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${encodeURIComponent(apiKey)}`,
-    Number(process.env.SAFETY_TIMEOUT_MS || 2000),
+    Number(process.env.SAFETY_TIMEOUT_MS || 1200),
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
   );
   if (!res.ok) throw new Error(`safebrowsing ${res.status}`);

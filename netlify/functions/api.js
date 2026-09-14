@@ -545,43 +545,66 @@ const actions = {
       e.code = "invalid-argument";
       throw e;
     }
-    // Proactive safety at mint (silent for clean URLs).
-    try {
-      const verdict = await checkUrlSafety(s, cleanUrl);
-      if (verdict && verdict.safe === false) {
-        const e = new Error("ERR_UNSAFE_URL");
-        e.statusCode = 400;
-        e.code = "invalid-argument";
-        throw e;
-      }
-    } catch (e) {
-      if (e && e.message === "ERR_UNSAFE_URL") throw e;
-      console.error("safety check failed open:", e?.message || e);
-    }
-    // Per-session quota (default 500). Count doc preferred, scan fallback.
-    try {
-      const quota = Number(process.env.LINK_QUOTA_SYSTEM || 500);
-      const q = Number.isFinite(quota) && quota > 0 ? Math.min(quota, 5000) : 500;
-      let count = await sessionLinkCount(s, sessionId);
-      if (count === null) {
-        const blobs = await listAll(s, "link/");
-        const docs = await mapWithConcurrency(blobs, 12, (b) =>
-          freshGet(s, b.key, { type: "json" }).catch(() => null)
-        );
-        count = docs.filter((l) => l && l.sessionId === sessionId).length;
-        try { await s.setJSON(`sessions/${sessionId}/meta`, { linkCount: count }); } catch { /* ignore */ }
-      }
-      if (count >= q) {
-        const e = new Error(`Link quota reached (${q}). Delete old links to create more.`);
-        e.statusCode = 429;
-        e.code = "resource-exhausted";
-        throw e;
-      }
-    } catch (e) {
-      if (e && e.code === "resource-exhausted") throw e;
-      console.error("quota check failed open:", e?.message || e);
-    }
     const host = cleanDomain(domain) || systemShortHost();
+    // Independent pre-checks run concurrently (one round of store reads
+    // instead of four serial ones). allSettled + ordered evaluation keeps
+    // the exact error precedence of the old serial code (400 unsafe before
+    // 429 quota), since rejection timing alone must not pick the error.
+    const quotaRaw = Number(process.env.LINK_QUOTA_SYSTEM || 500);
+    const q = Number.isFinite(quotaRaw) && quotaRaw > 0 ? Math.min(quotaRaw, 5000) : 500;
+    const [safetyRes, quotaRes, domainRes, sessionRes] = await Promise.allSettled([
+      (async () => {
+        // Proactive safety at mint (silent for clean URLs).
+        try {
+          const verdict = await checkUrlSafety(s, cleanUrl);
+          if (verdict && verdict.safe === false) {
+            const e = new Error("ERR_UNSAFE_URL");
+            e.statusCode = 400;
+            e.code = "invalid-argument";
+            throw e;
+          }
+        } catch (e) {
+          if (e && e.message === "ERR_UNSAFE_URL") throw e;
+          console.error("safety check failed open:", e?.message || e);
+        }
+      })(),
+      // Per-session quota (default 500). Count doc preferred, scan fallback.
+      // Resolves -1 when unreadable: quota gate skipped, as before (fail-open).
+      (async () => {
+        try {
+          let count = await sessionLinkCount(s, sessionId);
+          if (count === null) {
+            const blobs = await listAll(s, "link/");
+            const docs = await mapWithConcurrency(blobs, 12, (b) =>
+              freshGet(s, b.key, { type: "json" }).catch(() => null)
+            );
+            count = docs.filter((l) => l && l.sessionId === sessionId).length;
+            try { await s.setJSON(`sessions/${sessionId}/meta`, { linkCount: count }); } catch { /* ignore */ }
+          }
+          return count;
+        } catch (e) {
+          console.error("quota check failed open:", e?.message || e);
+          return -1;
+        }
+      })(),
+      (async () => (host !== systemShortHost()
+        ? freshGet(s, `domain/${host}`, { type: "json" })
+        : null))(),
+      getSession(s, sessionId),
+    ]);
+    if (safetyRes.status === "rejected") throw safetyRes.reason;
+    const quotaCount = quotaRes.status === "fulfilled" ? quotaRes.value : -1;
+    if (quotaCount >= 0 && quotaCount >= q) {
+      const e = new Error(`Link quota reached (${q}). Delete old links to create more.`);
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
+    // Store-read failures here behaved as 500s before; keep that (no silent mint).
+    if (domainRes.status === "rejected") throw domainRes.reason;
+    if (sessionRes.status === "rejected") throw sessionRes.reason;
+    const domainDoc = domainRes.value;
+    const sessionDoc = sessionRes.value;
 
     let code;
     if (cleanSlug) {
@@ -618,7 +641,7 @@ const actions = {
     // domain owned by this session (Cloudflare SaaS provisions TLS) whose
     // coverage (payment year / promo grant) has not lapsed.
     if (host !== systemShortHost()) {
-      const doc = await freshGet(s, `domain/${host}`, { type: "json" });
+      const doc = domainDoc;
       if (doc && refreshCoverage(doc)) await s.setJSON(`domain/${host}`, doc);
       const usable =
         doc && doc.sessionId === sessionId && doc.status === "active" && coverageValid(doc);
@@ -634,7 +657,7 @@ const actions = {
     }
 
     // Implicit session creation (frontend persists it after success).
-    if (!(await getSession(s, sessionId))) {
+    if (!sessionDoc) {
       await s.setJSON(`sessions/${sessionId}`, { createdAt: Date.now() });
     }
 

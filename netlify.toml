@@ -51,7 +51,7 @@
 #        Pricing is live-only (CoinGecko->Coinbase->Bitstamp, no hardcoded
 #        fallback): all providers down = 503 retry, never stale default.
 #     SAFE_BROWSING_API_KEY=<Google Safe Browsing key, API-restricted>
-#        proactive mint check (24h Blobs cache, 2s timeout, fail-open+log).
+#        proactive mint check (24h Blobs cache, 1.2s timeout, fail-open+log).
 #        Flagged = 400 unsafe-url, no link created. Missing key = degraded only.
 #     LINK_QUOTA_SYSTEM=500  RESOLVE_LOG_PER_IP_MIN=30  RESOLVE_LOG_PER_NET64_MIN=300
 #        (ledger-forever caps: always 302, detail throttled per IP (/64 for
@@ -132,10 +132,11 @@
     X-Frame-Options = "SAMEORIGIN"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+    Cross-Origin-Opener-Policy = "same-origin"
     Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'; frame-src 'self' https://challenges.cloudflare.com; child-src 'self' https://challenges.cloudflare.com;"
-    # HSTS: enable ONLY once serving exclusively over HTTPS with no
-    # HTTP-only subdomains. Uncomment after verifying:
-    # Strict-Transport-Security = "max-age=31536000; includeSubDomains; preload"
+    # HSTS staged rollout (owner-confirmed HTTPS-only): max-age first.
+    # Graduate to includeSubDomains + preload only after a stable period.
+    Strict-Transport-Security = "max-age=31536000"
 
 [[headers]]
   for = "/assets/*"

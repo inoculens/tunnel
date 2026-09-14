@@ -33,9 +33,9 @@
     } catch (e) {}
   </script>
 
-  <link rel="apple-touch-icon" href="/visuals/logo-no-background.png" />
+  <link rel="apple-touch-icon" href="/visuals/logo-touch-180.png" />
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'; frame-src 'self' https://challenges.cloudflare.com; child-src 'self' https://challenges.cloudflare.com;" />
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'self' https://challenges.cloudflare.com; child-src 'self' https://challenges.cloudflare.com;" />
 
   <title>Link Not Available - INOCULENS Tunnel</title>
   <!-- Shared design system: styles the consent banner injected by
@@ -43,9 +43,10 @@
        cascade order so this page's own <style> rules below win any
        equal-specificity ties and its layout is unchanged. -->
   <link rel="stylesheet" href="/assets/common.css">
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap" media="print" onload="this.media='all'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap"></noscript>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap');
-  </style>
   <style>
     :root {
       --primary: #e8eaed;
@@ -198,7 +199,7 @@
 
 <body>
   <div class="container">
-    <img src="/visuals/logo-no-background.png" alt="INOCULENS" class="logo" />
+    <img src="/visuals/logo-touch-180.png" alt="INOCULENS" class="logo" />
     <h1>Link Expired<br>or not available</h1>
     <div id="linkBox" class="failed-link-box">s.inoculens.com/...</div>
     <p>This shortcut might have been deleted or the address is incorrect. Please check the link and try again.</p>

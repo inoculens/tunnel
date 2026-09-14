@@ -21,7 +21,7 @@
   <meta name="twitter:image" content="https://tunnel.inoculens.com/visuals/logo-no-background.png" />
   <meta name="twitter:image:alt" content="INOCULENS Tunnel — free URL shortener and deep link generator" />
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'; frame-src 'self' https://challenges.cloudflare.com; child-src 'self' https://challenges.cloudflare.com;" />
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https://www.google-analytics.com https://www.googletagmanager.com; img-src 'self' data: https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'self' https://challenges.cloudflare.com; child-src 'self' https://challenges.cloudflare.com;" />
   <title>About Our URL Shortener & Deep Link Platform | INOCULENS Tunnel</title>
   
   <!-- Favicon -->
@@ -54,8 +54,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="/assets/common.css">
-  <link rel="stylesheet"
-    href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap">
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap" media="print" onload="this.media='all'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lexend+Giga:wght@100..900&family=Mulish:ital,wght@0,200..1000;1,200..1000&display=swap"></noscript>
   
   <style>
 
@@ -368,7 +369,7 @@
     <div class="header-content">
       <div class="header-left">
         <a href="/" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
-          <img src="/visuals/logo-no-background.png" alt="INOCULENS Tunnel — free URL shortener and deep link generator" class="header-logo" width="30" height="30" decoding="async">
+          <img src="/visuals/logo-header-64.png" alt="INOCULENS Tunnel — free URL shortener and deep link generator" class="header-logo" width="30" height="30" decoding="async">
           <span class="header-title">INOCULENS Tunnel</span>
         </a>
       </div>
@@ -377,7 +378,7 @@
         <a href="/about.html" class="nav-btn active">About</a>
         <a href="/terms.html" class="nav-btn">Terms</a>
       </div>
-      <button class="mobile-menu-btn" onclick="toggleMobileMenu(true)">
+      <button class="mobile-menu-btn" onclick="toggleMobileMenu(true)" aria-label="Open menu">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="3" y1="12" x2="21" y2="12"></line>
           <line x1="3" y1="6" x2="21" y2="6"></line>
@@ -512,7 +513,7 @@
   <div class="mobile-drawer" id="mobileDrawer">
     <div class="drawer-header">
       <span class="header-title" style="display: block !important;">MENU</span>
-      <button class="drawer-close" onclick="toggleMobileMenu(false)">
+      <button class="drawer-close" onclick="toggleMobileMenu(false)" aria-label="Close menu">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="18" y1="6" x2="6" y2="18"></line>
           <line x1="6" y1="6" x2="18" y2="18"></line>
