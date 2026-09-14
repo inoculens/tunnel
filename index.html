@@ -4788,9 +4788,26 @@
       function showPendingClaimModal(data) {
         const txt = (data.instructions && data.instructions.txt) || data.pendingToken || '';
         const cname = (data.instructions && data.instructions.cnameTarget) || 'customers.inoculens.com';
+        const claimCnameName = String(pendingDomain || '');
+        const claimTxtHost = `verification.${String(pendingDomain || '')}`;
+        const copySvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+        const copyBtnStyle = 'background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;';
+        const copyRow = (value) => `<div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;"><div style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${escapeHTML(value)}</div><button class="copy-btn" onclick="copyText(${escapeJS(value)}, this)" title="Copy" style="${copyBtnStyle}">${copySvg}</button></div>`;
         showCustomModal({
           title: "Domain held by another session",
-          message: `This name is attached to a different session. To reclaim it (plus its links + stats), prove DNS control:<br><br>CNAME <strong>${escapeHTML(pendingDomain)}</strong> → <strong>${escapeHTML(cname)}</strong><br>TXT <strong>verification.${escapeHTML(pendingDomain)}</strong> → <strong>${escapeHTML(txt)}</strong><br><br>Old owner keeps full rights until you verify. <strong>s.inoculens.com</strong> links never move.`,
+          message: `This name is attached to a different session. To reclaim it (plus its links + stats), prove DNS control:`
+            + `<div style="margin: 16px 0; display: flex; flex-direction: column; gap: 8px; text-align: left;">`
+            + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
+            + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">CNAME Record (Routing)</label>`
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Record name:</div>${copyRow(claimCnameName)}`
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to:</div>${copyRow(cname)}`
+            + `</div>`
+            + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
+            + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">TXT Record (Ownership)</label>`
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>${copyRow(claimTxtHost)}`
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Value:</div>${copyRow(txt)}`
+            + `</div></div>`
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); text-align: center;">Old owner keeps full rights until you verify. <strong>s.inoculens.com</strong> links never move.<br>DNS changes can take a few minutes.</div>`,
           showCancel: true,
           confirmText: "Verify Claim",
           cancelText: "Cancel"
