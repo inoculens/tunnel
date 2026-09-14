@@ -1086,7 +1086,10 @@ const actions = {
     await requireTurnstile(s, p, event, "domain");
     const host = cleanDomain(p.domain);
     if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
-    // Never allow hijacking the system hosts or the SaaS infrastructure hosts.
+    // Only tunnel. (app) and s. (short links) are system hosts, plus the SaaS
+    // infrastructure names and the apex itself. Everything else is a customer
+    // domain — including other *.inoculens.com names, which route and validate
+    // exactly like external domains (proxied CNAME to the SaaS target).
     const reserved = new Set([systemShortHost(), routingTarget(), "tunnel.inoculens.com", "customers.inoculens.com", "proxy-fallback.inoculens.com", "inoculens.com"]);
     if (reserved.has(host)) return fail(400, "invalid-argument", "This domain is reserved for INOCULENS infrastructure.");
     // Authoritative apex block (frontend also warns live, but the backend

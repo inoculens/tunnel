@@ -3514,6 +3514,11 @@
           A unique Bitcoin address has been generated for your domain. Send the exact amount shown to activate Managed
           SSL.
         </p>
+        <div id="paymentStepLoading"
+          style="text-align: center; padding: 32px 0; color: var(--text-muted); font-size: 0.9rem; display: none;">
+          <div class="loading-spinner" style="margin: 0 auto 12px;"></div>
+          Loading payment details...
+        </div>
         <div id="paymentInstructions"
           style="background: rgba(0, 0, 0, 0.32); padding: 16px; border-radius: 8px; border: 1px dashed var(--border); margin-bottom: 16px;">
           <!-- Loading state -->
@@ -3566,7 +3571,7 @@
         </div>
 
         <!-- Discount Code Section -->
-        <div
+        <div id="discountCodeSection"
           style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); margin-bottom: 20px;">
           <div style="display: flex; gap: 8px; align-items: stretch;">
             <input type="text" id="discountCodeInput" placeholder="Enter discount code" maxlength="50"
@@ -4515,44 +4520,11 @@
           loadVerificationInfo(pendingDomain);
         }
 
-        // Reset discount code section when entering payment step
+        // Payment screen loads atomically: discount + quote fetch in parallel,
+        // then reveal everything in one paint (see loadPaymentScreen).
         if (step === 3 || step === 'payment') {
-          const discountInput = document.getElementById('discountCodeInput');
-          const applyBtn = document.getElementById('applyDiscountBtn');
-          const removeBtn = document.getElementById('removeDiscountBtn');
-          const messageEl = document.getElementById('discountCodeMessage');
-          const bannerEl = document.getElementById('discountAppliedBanner');
-          const quoteAmountEl = document.getElementById('quoteAmount');
-
-          if (discountInput) {
-            discountInput.value = '';
-            discountInput.disabled = false;
-          }
-          if (applyBtn) {
-            applyBtn.style.display = 'block';
-            applyBtn.disabled = false;
-            applyBtn.textContent = 'Apply';
-          }
-          if (removeBtn) {
-            removeBtn.style.display = 'none';
-          }
-          if (messageEl) {
-            messageEl.textContent = '';
-            messageEl.style.display = 'none';
-          }
-          if (bannerEl) {
-            bannerEl.textContent = '';
-            bannerEl.style.display = 'none';
-          }
-
-          // Check if there's an existing discount applied to this domain
-          // and restore the UI state accordingly - wait for it to complete
-          checkExistingDiscount().then(hasDiscount => {
-            // After checking discount, generate quote
-            // Use forceRefresh=false to keep existing quote if valid (like normal pricing)
-            updateQuote(false);
-          });
-          return; // Exit early - updateQuote will be called after checkExistingDiscount
+          loadPaymentScreen();
+          return;
         }
       }
 
@@ -4585,52 +4557,128 @@
         }
       }
 
-      // Check for existing discount and restore UI state
-      async function checkExistingDiscount() {
-        if (!pendingDomain || !getSessionId()) return false;
+      // Payment screen loads atomically (single paint, no staggered reveals).
+      // Discount state + quote are independent reads: fetch in parallel, then
+      // reveal instructions + discount + details together. The token drops
+      // late responses when the user already moved to another domain.
+      async function loadPaymentScreen() {
+        if (!pendingDomain || !getSessionId()) return;
+        const myDomain = pendingDomain;
+        const myToken = ++paymentScreenToken;
+        resetPaymentScreen();
+        const stepLoading = document.getElementById('paymentStepLoading');
+        const instructions = document.getElementById('paymentInstructions');
+        const discountSection = document.getElementById('discountCodeSection');
+        if (stepLoading) stepLoading.style.display = 'block';
+        if (instructions) instructions.style.display = 'none';
+        if (discountSection) discountSection.style.display = 'none';
+        const [discountRes, quoteRes] = await Promise.allSettled([
+          fetchDiscountState(),
+          fetchQuote(false),
+        ]);
+        if (pendingDomain !== myDomain || myToken !== paymentScreenToken) return;
+        paintDiscountState(discountRes.status === 'fulfilled' ? discountRes.value : null);
+        if (quoteRes.status === 'fulfilled') {
+          paintQuoteSuccess(quoteRes.value);
+        } else {
+          paintQuoteError(quoteRes.reason);
+        }
+        if (pendingDomain !== myDomain || myToken !== paymentScreenToken) return;
+        if (stepLoading) stepLoading.style.display = 'none';
+        if (instructions) instructions.style.display = 'block';
+        if (discountSection) discountSection.style.display = 'block';
+      }
 
+      // Full reset: success paths paint inline styles that must not leak
+      // into the next domain's screen (green Apply, dimmed Back, stale
+      // loader HTML, previous quote values, old status banners).
+      function resetPaymentScreen() {
+        const discountInput = document.getElementById('discountCodeInput');
+        const applyBtn = document.getElementById('applyDiscountBtn');
+        const removeBtn = document.getElementById('removeDiscountBtn');
+        const messageEl = document.getElementById('discountCodeMessage');
+        const bannerEl = document.getElementById('discountAppliedBanner');
+        const quoteAmountEl = document.getElementById('quoteAmount');
+        const quoteAddressEl = document.getElementById('quoteAddress');
+        const quoteExpiryEl = document.getElementById('quoteExpiry');
+        const statusBanner = document.getElementById('paymentStatusBanner');
+        const backBtn = document.getElementById('paymentBackBtn');
+        if (discountInput) {
+          discountInput.value = '';
+          discountInput.disabled = false;
+        }
+        if (applyBtn) {
+          applyBtn.style.display = 'block';
+          applyBtn.disabled = false;
+          applyBtn.textContent = 'Apply';
+          applyBtn.style.background = '';
+        }
+        if (removeBtn) {
+          removeBtn.style.display = 'none';
+          removeBtn.disabled = false;
+          removeBtn.textContent = 'Remove';
+        }
+        if (backBtn) {
+          backBtn.disabled = false;
+          backBtn.style.opacity = '';
+          backBtn.style.cursor = '';
+        }
+        if (messageEl) {
+          messageEl.textContent = '';
+          messageEl.style.display = 'none';
+        }
+        if (bannerEl) {
+          bannerEl.textContent = '';
+          bannerEl.style.display = 'none';
+          bannerEl.style.background = '';
+          bannerEl.style.borderColor = '';
+          bannerEl.style.color = '';
+        }
+        if (quoteAmountEl) {
+          quoteAmountEl.textContent = '';
+          quoteAmountEl.removeAttribute('data-copy-value');
+        }
+        if (quoteAddressEl) quoteAddressEl.textContent = '';
+        if (quoteExpiryEl) quoteExpiryEl.textContent = '';
+        if (statusBanner) {
+          statusBanner.textContent = '';
+          statusBanner.style.display = 'none';
+        }
+      }
+
+      // Discount state read (no DOM): used by the atomic loader.
+      async function fetchDiscountState() {
+        if (!pendingDomain || !getSessionId()) return null;
         try {
           const checkFn = functions.httpsCallable('checkDomainDiscount');
           const res = await checkFn({
             domain: pendingDomain,
             sessionId: getSessionId()
           });
-
-          if (res.data && res.data.hasDiscount) {
-            const discountInput = document.getElementById('discountCodeInput');
-            const applyBtn = document.getElementById('applyDiscountBtn');
-            const removeBtn = document.getElementById('removeDiscountBtn');
-            const bannerEl = document.getElementById('discountAppliedBanner');
-            const quoteAmountEl = document.getElementById('quoteAmount');
-
-            // Disable input and show Remove button
-            if (discountInput) {
-              discountInput.value = res.data.discountCode || '';
-              discountInput.disabled = true;
-            }
-            if (applyBtn) {
-              applyBtn.style.display = 'none';
-            }
-            if (removeBtn) {
-              removeBtn.style.display = 'block';
-            }
-
-            // Show discount applied banner
-            setDiscountBanner(bannerEl, res.data.discountPercent);
-
-            // Update the displayed amount with strikethrough and discounted amount
-            // Only if we have the amounts from the check
-            if (quoteAmountEl && res.data.amount && res.data.originalAmount) {
-              setQuoteAmount(quoteAmountEl, res.data.amount, res.data.originalAmount);
-            }
-
-            return true;
-          }
-
-          return false;
+          return res.data || null;
         } catch (err) {
-          return false;
+          return null;
         }
+      }
+
+      // Discount state paint (no amounts: the quote paint owns pricing).
+      function paintDiscountState(data) {
+        if (!data || !data.hasDiscount) return;
+        const discountInput = document.getElementById('discountCodeInput');
+        const applyBtn = document.getElementById('applyDiscountBtn');
+        const removeBtn = document.getElementById('removeDiscountBtn');
+        const bannerEl = document.getElementById('discountAppliedBanner');
+        if (discountInput) {
+          discountInput.value = data.discountCode || '';
+          discountInput.disabled = true;
+        }
+        if (applyBtn) {
+          applyBtn.style.display = 'none';
+        }
+        if (removeBtn) {
+          removeBtn.style.display = 'block';
+        }
+        setDiscountBanner(bannerEl, data.discountPercent);
       }
 
       // Apex (naked) domains can't serve short links — DNS forbids CNAME at
@@ -4855,6 +4903,7 @@
       let currentSessionId = null;
       let sslRecords = []; // Array of ACME records from Cloudflare
       let verificationState = { cname: null, txt: null, acme: {} }; // Track per-field verification state
+      let paymentScreenToken = 0; // Drops late payment-screen paints after a domain switch
       let acmeRequired = false;
 
       function setVerificationUI(domainDoc) {
@@ -5746,71 +5795,83 @@
         }
       }
 
-      async function updateQuote(forceRefresh = false) {
-        const instructions = document.getElementById('paymentInstructions');
+      // Quote read (no DOM): shared by the atomic loader and refreshes.
+      async function fetchQuote(forceRefresh = false) {
+        const genFn = functions.httpsCallable('generatePaymentAddress');
+        const res = await genFn({
+          domain: pendingDomain,
+          sessionId: getSessionId(),
+          forceRefresh: forceRefresh
+        });
+        return res.data;
+      }
+
+      function paintQuoteSuccess(data) {
         const loadingState = document.getElementById('paymentLoadingState');
         const paymentDetails = document.getElementById('paymentDetails');
-
-        instructions.style.display = 'block';
-        loadingState.style.display = 'block';
-        paymentDetails.style.display = 'none';
-
         const quoteAmountEl = document.getElementById('quoteAmount');
         const quoteAddressEl = document.getElementById('quoteAddress');
         const quoteExpiryEl = document.getElementById('quoteExpiry');
+        if (loadingState) loadingState.style.display = 'none';
+        if (paymentDetails) paymentDetails.style.display = 'block';
+        if (data.discountPercent && data.originalAmount) {
+          setQuoteAmount(quoteAmountEl, data.amount, data.originalAmount);
+        } else {
+          setQuoteAmount(quoteAmountEl, data.amount);
+        }
+        if (quoteAddressEl) quoteAddressEl.textContent = data.address;
+        if (data.expiresAt && quoteExpiryEl) {
+          const expiryDate = new Date(data.expiresAt);
+          quoteExpiryEl.innerHTML = `⚠️ This quote expires on <strong>${expiryDate.toLocaleDateString()} ${expiryDate.toLocaleTimeString()}</strong> (1 week from generation).`;
+        }
+        clearCheckCooldown();
+        startPaymentPolling(pendingDomain);
+      }
 
+      function paintQuoteError(err) {
+        const loadingState = document.getElementById('paymentLoadingState');
+        const paymentDetails = document.getElementById('paymentDetails');
+        if (paymentDetails) paymentDetails.style.display = 'none';
+        if (!loadingState) return;
+        loadingState.style.display = 'block';
+        if (err && err.code === 'failed-precondition' && err.message && err.message.includes('DNS verification')) {
+          loadingState.innerHTML = '<span style="color: #f5a623;">DNS verification required before payment.</span>';
+          showCustomModal({
+            title: "Verification Required",
+            message: "Please verify your domain ownership and DNS configuration before proceeding to payment.",
+            confirmText: "Go to Verification",
+            showCancel: true,
+            cancelText: "Cancel"
+          }).then((ok) => { if (ok) showStep('verification'); });
+        } else {
+          const detail = (err && err.message) ? `: ${err.message}` : '';
+          loadingState.innerHTML = `<span style="color: #f04141;">Failed to generate payment address${escapeHTML(detail)}. Go back and try again later.</span>`;
+          showCustomModal({ title: "Error", message: `Failed to generate payment address${escapeHTML(detail)}. Go back and try again later.` });
+        }
+      }
+
+      // Refresh path (discount removed): screen is already revealed,
+      // so paint directly with a stale-domain guard.
+      async function updateQuote(forceRefresh = false) {
+        const myDomain = pendingDomain;
+        const myToken = paymentScreenToken;
+        const instructions = document.getElementById('paymentInstructions');
+        const loadingState = document.getElementById('paymentLoadingState');
+        const paymentDetails = document.getElementById('paymentDetails');
+        if (instructions) instructions.style.display = 'block';
+        if (loadingState) {
+          loadingState.style.display = 'block';
+          loadingState.innerHTML = '<div class="loading-spinner" style="margin: 0 auto 12px;"></div>Generating your Bitcoin address...';
+        }
+        if (paymentDetails) paymentDetails.style.display = 'none';
         try {
-          const genFn = functions.httpsCallable('generatePaymentAddress');
-          const res = await genFn({
-            domain: pendingDomain,
-            sessionId: getSessionId(),
-            forceRefresh: forceRefresh
-          });
-
-          // Hide loading, show details
-          loadingState.style.display = 'none';
-          paymentDetails.style.display = 'block';
-
-          // Check if there's a discount and display accordingly
-          if (res.data.discountPercent && res.data.originalAmount) {
-            // Show strikethrough original price and discounted price in green
-            setQuoteAmount(quoteAmountEl, res.data.amount, res.data.originalAmount);
-          } else {
-            setQuoteAmount(quoteAmountEl, res.data.amount);
-          }
-          quoteAddressEl.textContent = res.data.address;
-
-          if (res.data.expiresAt) {
-            const expiryDate = new Date(res.data.expiresAt);
-            quoteExpiryEl.innerHTML = `⚠️ This quote expires on <strong>${expiryDate.toLocaleDateString()} ${expiryDate.toLocaleTimeString()}</strong> (1 week from generation).`;
-          }
-
-          // Start polling the backend for domain activation
-          clearCheckCooldown();
-          startPaymentPolling(pendingDomain);
+          const data = await fetchQuote(forceRefresh);
+          if (pendingDomain !== myDomain || myToken !== paymentScreenToken) return;
+          paintQuoteSuccess(data);
         } catch (err) {
           console.error(err);
-
-          // Check if this is a verification required error
-          if (err.code === 'failed-precondition' && err.message && err.message.includes('DNS verification')) {
-            loadingState.innerHTML = '<span style="color: #f5a623;">DNS verification required before payment.</span>';
-
-            // Show verification step (showCustomModal resolves true on OK)
-            showCustomModal({
-              title: "Verification Required",
-              message: "Please verify your domain ownership and DNS configuration before proceeding to payment.",
-              confirmText: "Go to Verification",
-              showCancel: true,
-              cancelText: "Cancel"
-            }).then((ok) => { if (ok) showStep('verification'); });
-          } else {
-            // Surface the backend's real message (e.g. BTC_XPUB missing /
-            // invalid, price feed down) instead of swallowing it — otherwise
-            // neither the user nor support can tell what failed.
-            const detail = (err && err.message) ? `: ${err.message}` : '';
-            loadingState.innerHTML = `<span style="color: #f04141;">Failed to generate payment address${escapeHTML(detail)}. Go back and try again later.</span>`;
-            showCustomModal({ title: "Error", message: `Failed to generate payment address${escapeHTML(detail)}. Go back and try again later.` });
-          }
+          if (pendingDomain !== myDomain || myToken !== paymentScreenToken) return;
+          paintQuoteError(err);
         }
       }
 
@@ -5825,11 +5886,13 @@
         if (window._checkingNow) return false;
         if (!isAuto && Date.now() < checkCooldownUntil) return false;
         window._checkingNow = true;
+        const myDomain = pendingDomain;
         try {
           if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
           if (banner && !isAuto) { banner.style.display = 'block'; banner.textContent = 'Checking blockchain…'; }
           const fn = functions.httpsCallable('checkPaymentNow');
           const res = await fn({ domain: pendingDomain, sessionId: getSessionId() });
+          if (pendingDomain !== myDomain) return false;
           if (res.data && res.data.paid) {
             if (banner) {
               banner.style.display = 'block';
@@ -5839,7 +5902,11 @@
               banner.textContent = '✅ Payment confirmed! Your domain is now active.';
             }
             await loadUserDomains();
-            setTimeout(() => closeDomainManager(), 2000);
+            const confirmedFor = pendingDomain;
+            setTimeout(() => {
+              if (pendingDomain && pendingDomain !== confirmedFor) return;
+              closeDomainManager();
+            }, 2000);
             return true;
           } else {
             if (banner) {
@@ -5887,6 +5954,7 @@
         const bannerEl = document.getElementById('discountAppliedBanner');
         const backBtn = document.getElementById('paymentBackBtn');
         const code = discountInput.value.trim();
+        const myDomain = pendingDomain;
 
         if (!code) {
           messageEl.textContent = 'Please enter a discount code';
@@ -5918,6 +5986,7 @@
             sessionId: getSessionId(),
             forceRefresh: true
           });
+          if (pendingDomain !== myDomain) return;
 
           if (res.data.isFullDiscount) {
             // Full discount - domain is already activated!
@@ -5943,7 +6012,9 @@
 
             // Refresh the domain list and close the modal
             await loadUserDomains();
+            const activatedFor = pendingDomain;
             setTimeout(() => {
+              if (pendingDomain && pendingDomain !== activatedFor) return;
               closeDomainManager();
               showCustomModal({
                 title: '🎉 Domain Activated!',
@@ -7127,6 +7198,10 @@
             stopPaymentPolling();
             return;
           }
+          if (pendingDomain !== domain) {
+            stopPaymentPolling();
+            return;
+          }
           if (Date.now() - startTime > PAYMENT_POLL_MAX_MS) {
             stopPaymentPolling();
             if (banner) {
@@ -7171,7 +7246,9 @@
               // Refresh domain list
               await loadUserDomains();
               // Auto-close modal after short delay
+              const closedFor = pendingDomain;
               setTimeout(() => {
+                if (pendingDomain && pendingDomain !== closedFor) return;
                 closeDomainManager();
               }, 2500);
             }

@@ -25,6 +25,9 @@
  *
  * This edge function is the sole "/" handler for short domains.
  */
+// Only tunnel. is the app; s. is the default short host (handled implicitly
+// below, never rewritten here). Every other hostname — including other
+// *.inoculens.com names — is a customer short-link host.
 const APP_HOSTS = new Set(["tunnel.inoculens.com"]);
 
 export default async (request, context) => {
