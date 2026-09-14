@@ -3428,57 +3428,7 @@
             </div>
           </div>
 
-          <div
-            style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">
-            <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">SSL Certificate (Automatic via Cloudflare)</label>
-            <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 10px;">No extra record needed — Cloudflare issues TLS automatically once the CNAME above is detected (usually a few minutes after payment).</div>
-
-            <div id="sslInstructionsDelegation"
-              style="display: none; flex-direction: column;">
-              <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>
-              <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-                <div id="sslCnameName"
-                  style="font-family: monospace; font-size: 0.8rem; color: #8ab4ff; background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">_acme-challenge</div>
-                <button class="copy-btn" onclick="copyTextFromElement('sslCnameName')" title="Copy Host"
-                  style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                  </svg>
-                </button>
-              </div>
-
-              <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Target/Value:</div>
-              <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-                <div id="sslCnameTarget"
-                  style="font-family: monospace; font-size: 0.8rem; color: #8ab4ff; background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">[loading...]</div>
-                <button class="copy-btn" onclick="copyTextFromElement('sslCnameTarget')" title="Copy Target"
-                  style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            <!-- Manual TXT records (only visible if Cloudflare provides them) -->
-            <div id="acmeContainer"
-              style="display:none; flex-direction: column; gap: 6px; margin-top: 4px; padding-top: 12px; border-top: 1px solid rgba(62, 166, 255, 0.2);">
-              <div style="font-size: 0.8rem; color: #8ab4ff; font-weight: 600;">Alternative: TXT Validation</div>
-              <div id="acmeRecordsList"
-                style="display: flex; flex-direction: column; gap: 12px;">
-              </div>
-            </div>
-
-            <div style="display: flex; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 8px;">
-              <button id="verifySslBtn" class="btn-verify" onclick="verifySslOnly()">Verify SSL Status</button>
-              <span id="sslStatus" class="domain-status status-pending"
-                style="font-size: 0.7rem; font-weight: 600;">PENDING</span>
-            </div>
-            <div id="sslStatusDetail"
-              style="font-size: 0.7rem; color: var(--text-muted); margin-top: 8px; display: none;"></div>
-          </div>
+          <div style="font-size: 0.78rem; color: var(--text-muted); text-align: center; padding: 4px 0 0;">🔒 SSL is automatic via Cloudflare and may take a while to become available after payment — no action needed.</div>
         </div>
 
 
@@ -4922,10 +4872,9 @@
       // Per-field verification functions
       let currentDomain = null;
       let currentSessionId = null;
-      let sslRecords = []; // Array of ACME records from Cloudflare
-      let verificationState = { cname: null, txt: null, acme: {} }; // Track per-field verification state
+
+      let verificationState = { cname: null, txt: null }; // Track per-field verification state
       let paymentScreenToken = 0; // Drops late payment-screen paints after a domain switch
-      let acmeRequired = false;
 
       function setVerificationUI(domainDoc) {
         // Show loading state for the continue button immediately
@@ -4976,54 +4925,25 @@
           }
         }
 
-        // SSL is automatic via Cloudflare HTTP validation (no _acme-challenge
-        // record). Keep the delegation block hidden unless the backend
-        // explicitly provides a delegation target (TXT/delegated method).
-        const sslNameEl = document.getElementById('sslCnameName');
-        const sslTargetEl = document.getElementById('sslCnameTarget');
-        const sslDelegEl = document.getElementById('sslInstructionsDelegation');
-        const dcvTarget = (domainDoc.instructions && domainDoc.instructions.dcvTarget) || null;
-        const explicitDeleg = (domainDoc.instructions && domainDoc.instructions.sslCnameTarget &&
-          domainDoc.instructions.sslCnameTarget.indexOf('.dcv.cloudflare.com') !== -1)
-          ? domainDoc.instructions.sslCnameTarget
-          : ((domainDoc.sslVerification && domainDoc.sslVerification.cnameTarget &&
-            String(domainDoc.sslVerification.cnameTarget).indexOf('.dcv.cloudflare.com') !== -1)
-            ? domainDoc.sslVerification.cnameTarget : null);
-        const showDelegTarget = explicitDeleg || dcvTarget;
-        // Shown only if TXT/delegated validation is required.
-        if (sslNameEl) sslNameEl.textContent = `_acme-challenge.${domainName}`;
-        if (sslTargetEl) sslTargetEl.textContent = showDelegTarget || 'Automatic — no record needed';
-        if (sslDelegEl) sslDelegEl.style.display = showDelegTarget ? 'flex' : 'none';
 
         // Initialize status from database (persistent state)
         const dns = domainDoc.dnsVerification || {};
-        const sslVer = domainDoc.sslVerification || {};
-        const cf = domainDoc.cloudflare || {};
-        // SSL verified if: DNS flag, Cloudflare SaaS ssl active, or hostname active.
-        // Note: domain status 'active' alone does NOT imply TLS is deployed yet
-        // (HTTP validation takes minutes) — show Propagating until CF confirms.
-        const sslIsActive = dns.sslVerified === true || sslVer.status === 'active' || cf.sslStatus === 'active';
         verificationState = {
           cname: dns.cnameValid || false,
           txt: dns.txtVerified || false,
-          ssl: sslIsActive,
           // false = definitively unroutable (no edge address); null = ok/unknown.
-          routable: (dns.routable === false) ? false : null,
-          acme: {}
+          routable: (dns.routable === false) ? false : null
         };
 
         // Initialize button labels
         const cnameBtn = document.getElementById('verifyCnameBtn');
         const txtBtn = document.getElementById('verifyTxtBtn');
-        const sslBtn = document.getElementById('verifySslBtn');
         if (cnameBtn) cnameBtn.textContent = 'Verify CNAME';
         if (txtBtn) txtBtn.textContent = 'Verify TXT';
-        if (sslBtn) sslBtn.textContent = 'Verify SSL';
 
         // Update UI status using persistent values
         updateStatusUI('cname', verificationState.cname);
         updateStatusUI('txt', verificationState.txt);
-        updateStatusUI('ssl', verificationState.ssl);
         updateRoutingUI(verificationState.routable);
 
         const isPermanentlyVerified = domainDoc.isVerified === true;
@@ -5043,18 +4963,6 @@
           }
         }
 
-        // Populate SSL ACME records if available (Alternative validation)
-        const cfRecords = domainDoc.cloudflareValidationRecords || (domainDoc.sslVerification && domainDoc.sslVerification.records) || [];
-        sslRecords = Array.isArray(cfRecords) ? cfRecords : [];
-        const acmeContainer = document.getElementById('acmeContainer');
-        if (acmeContainer) {
-          if (sslRecords.length > 0) {
-            renderAcmeRecords(sslRecords);
-            acmeContainer.style.display = 'flex';
-          } else {
-            acmeContainer.style.display = 'none';
-          }
-        }
 
         updateContinueButton();
 
@@ -5074,11 +4982,7 @@
         const isVerified = domainData.isVerified === true;
         const isActive = domainData.status === 'active' || domainData.paymentStatus === 'paid';
         const dns = domainData.dnsVerification || {};
-        const sslVerif = domainData.sslVerification || {};
-        const cfSync = domainData.cloudflare || {};
 
-        // SSL verified only on real TLS deployment (DNS flag or CF SaaS active).
-        const sslOk = dns.sslVerified === true || sslVerif.status === 'active' || cfSync.sslStatus === 'active';
 
         // Store globally for other functions to use
         window.domainIsVerified = isVerified;
@@ -5093,7 +4997,6 @@
         // Update badges - badges now always show current DNS state
         updateStatusUI('cname', !!dns.cnameValid);
         updateStatusUI('txt', !!dns.txtVerified);
-        updateStatusUI('ssl', sslOk);
         updateRoutingUI((dns.routable === false) ? false : null);
 
         // Show/hide verification status in modal - only show when both verified AND active/paid
@@ -5112,63 +5015,6 @@
         refreshDiscountWindowState();
       }
 
-      // Render ACME records as separate items
-      function renderAcmeRecords(records) {
-        const list = document.getElementById('acmeRecordsList');
-        if (!list) return;
-
-        list.innerHTML = '';
-        records.forEach((rec, index) => {
-          // Backend-provided strings: escape for both HTML text and the
-          // data-name="..." attribute (dataset decodes back to the raw value,
-          // which verifySingleAcme passes to the backend verbatim).
-          const recName = String(rec.txt_name || rec.name || '');
-          const recValue = String(rec.txt_value || rec.value || '');
-          const recType = String(rec.type || 'TXT');
-          const div = document.createElement('div');
-          div.className = 'acme-record';
-          div.dataset.name = recName;
-          div.style.cssText = 'padding: 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; display: flex; flex-direction: column; border: 1px solid rgba(255,255,255,0.05);';
-
-          const nameId = `acmeName_${index}`;
-          const valueId = `acmeValue_${index}`;
-
-          div.innerHTML = `
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>
-            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-              <div id="${nameId}" style="font-family: monospace; font-size: 0.8rem; color: #8ab4ff; background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${escapeHTML(recName)}</div>
-              <button class="copy-btn" onclick="copyTextFromElement('${nameId}')" title="Copy Host"
-                style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-              </button>
-            </div>
-
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Value:</div>
-            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-              <div id="${valueId}" style="font-family: monospace; font-size: 0.8rem; color: #8ab4ff; background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${escapeHTML(recValue)}</div>
-              <button class="copy-btn" onclick="copyTextFromElement('${valueId}')" title="Copy Value"
-                style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-              </button>
-            </div>
-
-            <div style="display: flex; align-items: center; justify-content: space-between;">
-              <div style="font-size: 0.7rem; color: var(--text-muted);">Type: <span style="color: #8ab4ff; font-weight: 600;">${escapeHTML(recType)}</span></div>
-              <div style="display: flex; align-items: center; justify-content: flex-start; gap: 8px;">
-                <button class="btn-verify verify-acme-record" data-name="${escapeAttr(recName)}" onclick="verifySingleAcme(this)">Verify</button>
-                <span class="acme-status domain-status status-pending" style="font-size: 0.7rem; font-weight: 600;">PENDING</span>
-              </div>
-            </div>
-          `;
-          list.appendChild(div);
-        });
-      }
 
       function updateStatusUI(field, ok) {
         // Badges should ALWAYS show reality, even for verified domains.
@@ -5177,12 +5023,10 @@
         // Update verificationState
         if (field === 'cname') verificationState.cname = ok;
         else if (field === 'txt') verificationState.txt = ok;
-        else if (field === 'ssl') verificationState.ssl = ok;
 
         const map = {
           cname: { status: 'cnameStatus', btn: 'verifyCnameBtn', label: 'Verify CNAME' },
-          txt: { status: 'txtStatus', btn: 'verifyTxtBtn', label: 'Verify TXT' },
-          ssl: { status: 'sslStatus', btn: 'verifySslBtn', label: 'Verify SSL' }
+          txt: { status: 'txtStatus', btn: 'verifyTxtBtn', label: 'Verify TXT' }
         };
 
         const config = map[field];
@@ -5196,28 +5040,13 @@
             statusEl.className = 'domain-status status-active';
             statusEl.textContent = 'Verified';
             if (btnEl) btnEl.textContent = 'Re-verify entry';
-            // CLEANUP: Hide SSL error detail when verified
-            if (field === 'ssl') {
-              const detail = document.getElementById('sslStatusDetail');
-              if (detail) {
-                detail.style.display = 'none';
-              }
-            }
           } else if (ok === false) {
             statusEl.className = 'domain-status status-pending';
-            // SSL is provisioned by Cloudflare automatically — 'Propagating' is more accurate than 'Failed'
-            // CNAME/TXT require user action, so those show 'Failed'
-            statusEl.textContent = field === 'ssl' ? 'Propagating' : 'Failed';
-            if (field === 'ssl') {
-              const detail = document.getElementById('sslStatusDetail');
-              if (detail) {
-                detail.textContent = 'Cloudflare is provisioning your SSL certificate. This can take up to 15 minutes after CNAME is detected.';
-                detail.style.display = 'block';
-              }
-            }
+            // CNAME/TXT require user action, so failures show 'Failed'.
+            statusEl.textContent = 'Failed';
           } else {
             statusEl.className = 'domain-status status-pending';
-            statusEl.textContent = field === 'ssl' ? 'Propagating' : 'Pending';
+            statusEl.textContent = 'Pending';
           }
         }
 
@@ -5254,7 +5083,6 @@
       function updateContinueButton(isLoading = false, loadingText = 'Loading...') {
         const cnameOk = verificationState.cname === true;
         const txtOk = verificationState.txt === true;
-        const sslOk = verificationState.ssl === true;
         const routableOk = verificationState.routable !== false;
 
         const continueBtn = document.getElementById('continueToPaymentBtn');
@@ -5351,36 +5179,6 @@
       }
 
       // Update ACME record status (for per-record verification)
-      function updateAcmeRecordStatus(recordName, ok) {
-        verificationState.acme[recordName] = ok;
-
-        // Find the status element for this record
-        const records = document.querySelectorAll('.acme-record');
-        records.forEach((div, index) => {
-          if (div.dataset.name === recordName) {
-            const statusEl = div.querySelector('.acme-status');
-            if (statusEl) {
-              if (ok === true) {
-                statusEl.className = 'acme-status domain-status status-active';
-                statusEl.textContent = 'Verified';
-                // Update button text to Re-verify
-                const btn = div.querySelector('.verify-acme-record');
-                if (btn) btn.textContent = 'Re-verify';
-              } else if (ok === false) {
-                statusEl.className = 'acme-status domain-status status-pending';
-                statusEl.textContent = 'Failed';
-                const btn = div.querySelector('.verify-acme-record');
-                if (btn) btn.textContent = 'Verify';
-              } else {
-                statusEl.className = 'acme-status domain-status status-pending';
-                statusEl.textContent = 'Pending';
-              }
-            }
-          }
-        });
-
-        updateContinueButton();
-      }
 
       // Helper: update all verification statuses from backend response
       function updateAllChecksFromResponse(data) {
@@ -5399,20 +5197,12 @@
         // Update main status rows - badges always show reality now
         updateStatusUI('cname', !!checks.cname);
         updateStatusUI('txt', !!checks.txt);
-        updateStatusUI('ssl', !!checks.ssl);
         // Routing: null/undefined = unknown (fail-open), false = unservable.
         if (checks.routable === false) {
           updateRoutingUI(false);
           showToast('Domain does not resolve to Tunnel edge — fix the CNAME target or wait for propagation, then Re-verify.', 'error');
         } else {
           updateRoutingUI(null);
-        }
-
-        // Update ACME record results if provided (SSL detail list)
-        if (data.acmeVerificationResults) {
-          for (const [name, ok] of Object.entries(data.acmeVerificationResults)) {
-            updateAcmeRecordStatus(name, ok);
-          }
         }
 
         updateContinueButton();
@@ -5482,90 +5272,7 @@
         }
       }
 
-      async function verifySslOnly() {
-        if (!currentDomain || !getSessionId()) {
-          showToast('Selection error: please re-open the domain manager.', 'error');
-          console.error('verifySslOnly: Context missing', { currentDomain, sessionId: getSessionId() });
-          return;
-        }
-        const btn = document.getElementById('verifySslBtn');
-        if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
 
-        try {
-          const verifyFn = functions.httpsCallable('verifyCustomDomainDns');
-          const res = await verifyFn({ domain: currentDomain, sessionId: getSessionId(), field: 'ssl', force: true });
-
-          updateAllChecksFromResponse(res.data);
-
-          if (res.data?.checks?.ssl) {
-            showToast('SSL Certificate verified!', 'success');
-          } else {
-            console.warn('SSL Verification: PENDING (Cloudflare Validating)');
-            showToast('SSL setup in progress. Please allow a few minutes for propagation.', 'info');
-          }
-        } catch (e) {
-          console.error('verifySslOnly Exception:', e);
-          updateStatusUI('ssl', false, true);
-          showToast('Error verifying SSL: ' + (e.message || 'Unknown error'), 'error');
-        } finally {
-          if (btn) btn.disabled = false;
-        }
-      }
-
-      // Verify a specific ACME record by name
-      async function verifyAcmeRecord(recordName) {
-        if (!window.currentDomain || !getSessionId()) {
-          showToast('Selection error: please re-open the domain manager.', 'error');
-          console.warn('verifyAcmeRecord: missing context', { currentDomain: window.currentDomain, sessionId: getSessionId() });
-          return;
-        }
-
-        // Find the button for this record (CSS.escape: record names land in
-        // a selector string and could otherwise break querySelector)
-        const btn = document.querySelector(`.verify-acme-record[data-name="${CSS.escape(recordName)}"]`);
-        if (btn) {
-          btn.disabled = true;
-          btn.textContent = 'Verifying...';
-        }
-
-        try {
-          const verifyFn = functions.httpsCallable('verifyCustomDomainDns');
-          const res = await verifyFn({ sessionId: getSessionId(), domain: currentDomain });
-          const data = res.data || {};
-
-          // Update the specific ACME record status
-          if (data.acmeVerificationResults && typeof data.acmeVerificationResults === 'object') {
-            // Use per-record results from backend
-            updateAcmeRecordStatus(recordName, data.acmeVerificationResults[recordName]);
-          } else {
-            // Fallback to overall acmeTxtVerified
-            updateAcmeRecordStatus(recordName, data.acmeTxtVerified);
-          }
-        } catch (e) {
-          console.error('verifyAcmeRecord error:', e);
-          updateAcmeRecordStatus(recordName, false);
-          showToast('Error verifying ACME: ' + (e.message || 'Unknown error'), 'error');
-        } finally {
-          if (btn) {
-            btn.disabled = false;
-            // Restore contextual label based on current state
-            const isVerified = verificationState.acme[recordName];
-            btn.textContent = isVerified ? 'Re-verify' : 'Verify';
-          }
-        }
-      }
-
-      // Called from the per-record "Verify" buttons rendered by
-      // renderAcmeRecords (onclick="verifySingleAcme(this)"). Delegates to
-      // verifyAcmeRecord using the button's data-name.
-      function verifySingleAcme(btnEl) {
-        const name = btnEl && btnEl.dataset ? btnEl.dataset.name : null;
-        if (!name) {
-          showToast('Selection error: please re-open the domain manager.', 'error');
-          return;
-        }
-        verifyAcmeRecord(name);
-      }
 
       async function continueToPaymentFromVerification() {
         if (!currentDomain) return showToast("No domain selected.", "error");
