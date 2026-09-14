@@ -3551,8 +3551,6 @@
               <div style="display: flex; gap: 8px; flex-shrink: 0; margin-left: 8px;">
                 <button class="modal-btn modal-btn-ok" id="checkPayBtn" onclick="checkPaymentNow()"
                   style="height: 32px; font-size: 0.75rem; width: auto; padding: 0 12px;">I've paid — Check now</button>
-                <button class="modal-btn modal-btn-ok" onclick="updateQuote(true)"
-                  style="height: 32px; font-size: 0.75rem; width: auto; padding: 0 12px;">Refresh</button>
               </div>
             </div>
             <div id="paymentStatusBanner"
@@ -5783,8 +5781,8 @@
             // invalid, price feed down) instead of swallowing it — otherwise
             // neither the user nor support can tell what failed.
             const detail = (err && err.message) ? `: ${err.message}` : '';
-            loadingState.innerHTML = `<span style="color: #f04141;">Failed to generate payment address${escapeHTML(detail)}. Refresh and try again later.</span>`;
-            showCustomModal({ title: "Error", message: `Failed to generate payment address${escapeHTML(detail)}. Refresh and try again later.` });
+            loadingState.innerHTML = `<span style="color: #f04141;">Failed to generate payment address${escapeHTML(detail)}. Go back and try again later.</span>`;
+            showCustomModal({ title: "Error", message: `Failed to generate payment address${escapeHTML(detail)}. Go back and try again later.` });
           }
         }
       }
