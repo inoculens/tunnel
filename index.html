@@ -5839,6 +5839,7 @@
           // stay quiet and let the next cycle handle it.
           const rateLimited = e && (e.code === 'resource-exhausted' || /wait 30s/i.test(e.message || ''));
           if (!isAuto && rateLimited) {
+            if (banner && banner.textContent === 'Checking blockchain…') banner.textContent = '⏳ Waiting for payment confirmation...';
             setCheckCooldown(30000);
           } else if (!isAuto) {
             showToast(e.message || 'Check failed', 'error');
@@ -5868,7 +5869,7 @@
           messageEl.style.display = 'block';
           setTimeout(() => {
             if (messageEl.textContent === 'Please enter a discount code') messageEl.style.display = 'none';
-          }, 15000);
+          }, 5000);
           return;
         }
 
