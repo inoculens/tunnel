@@ -100,18 +100,6 @@ export async function handler(event) {
   const lowered = {};
   for (const [k, v] of Object.entries(rawHeaders)) lowered[String(k).toLowerCase()] = v;
 
-  // Prefer X-Tunnel-Code header (set by edge function, carries no query string)
-  // over ?c= query param (SaaS Worker / direct hits / deploy-skew fallback),
-  // then path segment (direct function hits).
-  let code = (lowered["x-tunnel-code"] || qs.c || "").trim();
-  if (!code) {
-    const parts = (event.path || "").split("/").filter(Boolean);
-    code = parts[parts.length - 1] || "";
-  }
-  if (!code || /[.]{2}|[/\\]/.test(code)) {
-    return { statusCode: 302, headers: { Location: HOME, "Cache-Control": "no-store" } };
-  }
-
   // Slugs repeat across root domains, so the serving host is part of the
   // identity. The edge router passes it as X-Tunnel-Host header; SaaS Worker
   // proxies forward the original host via X-Forwarded-Host or ?h=.
@@ -121,6 +109,47 @@ export async function handler(event) {
   const rawHost = (lowered["x-tunnel-host"] || qs.h || fwd || lowered.host || "").toString().split(",")[0].trim().split(":")[0];
   const host = cleanDomain(rawHost);
   if (!host) {
+    return { statusCode: 302, headers: { Location: HOME, "Cache-Control": "no-store" } };
+  }
+
+  // Root-path (apex) routing: "/" carries no code. Paid-and-ready custom
+  // domains may point their root at a configured destination (set via
+  // setApexTarget); everything else keeps the long-standing landing
+  // behavior (app home). Root visits are never logged — a root is not a link.
+  const rootFlag = (lowered["x-tunnel-root"] || qs.root || "").toString().trim().toLowerCase();
+  // A code signal always wins: crafted ?root=1 on a real link URL must not
+  // hijack it into root handling (root rewrites never carry a code).
+  const hasCodeSignal = (lowered["x-tunnel-code"] || qs.c || "").trim();
+  if ((rootFlag === "1" || rootFlag === "true") && !hasCodeSignal) {
+    if (host === systemShortHost()) {
+      // System short host keeps its long-standing permanent redirect.
+      return { statusCode: 301, headers: { Location: HOME, "Cache-Control": "no-store" } };
+    }
+    try {
+      const doc = await freshGet(s, `domain/${host}`, { type: "json" }).catch(() => null);
+      const target = doc && doc.status === "active" && coverageValid(doc) &&
+        typeof doc.apexTarget === "string" ? doc.apexTarget.trim() : "";
+      if (target && /^https?:\/\//.test(target)) {
+        try {
+          const u = new URL(target);
+          if ((u.protocol === "http:" || u.protocol === "https:") && !u.username && !u.password && u.hostname) {
+            return { statusCode: 302, headers: { Location: target, "Cache-Control": "no-store" } };
+          }
+        } catch { /* fall through to HOME */ }
+      }
+    } catch { /* fail-open to HOME */ }
+    return { statusCode: 302, headers: { Location: HOME, "Cache-Control": "no-store" } };
+  }
+
+  // Prefer X-Tunnel-Code header (set by edge function, carries no query string)
+  // over ?c= query param (SaaS Worker / direct hits / deploy-skew fallback),
+  // then path segment (direct function hits).
+  let code = (lowered["x-tunnel-code"] || qs.c || "").trim();
+  if (!code) {
+    const parts = (event.path || "").split("/").filter(Boolean);
+    code = parts[parts.length - 1] || "";
+  }
+  if (!code || /[.]{2}|[/\\]/.test(code)) {
     return { statusCode: 302, headers: { Location: HOME, "Cache-Control": "no-store" } };
   }
 

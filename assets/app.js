@@ -796,7 +796,7 @@
           const soon = coverageExpiringSoon(domainObj);
           opt.innerHTML = `
             <div class="domain-actions-group">
-              <button onclick="event.stopPropagation(); showDomainManager(${escapeJS(domainObj.domain)})"
+              <button onclick="event.stopPropagation(); showDomainMenu(${escapeJS(domainObj.domain)})"
                 style="background: rgba(62, 166, 255, 0.12); border: 1px solid rgba(62, 166, 255, 0.3);
                        color: var(--accent); padding: 2px 6px; border-radius: 999px; font-size: 0.65rem; cursor: pointer;">
                 Manage
@@ -831,7 +831,7 @@
             opt.className = 'domain-option';
             opt.innerHTML = `
               <div class="domain-actions-group">
-                <button onclick="event.stopPropagation(); showDomainManager(${escapeJS(domainObj.domain)})"
+                <button onclick="event.stopPropagation(); showDomainMenu(${escapeJS(domainObj.domain)})"
                   style="background: rgba(62, 166, 255, 0.12); border: 1px solid rgba(62, 166, 255, 0.3);
                          color: var(--accent); padding: 2px 6px; border-radius: 999px; font-size: 0.65rem; cursor: pointer;">
                   Manage
@@ -840,7 +840,7 @@
               </div>
               <span style="flex: 1; white-space: nowrap;">${escapeHTML(domainObj.domain)}/</span>
             `;
-            opt.onclick = () => showDomainManager(domainObj.domain);
+            opt.onclick = () => showDomainMenu(domainObj.domain);
             dropdown.insertBefore(opt, document.getElementById('dropdownAddNew'));
           });
       }
@@ -1974,6 +1974,178 @@
         }
 
         showStep('verification');
+      }
+
+      // ----- Domain manage menu + APEX (root) routing -----
+      // The per-domain Manage pills open this menu first. Configure DNS
+      // lands on the long-standing verification screen; APEX routing
+      // (paid-and-ready domains only) gets its own screen below. Future
+      // per-domain management options dock in this menu.
+      async function showDomainMenu(domain) {
+        const d = String(domain || '').trim();
+        if (!d || !getSessionId()) return;
+        let info = null;
+        try {
+          showLoadingModal({ title: "Loading", message: "Fetching domain status..." });
+          const fn = functions.httpsCallable('getDomainVerificationInfo');
+          const res = await fn({ domain: d, sessionId: getSessionId() });
+          info = res.data || null;
+        } catch (e) {
+          closeLoadingModal();
+          showCustomModal({ title: "Error", message: escapeHTML(e.message || 'Could not load domain status.') });
+          return;
+        }
+        closeLoadingModal();
+        if (!info) {
+          showCustomModal({ title: "Error", message: "Could not load domain status." });
+          return;
+        }
+        const ready = info.status === 'active' && info.coverageValid === true;
+        const apexRow = ready
+          ? `<button class="modal-btn modal-btn-ok" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('apex', ${escapeJS(d)})">Configure APEX routing</button>`
+          : `<div style="margin-top: 12px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); font-size: 0.8rem; color: var(--text-muted); text-align: center;">APEX routing unlocks once the domain is paid and active.</div>`;
+        showCustomModal({
+          title: d,
+          message: `<div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 4px;">What would you like to manage?</div>
+            <button class="modal-btn modal-btn-cancel" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('dns', ${escapeJS(d)})">Configure DNS</button>
+            ${apexRow}`,
+          showCancel: false,
+          confirmText: "Close"
+        });
+      }
+
+      function domainMenuPick(which, domain) {
+        try { document.getElementById('modalOkBtn').click(); } catch (e) {}
+        const d = String(domain || '').trim();
+        if (!d) return;
+        if (which === 'apex') openApexScreen(d);
+        else manageDomain(d);
+      }
+
+      function setApexBusy(busy) {
+        for (const id of ['apexSaveBtn', 'apexClearBtn', 'apexTargetInput']) {
+          const el = document.getElementById(id);
+          if (el) el.disabled = !!busy;
+        }
+      }
+
+      function closeApexScreen() {
+        if (!window._apexOpen) return;
+        window._apexOpen = false;
+        const overlay = document.getElementById('apexOverlay');
+        if (overlay) overlay.style.display = 'none';
+        unlockScroll();
+        window.removeEventListener('keydown', handleApexEsc);
+        window._apexDomain = '';
+      }
+
+      function handleApexEsc(e) {
+        if (!e || e.key !== 'Escape') return;
+        const modal = document.getElementById('modalOverlay');
+        if (modal && modal.style.display === 'flex') return;
+        closeApexScreen();
+      }
+
+      async function openApexScreen(domain) {
+        const d = String(domain || '').trim();
+        if (!d || !getSessionId()) return;
+        window._apexDomain = d;
+        const overlay = document.getElementById('apexOverlay');
+        const locked = document.getElementById('apexDomainLocked');
+        const input = document.getElementById('apexTargetInput');
+        const errBox = document.getElementById('apexError');
+        const curBox = document.getElementById('apexCurrent');
+        if (locked) locked.textContent = d;
+        if (input) { input.value = ''; input.disabled = true; }
+        if (errBox) errBox.style.display = 'none';
+        if (curBox) curBox.style.display = 'none';
+        setApexBusy(true);
+        if (overlay) overlay.style.display = 'flex';
+        window._apexOpen = true;
+        lockScroll();
+        window.addEventListener('keydown', handleApexEsc);
+        try {
+          const fn = functions.httpsCallable('getDomainVerificationInfo');
+          const res = await fn({ domain: d, sessionId: getSessionId() });
+          const info = res.data || {};
+          if (window._apexDomain !== d) return;
+          if (!(info.status === 'active' && info.coverageValid === true)) {
+            closeApexScreen();
+            showCustomModal({ title: "Not available", message: "APEX routing unlocks once the domain is paid and active." });
+            return;
+          }
+          const current = typeof info.apexTarget === 'string' ? info.apexTarget : '';
+          if (input) { input.value = current; input.disabled = false; }
+          if (curBox && current) {
+            curBox.innerHTML = `Currently routing root visitors to:<br><span style="word-break: break-all; color: var(--text);">${escapeHTML(current)}</span>`;
+            curBox.style.display = 'block';
+          }
+        } catch (e) {
+          if (window._apexDomain !== d) return;
+          if (errBox) { errBox.textContent = e.message || 'Could not load APEX settings.'; errBox.style.display = 'block'; }
+        } finally {
+          if (window._apexDomain === d) setApexBusy(false);
+        }
+      }
+
+      async function saveApexTarget() {
+        const d = window._apexDomain || '';
+        const input = document.getElementById('apexTargetInput');
+        const errBox = document.getElementById('apexError');
+        const target = input ? input.value.trim() : '';
+        if (errBox) errBox.style.display = 'none';
+        if (!d || !getSessionId()) return;
+        if (!target) {
+          if (errBox) { errBox.textContent = 'Enter a destination address, or use Remove to go back to the default landing page.'; errBox.style.display = 'block'; }
+          return;
+        }
+        if (!/^https?:\/\//i.test(target)) {
+          if (errBox) { errBox.textContent = 'Destination must start with http:// or https://'; errBox.style.display = 'block'; }
+          return;
+        }
+        setApexBusy(true);
+        try {
+          const fn = functions.httpsCallable('setApexTarget');
+          const res = await fn({ domain: d, sessionId: getSessionId(), target });
+          if (window._apexDomain !== d) return;
+          const saved = (res.data && res.data.apexTarget) || target;
+          closeApexScreen();
+          showCustomModal({ title: "Saved", message: `Visitors to <strong>${escapeHTML(d)}</strong> will now land on:<br><span style="word-break: break-all;">${escapeHTML(saved)}</span>` });
+          try { await loadUserDomains(); } catch (e) {}
+        } catch (e) {
+          if (window._apexDomain !== d) return;
+          if (errBox) { errBox.textContent = e.message || 'Could not save.'; errBox.style.display = 'block'; }
+        } finally {
+          if (window._apexDomain === d) setApexBusy(false);
+        }
+      }
+
+      async function clearApexTarget() {
+        const d = window._apexDomain || '';
+        if (!d || !getSessionId()) return;
+        const ok = await showCustomModal({
+          title: "Remove APEX routing?",
+          message: `Visitors to <strong>${escapeHTML(d)}</strong> will land on INOCULENS Tunnel again.`,
+          showCancel: true, danger: true, confirmText: "Remove", cancelText: "Keep"
+        });
+        if (!ok || window._apexDomain !== d) return;
+        setApexBusy(true);
+        try {
+          const fn = functions.httpsCallable('setApexTarget');
+          await fn({ domain: d, sessionId: getSessionId(), target: null });
+          if (window._apexDomain !== d) return;
+          const input = document.getElementById('apexTargetInput');
+          if (input) input.value = '';
+          const curBox = document.getElementById('apexCurrent');
+          if (curBox) curBox.style.display = 'none';
+          showToast('APEX routing removed — root lands on INOCULENS Tunnel again.', 'success');
+        } catch (e) {
+          if (window._apexDomain !== d) return;
+          const errBox = document.getElementById('apexError');
+          if (errBox) { errBox.textContent = e.message || 'Could not remove.'; errBox.style.display = 'block'; }
+        } finally {
+          if (window._apexDomain === d) setApexBusy(false);
+        }
       }
 
       // Delete a domain (called from verification screen)

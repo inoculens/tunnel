@@ -640,7 +640,7 @@
       </div>
     </div>
 
-    <script src="/assets/app.js?v=20260914-3" defer></script>
+    <script src="/assets/app.js?v=20260914-5" defer></script>
     <script>
       // Last-resort watchdog: if the main script above threw before boot
       // (e.g. storage blocked, unexpected error), never strand the user on
@@ -659,6 +659,33 @@
       }, 8000);
     </script>
     <script src="/assets/common.js"></script>
+
+  <!-- APEX (root) routing for paid-and-ready custom domains -->
+  <div id="apexOverlay" class="modal-overlay"
+    style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.62); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 31000; align-items: center; justify-content: center; padding: 20px; overscroll-behavior: contain;">
+    <div class="modal-card" style="width: 480px; min-width: 320px; max-width: 520px; max-height: 90vh; overflow-y: auto; position: relative;">
+      <button class="copy-btn" onclick="closeApexScreen()"
+        style="position: absolute; top: 1.5rem; right: 1.5rem; background: transparent; color: var(--text-muted); font-size: 1.5rem; line-height: 1; padding: 0; border: none; z-index: 10;">&times;</button>
+      <h2 class="modal-title" style="margin-top: 0; margin-bottom: 8px;">APEX Routing</h2>
+      <p class="modal-message" style="margin-bottom: 16px;">Choose where visitors land on your domain root.</p>
+      <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px; display: block;">Your domain (locked)</label>
+      <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+        <div id="apexDomainLocked"
+          style="font-family: monospace; font-size: 0.8rem; color: var(--text-muted); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all; opacity: 0.75;"></div>
+      </div>
+      <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px; display: block;">Destination address</label>
+      <div style="display: flex; gap: 8px; align-items: stretch; margin-bottom: 12px;">
+        <input type="text" id="apexTargetInput" placeholder="https://example.com/welcome" maxlength="2048" autocomplete="off" autocapitalize="off" spellcheck="false"
+          style="flex: 1; height: 44px; min-width: 0; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0 12px; font-size: 0.85rem;">
+      </div>
+      <div id="apexError" role="alert" style="display: none; margin-bottom: 12px; padding: 10px 14px; background: rgba(240,65,65,0.09); border: 1px solid rgba(240,65,65,0.3); border-radius: 8px; color: #f28b82; font-size: 0.85rem;"></div>
+      <div id="apexCurrent" style="display: none; margin-bottom: 12px; font-size: 0.8rem; color: var(--text-muted);"></div>
+      <div style="display: flex; gap: 12px;">
+        <button class="modal-btn modal-btn-cancel" id="apexClearBtn" onclick="clearApexTarget()" style="flex: 1;">Remove</button>
+        <button class="modal-btn modal-btn-ok" id="apexSaveBtn" onclick="saveApexTarget()" style="flex: 1;">Save</button>
+      </div>
+    </div>
+  </div>
 
   <div id="promoAdminOverlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 40000; align-items: center; justify-content: center; padding: 20px; overscroll-behavior: contain;">
     <div class="modal-card" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">

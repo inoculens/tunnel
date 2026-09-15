@@ -5,7 +5,9 @@
  *   tunnel.inoculens.com          → app (pass through, never rewritten)
  *   s.inoculens.com/              → 301 to https://tunnel.inoculens.com/
  *   s.inoculens.com/<code>        → rewrite to resolve (click log + app-open handoff or instant 302)
- *   <custom-domain>/              → 301 to https://tunnel.inoculens.com/
+ *   <custom-domain>/              → rewrite to resolve (apex target when the
+ *                                   paid-and-ready domain configured one,
+ *                                   app landing page otherwise)
  *   <custom-domain>/<code>        → rewrite to resolve (same as s.*)
  *
  * Custom domains reach the resolver through Cloudflare SaaS (custom CNAME
@@ -45,8 +47,27 @@ export default async (request, context) => {
     return Response.redirect("https://tunnel.inoculens.com/", 302);
   }
 
+  // Identity for the resolver travels via headers, not query (see header).
+  // Code comes from the path (authoritative for short links). Host prefers a
+  // validated SaaS-forwarded host (?h= / X-Forwarded-Host from the Worker —
+  // custom-domain traffic arrives here as s.inoculens.com), else arrival.
+  // Strict checks keep header values byte-safe (headers.set throws on CRLF).
+  const fwdH = url.searchParams.get("h")
+    || request.headers.get("x-forwarded-host")
+    || request.headers.get("x-original-host")
+    || "";
+  const fwdHost = fwdH.split(",")[0].trim().toLowerCase();
+  const effHost = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(fwdHost) && fwdHost.length <= 253
+    ? fwdHost
+    : host;
+
+  // Root path: paid-and-ready custom domains may point it at a configured
+  // destination (resolve.js decides from the domain doc); the resolver needs
+  // the serving host, so it travels the same header road as short codes.
   if (url.pathname === "/" || url.pathname === "/index.html") {
-    return Response.redirect("https://tunnel.inoculens.com/", 301);
+    request.headers.set("x-tunnel-root", "1");
+    request.headers.set("x-tunnel-host", effHost);
+    return context.rewrite("/.netlify/functions/resolve");
   }
 
   const first = url.pathname.split("/").filter(Boolean)[0] || "";
@@ -62,20 +83,6 @@ export default async (request, context) => {
   ) {
     return;
   }
-
-  // Identity for the resolver travels via headers, not query (see header).
-  // Code comes from the path (authoritative for short links). Host prefers a
-  // validated SaaS-forwarded host (?h= / X-Forwarded-Host from the Worker —
-  // custom-domain traffic arrives here as s.inoculens.com), else arrival.
-  // Strict checks keep header values byte-safe (headers.set throws on CRLF).
-  const fwdH = url.searchParams.get("h")
-    || request.headers.get("x-forwarded-host")
-    || request.headers.get("x-original-host")
-    || "";
-  const fwdHost = fwdH.split(",")[0].trim().toLowerCase();
-  const effHost = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(fwdHost) && fwdHost.length <= 253
-    ? fwdHost
-    : host;
 
   // Header path only for byte-safe ASCII slugs (all real slugs match). Anything
   // else can never equal a stored code, so it takes the fallback query rewrite

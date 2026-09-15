@@ -357,6 +357,7 @@ async function domainInfo(doc, viewerSessionId = null) {
     coverageExpiresAt: doc.coverageExpiresAt || null,
     coverageLifetime: doc.coverageLifetime === true,
     coverageValid: coverageValid(doc),
+    apexTarget: typeof doc.apexTarget === "string" && doc.apexTarget ? doc.apexTarget : null,
     dnsVerification: doc.dnsVerification,
     dnsVerificationToken: ownerToken,
     verificationToken: ownerToken,
@@ -530,6 +531,18 @@ async function withdrawalConsentGate(s, doc, p, what) {
   doc.withdrawalConsent = { at: new Date().toISOString(), termsVersion: TERMS_VERSION, sessionId: p.sessionId };
   await s.setJSON(`domain/${doc.domain}`, doc);
   return null;
+}
+
+// True when target is exactly this domain's own root (infinite loop).
+function isSelfRootTarget(domain, target) {
+  try {
+    const u = new URL(String(target).trim());
+    const path = u.pathname || "/";
+    return u.hostname.toLowerCase() === String(domain).toLowerCase() &&
+      (path === "/" || path === "");
+  } catch {
+    return false;
+  }
 }
 
 // ---------- actions ----------
@@ -1415,6 +1428,45 @@ const actions = {
       await bumpSessionLinkCount(s, p.sessionId, -uniqCodes.size);
     } catch { /* best effort */ }
     return ok({ deletedUrls: doomed.length });
+  },
+
+  // ----- apex (root) routing -----
+  // Paid-and-ready domains may point their root path (https://domain/) at any
+  // destination. Stored on the domain doc; served by resolve.js. Unset (null)
+  // keeps the default behavior (app landing page).
+
+  async setApexTarget(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "apex", ip, 10))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
+    const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    // Manage-gate mirrors mint gating: only paid-and-ready (active + covered)
+    // domains may configure root routing. The UI hides the option earlier,
+    // but the backend decides.
+    if (!(doc.status === "active" && coverageValid(doc))) {
+      return fail(412, "failed-precondition", "APEX routing unlocks once the domain is paid and active.");
+    }
+    const raw = p.target === null || p.target === undefined ? "" : String(p.target).trim();
+    if (!raw) {
+      doc.apexTarget = null;
+      doc.apexUpdatedAt = new Date().toISOString();
+      await s.setJSON(`domain/${doc.domain}`, doc);
+      return ok({ apexTarget: null });
+    }
+    if (raw.length > 2048 || !validHttpUrl(raw)) {
+      return fail(400, "invalid-argument", "That destination is not a valid http(s) URL.");
+    }
+    if (isSelfRootTarget(doc.domain, raw)) {
+      return fail(400, "invalid-argument", "The destination cannot be this domain's own root (that would loop forever).");
+    }
+    doc.apexTarget = raw;
+    doc.apexUpdatedAt = new Date().toISOString();
+    await s.setJSON(`domain/${doc.domain}`, doc);
+    return ok({ apexTarget: doc.apexTarget });
   },
 
   // ----- billing (Bitcoin) -----
