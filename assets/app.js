@@ -1952,6 +1952,18 @@
         pendingDomain = domain;
         currentDomain = domain;
 
+        // Defensive: everything below paints into domainManagerOverlay, so
+        // make sure it is visible (the showDomainManager entry flow normally
+        // guarantees this). Skipped when already visible — never double-locks.
+        try {
+          const mgrOverlay = document.getElementById('domainManagerOverlay');
+          if (mgrOverlay && mgrOverlay.style.display !== 'flex') {
+            mgrOverlay.style.display = 'flex';
+            lockScroll();
+            window.addEventListener('keydown', handleDomainManagerEsc);
+          }
+        } catch (e) {}
+
         // Show loading immediately to prevent "Continue to Payment" flicker
         updateContinueButton(true);
 
@@ -2019,7 +2031,10 @@
         const d = String(domain || '').trim();
         if (!d) return;
         if (which === 'apex') openApexScreen(d);
-        else manageDomain(d);
+        // DNS goes through the full manager entry flow (overlay show, session
+        // check, input reset, domain load) — calling manageDomain() directly
+        // would paint into a hidden overlay and look completely dead.
+        else showDomainManager(d);
       }
 
       function setApexBusy(busy) {
