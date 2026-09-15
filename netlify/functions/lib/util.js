@@ -172,8 +172,8 @@ export function fail(statusCode, code, message) {
 // specials "@#$" allowed (never valid as session, so auto-routes to admin).
 export const SESSION_RE = /^[A-Za-z023456789]{10}$/;
 export const ADMIN_RE = /^[A-Za-z0-9\-_!@#$]{10}$/;
-export const CODE_RE = /^[A-Za-z0-9_-]{1,30}$/;
-export const MAX_SLUG_LEN = 30;
+export const CODE_RE = /^[A-Za-z0-9_-]{1,60}$/;
+export const MAX_SLUG_LEN = 60;
 export const MAX_ORIGINAL_URL_LEN = 2048;
 export const HOST_RE = /^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*\.[A-Za-z]{2,}$/;
 

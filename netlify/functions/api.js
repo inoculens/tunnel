@@ -642,7 +642,7 @@ const actions = {
     let code;
     if (cleanSlug) {
       if (!validSlug(cleanSlug)) {
-        const e = new Error("Custom slugs must be 1–30 chars: letters, numbers, - _");
+        const e = new Error("Custom slugs must be 1–60 chars: letters, numbers, - _");
         e.statusCode = 400;
         e.code = "invalid-argument";
         throw e;

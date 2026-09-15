@@ -4255,11 +4255,11 @@
           return;
         }
 
-        // Client-side slug check: 1–30 chars, letters/numbers/-/_ only.
-        if (slugInput && !/^[A-Za-z0-9_-]{1,30}$/.test(slugInput)) {
+        // Client-side slug check: 1–60 chars, letters/numbers/-/_ only.
+        if (slugInput && !/^[A-Za-z0-9_-]{1,60}$/.test(slugInput)) {
           showCustomModal({
             title: "Invalid Slug",
-            message: "Custom slugs must be 1–30 chars: letters, numbers, - _"
+            message: "Custom slugs must be 1–60 chars: letters, numbers, - _"
           });
           button.disabled = false;
           button.textContent = 'Shorten URL';
@@ -4410,7 +4410,7 @@
           } else if (errorCode === 'ERR_SLUG_TAKEN') {
             message = "This slug is already taken on this domain. Please choose a different one (the same slug can still be used on your other domains).";
           } else if (error.code === 'invalid-argument' && error.message && error.message !== 'ERR_INVALID_URL') {
-            // Surface backend validation verbatim (slug 1–30, URL too long, etc.).
+            // Surface backend validation verbatim (slug 1–60, URL too long, etc.).
             message = error.message;
           } else if (error.message && error.message.includes('429')) {
             message = "You've made too many attempts. Please wait a moment before trying again, or try disconnecting from your VPN or proxy if you're using one.";
