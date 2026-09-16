@@ -270,7 +270,10 @@
         </svg>
       </div>
       <div class="history-filter-dropdown" id="historyFilterDropdown">
-        <!-- Options populated via JS -->
+        <div class="filter-option selected" onclick="selectHistoryFilter('all', 'All domains')">
+          <span>All domains</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </div>
       </div>
       <input type="hidden" id="historyDomainFilter" value="all">
     </div>
@@ -640,7 +643,7 @@
       </div>
     </div>
 
-    <script src="/assets/app.js?v=20260914-8" defer></script>
+    <script src="/assets/app.js?v=20260914-9" defer></script>
     <script>
       // Last-resort watchdog: if the main script above threw before boot
       // (e.g. storage blocked, unexpected error), never strand the user on

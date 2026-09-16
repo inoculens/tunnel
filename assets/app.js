@@ -685,11 +685,32 @@
         }
       });
 
-      function toggleHistoryFilter(e) {
+      async function toggleHistoryFilter(e) {
         if (e) e.stopPropagation();
         const container = document.getElementById('historyDomainFilterContainer');
-        if (container) {
-          container.classList.toggle('active');
+        if (!container) return;
+        const opening = !container.classList.contains('active');
+        // Always render first from memory: the dropdown can never open emptier
+        // than the visible list, even before the first domains fetch lands.
+        try { renderDomainOptions(); } catch (err) {}
+        container.classList.toggle('active');
+        // Loading parity with the creation dropdown: while the initial load
+        // is unsettled, show a sync row, await the shared fetch, re-render.
+        if (opening && !window._domainsSettled) {
+          try {
+            const list = document.getElementById('historyFilterDropdown');
+            if (list && !document.getElementById('filterSyncing')) {
+              const syncRow = document.createElement('div');
+              syncRow.className = 'filter-option';
+              syncRow.id = 'filterSyncing';
+              syncRow.style.opacity = '0.6';
+              syncRow.style.pointerEvents = 'none';
+              syncRow.textContent = 'Syncing…';
+              list.appendChild(syncRow);
+            }
+            await ensureDomainsSettled();
+            renderDomainOptions();
+          } catch (err) {}
         }
       }
 
@@ -1943,6 +1964,7 @@
           try {
             const response = await getDomainsFn({ sessionId: sid });
             userCustomDomains = response.data.domains || [];
+            window._domainsSettled = true;
             renderDomainOptions();
             return;
           } catch (err) {
@@ -1953,10 +1975,24 @@
           }
         }
         console.error("Error loading domains:", lastErr);
+        // Render from cache anyway so dropdowns are never left empty;
+        // _domainsSettled stays false so a later open retries the fetch.
+        try { renderDomainOptions(); } catch (e) {}
         // Also show a toast notification
         if (typeof showToast === 'function') {
           showToast('Failed to load custom domains. Please refresh.', 'error');
         }
+      }
+
+      // Shared in-flight domains fetch: rapid history-filter toggles while
+      // the initial load is unsettled await one fetch instead of stacking.
+      let domainsFetchInFlight = null;
+      async function ensureDomainsSettled() {
+        if (window._domainsSettled) return;
+        if (!domainsFetchInFlight) {
+          domainsFetchInFlight = loadUserDomains().finally(() => { domainsFetchInFlight = null; });
+        }
+        try { await domainsFetchInFlight; } catch (e) {}
       }
 
       // Manage a specific domain
