@@ -4333,6 +4333,11 @@
             }
 
             setSessionId(val);
+            // Flags first: this paint must resolve apex labels on first
+            // render (fresh browser = empty apex cache). Covered by the open
+            // validating/fetching modal; fail-open so a domains outage can't
+            // block history that validateSession just confirmed.
+            try { await loadUserDomains(); } catch (e) {}
             await fetchAndRenderSession(val, true);
           } catch (e) {
             console.error(e);
