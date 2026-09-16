@@ -715,14 +715,10 @@ const actions = {
     });
   },
 
-  async checkSessionExists(s, p, event) {
-    const ip = clientIp(event);
-    if (!(await checkRate(s, "check-sess", ip, 60))) {
-      const e = new Error("Too many attempts, wait a moment.");
-      e.statusCode = 429;
-      e.code = "resource-exhausted";
-      throw e;
-    }
+  // NOTE: intentionally no rate limit on these read-only session probes —
+  // each checkRate call costs Blobs round-trips on the hot refresh path,
+  // and ~59-bit session IDs are not brute-forceable at any practical rate.
+  async checkSessionExists(s, p) {
     return ok({ exists: !!(await getSession(s, p.sessionId)) });
   },
 
@@ -741,14 +737,7 @@ const actions = {
     return ok({});
   },
 
-  async validateSession(s, p, event) {
-    const ip = clientIp(event);
-    if (!(await checkRate(s, "check-sess", ip, 60))) {
-      const e = new Error("Too many attempts, wait a moment.");
-      e.statusCode = 429;
-      e.code = "resource-exhausted";
-      throw e;
-    }
+  async validateSession(s, p) {
     return ok({ exists: !!(await getSession(s, p.sessionId)) });
   },
 
@@ -888,14 +877,7 @@ const actions = {
     return fail(status, code, `Test mail failed: ${reason}. Check SMTP_HOST/PORT/user/password in Netlify env (redeploy after changing them) and the function logs.`);
   },
 
-  async getLinksBySession(s, p, event) {
-    const ip = clientIp(event);
-    if (!(await checkRate(s, "list-links", ip, 60))) {
-      const e = new Error("Too many attempts, wait a moment.");
-      e.statusCode = 429;
-      e.code = "resource-exhausted";
-      throw e;
-    }
+  async getLinksBySession(s, p) {
     await needSession(s, p.sessionId);
     const links = await listLinksOfSession(s, p.sessionId);
     return ok({ links: links.map(linkShape) });
@@ -1074,14 +1056,7 @@ const actions = {
 
   // ----- custom domains -----
 
-  async getUserDomains(s, p, event) {
-    const ip = clientIp(event);
-    if (!(await checkRate(s, "list-domains", ip, 60))) {
-      const e = new Error("Too many attempts, wait a moment.");
-      e.statusCode = 429;
-      e.code = "resource-exhausted";
-      throw e;
-    }
+  async getUserDomains(s, p) {
     await needSession(s, p.sessionId);
     const blobs = await listAll(s, "domain/");
     const docs = await mapWithConcurrency(blobs, 12, (b) =>

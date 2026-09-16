@@ -487,7 +487,11 @@ export async function checkRate(s, name, ip, limit) {
   const key = `rl/${name}/${ip}/${win}`;
   const cur = (await s.get(key, { type: "json" })) || { count: 0 };
   cur.count += 1;
-  await s.setJSON(key, cur);
+  // Bookkeeping write is fire-and-forget: the verdict above never waits for
+  // it. Worst case under concurrency is slight undercounting (fail-open),
+  // which is the safe direction for rate limiting and doesn't move the
+  // brute-force math on any gated secret.
+  s.setJSON(key, cur).catch((e) => console.error(`checkRate(${name}) save failed:`, e?.message || e));
   return cur.count <= limit;
 }
 

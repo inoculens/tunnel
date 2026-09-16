@@ -251,6 +251,61 @@
         }
       }
       let currentLinks = loadLocalHistory();
+      // Own-device creations awaiting server confirmation. Merge keeps
+      // these even when a fresh server list omits them (edge-list lag);
+      // everything else missing server-side is server truth (deleted
+      // elsewhere) and drops on the spot, so refreshes always show the
+      // latest state. Persisted for reloads inside the lag window;
+      // pruned on server echo, local delete, or age-out.
+      const JUST_CREATED_MS = 10 * 60 * 1000;
+      let justCreated = new Map();
+      function loadJustCreated() {
+        const loaded = new Map();
+        try {
+          const rawJC = localStorage.getItem('tunnel_just_created');
+          if (rawJC) {
+            const parsedJC = JSON.parse(rawJC);
+            if (parsedJC && typeof parsedJC === 'object') {
+              const nowJC = Date.now();
+              for (const [jk, jts] of Object.entries(parsedJC)) {
+                const jt = Number(jts);
+                if (typeof jk === 'string' && jk && Number.isFinite(jt) && nowJC - jt >= 0 && nowJC - jt < JUST_CREATED_MS) loaded.set(jk, jt);
+              }
+            }
+          }
+        } catch (e) {}
+        justCreated = loaded;
+      }
+      loadJustCreated();
+      function saveJustCreated() {
+        try {
+          const objJC = {};
+          for (const [jk, jts] of justCreated) objJC[jk] = jts;
+          localStorage.setItem('tunnel_just_created', JSON.stringify(objJC));
+        } catch (e) {}
+      }
+      function justCreatedKey(item) {
+        try { return itemKey(item); } catch (e) { return ''; }
+      }
+      function trackJustCreated(item) {
+        const k = justCreatedKey(item);
+        if (!k) return;
+        justCreated.set(k, Date.now());
+        saveJustCreated();
+      }
+      function untrackJustCreated(itemOrKey) {
+        const k = typeof itemOrKey === 'string' ? itemOrKey : justCreatedKey(itemOrKey);
+        if (k && justCreated.delete(k)) saveJustCreated();
+      }
+      function untrackJustCreatedDomain(domain) {
+        const d = String(domain || '').toLowerCase();
+        if (!d) return;
+        let changedJC = false;
+        for (const k of [...justCreated.keys()]) {
+          if (String(k).split('/')[0].toLowerCase() === d && justCreated.delete(k)) changedJC = true;
+        }
+        if (changedJC) saveJustCreated();
+      }
       // Per-operation locks (a shared flag blocked unrelated actions, e.g. a
       // stats purge blocking link deletion). Keys: 'link', 'links', 'stats', 'entry'.
       const opLocks = new Set();
@@ -358,18 +413,14 @@
         try { localStorage.setItem('tunnel_history', JSON.stringify(currentLinks)); } catch (e) {}
       }
 
-      // Edge-list lag window: a just-created link can be missing from a fresh
-      // server list for a while (documented up to ~60s), so local-only items
-      // younger than this are kept as plausibly-lagged. Older items missing
-      // from a successfully fetched server list were deleted elsewhere
-      // (single/bulk/domain-cascade/admin deletes all land the same way) and
-      // are dropped on the spot — deletions propagate on first refresh.
-      const LOCAL_GRACE_MS = 10 * 60 * 1000;
-      // Merge server truth with local optimistic items the edge list may not
-      // include yet. Server wins on identity conflicts (same domain/code);
-      // young local-only items for THIS session are kept on top (newest
-      // first) so just-created links never vanish on a re-sync. Items from
-      // other sessions (stale cache after a session switch) are dropped.
+      // Merge server truth with own-device creations awaiting confirmation.
+      // Server wins on identity conflicts (same domain/code). A local item
+      // missing server-side is kept ONLY if this device created it moments
+      // ago and the server hasn't echoed it back yet (edge-list lag);
+      // anything else missing is server truth — deleted elsewhere — and
+      // drops on the spot, so refresh shows the latest state. Confirmed
+      // and over-age just-created keys are pruned here. Items from other
+      // sessions (stale cache after a session switch) are dropped.
       function mergeServerLinks(serverLinks, sid) {
         const server = Array.isArray(serverLinks) ? serverLinks : [];
         const seen = new Set();
@@ -377,6 +428,14 @@
           try { seen.add(itemKey(it)); } catch (e) {}
         }
         const now = Date.now();
+        let prunedJC = false;
+        for (const [jk, jts] of [...justCreated.entries()]) {
+          if (seen.has(jk) || now - jts < 0 || now - jts >= JUST_CREATED_MS) {
+            justCreated.delete(jk);
+            prunedJC = true;
+          }
+        }
+        if (prunedJC) saveJustCreated();
         const localOnly = [];
         for (const it of (Array.isArray(currentLinks) ? currentLinks : [])) {
           if (!it) continue;
@@ -384,10 +443,9 @@
           let k = '';
           try { k = itemKey(it); } catch (e) { continue; }
           if (seen.has(k)) continue;
-          const age = now - (Number(it.timestamp) || Number(it.createdAt) || 0);
-          if (age >= 0 && age < LOCAL_GRACE_MS) localOnly.push(it);
-          // Else: old enough that edge lag cannot explain the absence —
-          // deleted on another device, drop it (never re-persisted below).
+          if (justCreated.has(k)) localOnly.push(it);
+          // Else: missing server-side and not awaiting confirmation here —
+          // deleted on another device (or otherwise gone server-side).
         }
         return localOnly.concat(server);
       }
@@ -2266,6 +2324,7 @@
           // Close the domain manager modal
           closeDomainManager();
 
+          untrackJustCreatedDomain(domainToDelete);
           // Reload domains
           await loadUserDomains();
 
@@ -4377,6 +4436,7 @@
           };
 
           currentLinks.unshift(newItem);
+          trackJustCreated(newItem);
           saveLocalHistory();
 
           // Add new link to expanded set so it shows expanded on mobile
@@ -5568,6 +5628,7 @@
             const freshIndex = findLinkIndex(code, domain);
             if (freshIndex !== -1) currentLinks.splice(freshIndex, 1);
             expandedLinks.delete(itemKey(item));
+            untrackJustCreated(item);
             saveLocalHistory();
             renderHistory(currentLinks);
           } catch (e) {
@@ -5728,6 +5789,12 @@
             }
 
             // Keep only the failed links so the user can retry
+            try {
+              const remaining = new Set(remainingLinks);
+              for (const l of currentLinks) {
+                if (l && !remaining.has(l)) untrackJustCreated(l);
+              }
+            } catch (e) {}
             currentLinks = remainingLinks;
             saveLocalHistory();
             renderHistory(currentLinks);
