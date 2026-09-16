@@ -358,24 +358,36 @@
         try { localStorage.setItem('tunnel_history', JSON.stringify(currentLinks)); } catch (e) {}
       }
 
+      // Edge-list lag window: a just-created link can be missing from a fresh
+      // server list for a while (documented up to ~60s), so local-only items
+      // younger than this are kept as plausibly-lagged. Older items missing
+      // from a successfully fetched server list were deleted elsewhere
+      // (single/bulk/domain-cascade/admin deletes all land the same way) and
+      // are dropped on the spot — deletions propagate on first refresh.
+      const LOCAL_GRACE_MS = 10 * 60 * 1000;
       // Merge server truth with local optimistic items the edge list may not
       // include yet. Server wins on identity conflicts (same domain/code);
-      // local-only items for THIS session are kept on top (newest first) so
-      // just-created links never vanish on a re-sync. Items from other
-      // sessions (stale cache after a session switch) are dropped.
+      // young local-only items for THIS session are kept on top (newest
+      // first) so just-created links never vanish on a re-sync. Items from
+      // other sessions (stale cache after a session switch) are dropped.
       function mergeServerLinks(serverLinks, sid) {
         const server = Array.isArray(serverLinks) ? serverLinks : [];
         const seen = new Set();
         for (const it of server) {
           try { seen.add(itemKey(it)); } catch (e) {}
         }
+        const now = Date.now();
         const localOnly = [];
         for (const it of (Array.isArray(currentLinks) ? currentLinks : [])) {
           if (!it) continue;
           if (sid && it.sessionId && it.sessionId !== sid) continue;
           let k = '';
           try { k = itemKey(it); } catch (e) { continue; }
-          if (!seen.has(k)) localOnly.push(it);
+          if (seen.has(k)) continue;
+          const age = now - (Number(it.timestamp) || Number(it.createdAt) || 0);
+          if (age >= 0 && age < LOCAL_GRACE_MS) localOnly.push(it);
+          // Else: old enough that edge lag cannot explain the absence —
+          // deleted on another device, drop it (never re-persisted below).
         }
         return localOnly.concat(server);
       }
