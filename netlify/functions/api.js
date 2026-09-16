@@ -25,7 +25,6 @@ import {
   dcvDelegationTargetFor,
   dcvDelegationSuffix,
   isApexDomain,
-  apexBlockedMessage,
   sslDelegationTarget,
   cfConfig,
   cfGetCustomHostname,
@@ -1169,9 +1168,11 @@ const actions = {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
     const existing = await freshGet(s, `domain/${host}`, { type: "json" });
-    // Stamp apex flow onto docs first created before the apex branch existed,
-    // but only when this caller came via an apex input for the same apex.
-    if (existing && isApexFlow && !existing.isApexFlow && apexSource) {
+    // Stamp apex flow onto docs missing it — owner sessions ONLY. A stranger's
+    // apex input must never mutate another session's doc (no card flips, no
+    // new payment gates for the owner). Claimants stamp at transfer time
+    // instead (see verifyClaimedDomainDns), once ownership is proven.
+    if (existing && isApexFlow && !existing.isApexFlow && apexSource && existing.sessionId === p.sessionId) {
       existing.isApexFlow = true;
       existing.apexSource = apexSource;
       try { await s.setJSON(`domain/${host}`, existing); } catch { /* ignore */ }
@@ -1228,30 +1229,42 @@ const actions = {
     return ok(await domainInfo(doc, p.sessionId));
   },
 
-  // Apex redirect check (live DNS read, never writes).
-  // Verifies the apex A/AAAA point at the free redirect edge for www docs.
+  // Apex redirect check: live DNS read for the caller's OWN www doc.
+  // Fail-closed: anonymous callers and non-owners are rejected before any
+  // outbound DNS happens (no free oracle, no shared-DoH-quota burn).
+  // The apex is derived from the owned doc — never from client params.
+  // Results cache briefly (positives 5 min, negatives 60 s) so repeat clicks
+  // and floods don't re-hit the shared resolver. Never writes domain docs.
   // Required before payment in apex flows (client-side Continue gating).
   async verifyApexRedirect(s, p, event) {
     const ip = clientIp(event);
-    if (!(await checkRate(s, "apex-check", ip, 20))) {
+    if (!(await checkRate(s, "apex-check", ip, 5))) {
       const e = new Error("Too many attempts, wait a moment.");
       e.statusCode = 429;
       e.code = "resource-exhausted";
       throw e;
     }
-    const wwwHost = cleanDomain(p.domain);
-    if (!wwwHost) return fail(400, "invalid-argument", "Invalid domain name.");
-    const apex = cleanDomain(p.apex) || apexForWww(wwwHost);
+    // Throws 400/404/403 unless the caller owns this www doc.
+    const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    const apex = (typeof doc.apexSource === "string" && doc.apexSource) || apexForWww(doc.domain);
     if (!apex) return fail(400, "invalid-argument", "Apex redirect applies to www domains only.");
-    // Only the www canonical's owner (or any valid session for existence check?)
-    // may probe — require ownership to avoid oracle abuse across tenants.
-    if (p.sessionId && validSessionId(p.sessionId)) {
-      const doc = await freshGet(s, `domain/${wwwHost}`, { type: "json" }).catch(() => null);
-      if (doc && doc.sessionId !== p.sessionId) {
-        return fail(403, "permission-denied", "Not your domain.");
+    const wwwHost = doc.domain;
+    const cacheKey = `apexcheck/${apex}`;
+    let r = null;
+    try {
+      const cached = await freshGet(s, cacheKey, { type: "json" }).catch(() => null);
+      if (cached && cached.at && cached.result) {
+        const age = Date.now() - cached.at;
+        const ttl = cached.result.aValid && cached.result.aaaaValid ? 5 * 60 * 1000 : 60 * 1000;
+        if (age >= 0 && age < ttl) r = cached.result;
+      }
+    } catch { /* cache miss: live lookup below */ }
+    if (!r) {
+      r = await verifyApexRedirectDns(apex).catch(() => null);
+      if (r) {
+        try { await s.setJSON(cacheKey, { at: Date.now(), result: r }); } catch { /* cache best-effort */ }
       }
     }
-    const r = await verifyApexRedirectDns(apex).catch(() => null);
     if (!r) return fail(502, "unavailable", "DNS lookup failed, try again.");
     return ok({ apex, www: wwwHost, ...r, ok: r.aValid && r.aaaaValid });
   },
@@ -1316,25 +1329,43 @@ const actions = {
     const live = await verifyDns(doc.domain, doc.pendingClaim.token).catch(() => ({
       cname: false, txt: false, ssl: false, routable: null,
     }));
+    // Claimant apex intent (validated): an apex-typed input for this www
+    // canonical. Computed before any check so every response below can name
+    // the full requirement set. Never mutates the doc pre-proof.
+    let claimApexByInput = null;
+    const claimParamApex = cleanDomain(p.apexSource);
+    if (claimParamApex && claimParamApex !== doc.domain) {
+      try {
+        if ((await isApexDomain(claimParamApex)) && wwwForApex(claimParamApex) === doc.domain) {
+          claimApexByInput = claimParamApex;
+        }
+      } catch { /* claimant apex ignored */ }
+    }
+    const claimApexFlow = doc.isApexFlow === true || !!claimApexByInput;
+    const claimApexHost = (typeof doc.apexSource === "string" && doc.apexSource) || claimApexByInput || apexForWww(doc.domain);
     if (!(live.cname && live.txt)) {
       return ok({
         success: false,
         isVerified: false,
+        // Carry apex context so the UI names the full requirement set.
+        ...(claimApexFlow && claimApexHost ? { isApexFlow: true, apex: claimApexHost } : {}),
         checks: { cname: !!live.cname, txt: !!live.txt, routable: live.routable ?? null },
         status: doc.status,
       });
     }
-    // Apex flows must also prove the redirect before ownership moves — same
-    // rule as payment gating in the first-time flow. Plain subdomains skip.
-    if (doc.isApexFlow === true) {
-      const claimApex = (typeof doc.apexSource === "string" && doc.apexSource) || apexForWww(doc.domain);
-      if (claimApex) {
-        const ar = await verifyApexRedirectDns(claimApex).catch(() => null);
+    // Apex gate for transfers: required when the doc is apex-flagged (prior
+    // apex onboarding) OR the claimant came via an apex input. Plain claims
+    // skip entirely.
+    if (claimApexFlow) {
+      if (claimApexHost) {
+        const ar = await verifyApexRedirectDns(claimApexHost).catch(() => null);
         const apexOk = !!ar && ar.aValid === true && ar.aaaaValid === true;
         if (!apexOk) {
           return ok({
             success: false,
             isVerified: false,
+            isApexFlow: true,
+            apex: claimApexHost,
             checks: { cname: true, txt: true, apex: false, routable: live.routable ?? null },
             status: doc.status,
           });
@@ -1347,6 +1378,13 @@ const actions = {
     doc.verificationToken = doc.pendingClaim.token;
     doc.pendingClaim = null;
     doc.isVerified = true;
+    // Stamp apex flags at transfer when the claimant proved apex intent:
+    // ownership just moved, so this write is legitimate (unlike pre-proof
+    // stamping in addCustomDomain, which is owner-only).
+    if (claimApexByInput && !doc.isApexFlow) {
+      doc.isApexFlow = true;
+      doc.apexSource = claimApexByInput;
+    }
     doc.dnsVerification = {
       cnameValid: true,
       txtVerified: true,
@@ -1769,7 +1807,18 @@ const actions = {
       freshGet(s, b.key, { type: "json" }).catch(() => null)
     );
     let found = docs.filter(Boolean);
-    if (qDomain) found = found.filter((l) => (l.domain || "").toLowerCase() === qDomain);
+    if (qDomain) {
+      // Apex-aware: typing ghiveci.com also matches www.ghiveci.com docs
+      // (links are stored on the www canonical, displayed as apex).
+      const candidates = new Set([qDomain]);
+      try {
+        if (await isApexDomain(qDomain)) {
+          const w = wwwForApex(qDomain);
+          if (w) candidates.add(w);
+        }
+      } catch { /* exact match only */ }
+      found = found.filter((l) => candidates.has((l.domain || "").toLowerCase()));
+    }
     if (qCode) found = found.filter((l) => (l.code || "") === qCode);
     if (qOrig) found = found.filter((l) => String(l.original || "").toLowerCase().includes(qOrig));
     if (onlyQ) found = found.filter((l) => l.quarantined === true);
@@ -1784,9 +1833,28 @@ const actions = {
       blockedSet = new Set(bblobs.map((b) => String(b.key || "").split("/").pop()));
     } catch { /* ignore: flags default to false */ }
     const hashes = await mapWithConcurrency(page, 12, (l) => originalHash(l.original || ""));
+    // Apex display: attach each link's apex form when its domain doc is
+    // apex-flagged, so admin sees links exactly as the user sees them.
+    // Batched by distinct host — a handful of reads per page, not per link.
+    // Identity (domain/code for quarantine/delete) stays canonical.
+    let apexByHost = {};
+    try {
+      const hosts = [...new Set(page.map((l) => String(l.domain || "").toLowerCase()).filter(Boolean))];
+      const docs = await mapWithConcurrency(hosts, 12, (h) =>
+        freshGet(s, `domain/${h}`, { type: "json" }).catch(() => null)
+      );
+      hosts.forEach((h, i) => {
+        const d = docs[i];
+        if (d && d.isApexFlow === true) {
+          const a = (typeof d.apexSource === "string" && d.apexSource) || apexForWww(d.domain);
+          if (a) apexByHost[h] = String(a).toLowerCase();
+        }
+      });
+    } catch { /* display-only: fall back to canonical */ }
     const links = page.map((l, i) => ({
       ...linkShape(l),
       ...(hashes[i] && blockedSet.has(hashes[i]) ? { originalBlocked: true } : {}),
+      ...(apexByHost[String(l.domain || "").toLowerCase()] ? { apexDisplay: apexByHost[String(l.domain || "").toLowerCase()] } : {}),
     }));
     return ok({ links, truncated: found.length > 50, total: found.length });
   },

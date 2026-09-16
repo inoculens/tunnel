@@ -556,19 +556,18 @@ export function apexForWww(wwwDomain) {
   return apex && apex.includes(".") ? apex : null;
 }
 
-// Advisory check (never blocks payment): does the apex A/AAAA point at the
+// Advisory DNS read (never writes): does the apex A/AAAA point at the
 // free redirect edge? Fail-open: lookup errors yield null (unknown).
+// Callers decide gating (first-time Continue + claim transfer require it).
 export async function verifyApexRedirect(apex) {
   const d = cleanDomain(apex);
   if (!d) return { aValid: false, aaaaValid: false, aFound: [], aaaaFound: [] };
-  let aFound = null;
-  let aaaaFound = null;
-  try {
-    aFound = await doh(d, "A").catch(() => null);
-  } catch { aFound = null; }
-  try {
-    aaaaFound = await doh(d, "AAAA").catch(() => null);
-  } catch { aaaaFound = null; }
+  // Independent lookups run together: halves worst-case latency (two
+  // sequential 5s-timeout DoH calls became the slowest part of verification).
+  const [aFound, aaaaFound] = await Promise.all([
+    doh(d, "A").catch(() => null),
+    doh(d, "AAAA").catch(() => null),
+  ]);
   const aList = Array.isArray(aFound) ? aFound.map(String) : [];
   const aaaaList = Array.isArray(aaaaFound) ? aaaaFound.map((v) => String(v).toLowerCase().replace(/\.$/, "")) : [];
   return {

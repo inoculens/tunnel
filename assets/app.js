@@ -400,6 +400,39 @@
       function itemKey(item) {
         return itemDomain(item) + '/' + (item ? item.code : '');
       }
+
+      // Apex display swap (presentation ONLY): links are stored, merged,
+      // filtered, resolved and deleted on the www canonical — but apex-flow
+      // domains present to the user as apex.com/SLUG. Anything not mapped
+      // (system host, plain subdomains) returns unchanged.
+      function apexDisplayFor(wwwHost) {
+        const w = String(wwwHost || '').toLowerCase().replace(/\/$/, '');
+        if (!w) return null;
+        try {
+          const hit = (userCustomDomains || []).find(d => d && d.isApexFlow === true && d.apex && String(d.domain || '').toLowerCase() === w);
+          if (hit) return String(hit.apex).toLowerCase();
+        } catch (e) {}
+        // Just-created flow before the domain list reloads.
+        try {
+          if (window._apexFlow === true && window._apexName && typeof wwwForApexInput === 'function'
+            && wwwForApexInput(window._apexName) === w) return String(window._apexName).toLowerCase();
+        } catch (e) {}
+        return null;
+      }
+      function displayHost(host) {
+        const w = String(host || '');
+        const apex = apexDisplayFor(w);
+        return apex || w;
+      }
+      function displayShort(shortUrl) {
+        const apex = apexDisplayFor(hostOf(shortUrl));
+        if (!apex) return String(shortUrl);
+        try {
+          const u = new URL(String(shortUrl));
+          u.hostname = apex;
+          return u.toString();
+        } catch (e) { return String(shortUrl); }
+      }
       function findLinkIndex(code, domain) {
         if (!code) return -1;
         if (!domain) return currentLinks.findIndex(l => l && l.code === code);
@@ -798,7 +831,13 @@
 
       function selectDomain(domain) {
         selectedDomain = domain;
-        currentDomainSpan.textContent = domain;
+        // Show the apex form for apex-flow domains; the stored value stays
+        // the www canonical (that's what the backend mints + resolves).
+        try {
+          currentDomainSpan.textContent = displayHost(String(domain).replace(/\/$/, '')) + '/';
+        } catch (e) {
+          currentDomainSpan.textContent = domain;
+        }
         renderDomainOptions();
       }
 
@@ -866,14 +905,17 @@
         `;
 
         // Sort domains alphabetically and add to dropdown
+        // (values stay the stored www canonical so filtering matches;
+        // only the visible label shows the apex form).
         Array.from(historyDomains).sort().forEach(domainName => {
           const filterOpt = document.createElement('div');
           filterOpt.className = `filter-option ${currentFilter === domainName ? 'selected' : ''}`;
+          const filterLabel = displayHost(domainName.replace(/\/$/, '')) + '/';
           filterOpt.innerHTML = `
-            <span>${escapeHTML(domainName)}</span>
+            <span>${escapeHTML(filterLabel)}</span>
             ${currentFilter === domainName ? checkIcon : ''}
           `;
-          filterOpt.onclick = () => selectHistoryFilter(domainName, domainName);
+          filterOpt.onclick = () => selectHistoryFilter(domainName, filterLabel);
           historyFilterDropdown.appendChild(filterOpt);
         });
 
@@ -894,7 +936,7 @@
               </button>
               <span class="domain-status ${soon ? 'status-pending' : 'status-active'}">${soon ? 'Expiring soon' : 'Active'}</span>
             </div>
-            <span style="flex: 1; white-space: nowrap;">${escapeHTML(domainObj.domain)}/</span>
+            <span style="flex: 1; white-space: nowrap;">${escapeHTML(displayHost(domainObj.domain))}/</span>
           `;
           opt.onclick = () => selectDomain(domainVal);
           dropdown.insertBefore(opt, document.getElementById('dropdownAddNew'));
@@ -929,7 +971,7 @@
                 </button>
                 <span class="domain-status ${statusClass}">${statusText}</span>
               </div>
-              <span style="flex: 1; white-space: nowrap;">${escapeHTML(domainObj.domain)}/</span>
+              <span style="flex: 1; white-space: nowrap;">${escapeHTML(displayHost(domainObj.domain))}/</span>
             `;
             opt.onclick = () => showDomainMenu(domainObj.domain);
             dropdown.insertBefore(opt, document.getElementById('dropdownAddNew'));
@@ -1539,14 +1581,17 @@
           const fn = functions.httpsCallable('verifyClaimedDomainDns');
           const tsToken2 = window._tsToken || undefined;
           window._tsToken = undefined;
-          const res = await fn({ domain: pendingDomain, sessionId: getSessionId(), ...(tsToken2 ? { turnstileToken: tsToken2 } : {}) });
+          const res = await fn({ domain: pendingDomain, sessionId: getSessionId(), ...(window._apexFlow && window._apexName ? { apexSource: window._apexName } : {}), ...(tsToken2 ? { turnstileToken: tsToken2 } : {}) });
           closeLoadingModal();
           if (res.data && res.data.success) {
             await loadUserDomains();
             await fetchAndRenderSession(getSessionId());
             showCustomModal({ title: "Reclaimed", message: `Domain <strong>${escapeHTML(pendingDomain)}</strong> + its links moved here.` });
           } else {
-            const needApex = res.data && res.data.checks && res.data.checks.apex === false;
+            // Name apex records only for apex flows (backend echoes
+            // isApexFlow on apex failures); plain claims keep the old text.
+            const claimIsApex = window._apexFlow === true || (res.data && res.data.isApexFlow === true);
+            const needApex = claimIsApex && res.data && res.data.checks && res.data.checks.apex === false;
             showCustomModal({ title: "Not yet", message: needApex
               ? "DNS proof not found yet (Apex redirect + CNAME + TXT). Wait for propagation and try Verify Claim again."
               : "DNS proof not found yet (CNAME + TXT). Wait for propagation and try Verify Claim again." });
@@ -3152,9 +3197,12 @@
         const endIndex = Math.min(startIndex + ADMIN_LINKS_PER_PAGE, totalItems);
         const page = all.slice(startIndex, endIndex);
         let html = page.map((l) => {
+          // Show the apex form for apex-flagged domains (backend attaches
+          // apexDisplay); identity for open/quarantine/delete stays canonical.
+          const dispDomain = (l.apexDisplay || l.domain || '');
           return `<div onclick="adminOpenLink(${escapeJS(l.domain || '')}, ${escapeJS(l.code || '')})" title="Open link details" style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; cursor:pointer;">
             <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; min-width:0;">
-              <div style="font-family:monospace; font-weight:700; overflow-wrap:anywhere; min-width:0;">${escapeHTML(l.domain)}/${escapeHTML(l.code)}</div>
+              <div style="font-family:monospace; font-weight:700; overflow-wrap:anywhere; min-width:0;">${escapeHTML(dispDomain)}/${escapeHTML(l.code)}</div>
               <div style="display:flex; gap:6px; flex-shrink:0; align-items:center;">${adminLinkBadges(l)}</div>
             </div>
           </div>`;
@@ -3214,7 +3262,7 @@
         const badgesEl = document.getElementById('adminLinkDetailBadges');
         const qBtn = document.getElementById('adminLinkDetailQuarantine');
         const bBtn = document.getElementById('adminLinkDetailBlock');
-        if (shortEl) shortEl.textContent = `${l.domain || ''}/${l.code || ''}`;
+        if (shortEl) shortEl.textContent = `${l.apexDisplay || l.domain || ''}/${l.code || ''}`;
         if (origEl) { origEl.textContent = l.original || ''; origEl.scrollTop = 0; }
         if (sessEl) sessEl.textContent = l.sessionId || '?';
         if (metaEl) {
@@ -4656,9 +4704,12 @@
           // Persist session ID to localStorage only after successful link creation
           setSessionId(sid);
 
-          // Show result (safeShort already validated as http(s) above)
-          document.getElementById('shortenedUrlLink').textContent = safeShort;
-          document.getElementById('shortenedUrlLink').href = safeShort;
+          // Show result (safeShort already validated as http(s) above).
+          // Apex-flow domains present as apex.com/SLUG (resolves via the
+          // path-preserving apex redirect to the stored www canonical).
+          const displayUrl = displayShort(safeShort);
+          document.getElementById('shortenedUrlLink').textContent = displayUrl;
+          document.getElementById('shortenedUrlLink').href = displayUrl;
           resultDiv.style.display = 'flex';
 
           // Reset any existing result timer
@@ -5005,7 +5056,7 @@
             lastRenderedLinks = [];
             container.innerHTML = `
             <div class="empty-history" style="text-align:center; padding: 60px 0;">
-              <p style="color: var(--text-muted); font-size: 1.1rem; margin-bottom: 10px;">No links for ${escapeHTML(domainFilter)} yet.</p>
+              <p style="color: var(--text-muted); font-size: 1.1rem; margin-bottom: 10px;">No links for ${escapeHTML(displayHost(String(domainFilter).replace(/\/$/, '')) + '/')} yet.</p>
               <p style="color: var(--text-muted); font-size: 0.95rem; opacity: 0.8;">Shorten a link with this domain to see it here.</p>
             </div>
           `;
@@ -5063,14 +5114,18 @@
           // escapeAttr() is for "..." attributes, safeHref() blocks
           // javascript:/data: schemes in generated links.
           const jsOriginal = escapeJS(item.original);
-          const jsShort = escapeJS(item.short);
+          const dispShort = displayShort(item.short);
+          const jsDispShort = escapeJS(dispShort);
           const codeJs = escapeJS(item.code);
           // Composite DOM identity (domain/slug): duplicate slugs on other
           // domains must not share element ids. escapeAttr keeps it safe in
           // id="..." attributes; lookups use CSS.escape / getElementById.
           const jsDomain = escapeJS(itemDomain(item));
           const keyAttr = escapeAttr(itemKey(item));
-          const safeShortHref = escapeAttr(safeHref(item.short));
+          // Display form (apex for apex-flow domains); identity (code/domain
+          // for stats/delete/labels) always stays the www canonical.
+          const safeShortHref = escapeAttr(safeHref(dispShort));
+          const dispShortHtml = escapeHTML(dispShort);
           const itemLabel = item.label || '';
           const hasLabel = itemLabel.length > 0;
           // State badges live pinned to the right edge (label row on
@@ -5118,7 +5173,7 @@
             </tr>
             <tr id="row-${keyAttr}-data" class="link-data-row">
               <td data-label="Original Link"><div class="history-original" title="${escapeAttr(item.original)}">${escapeHTML(item.original)}</div></td>
-              <td data-label="Short Link"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a></td>
+              <td data-label="Short Link"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${dispShortHtml}</a></td>
               <td data-label="Clicks">
                 <div class="click-count-wrapper">
                   <span id="clicks-${keyAttr}" class="click-count-number" style="font-weight:700; font-size: 0.9rem;">${item.clickCount}</span>
@@ -5127,7 +5182,7 @@
               </td>
               <td data-label="Actions">
                 <div class="action-btns">
-                  <button class="btn-small btn-copy-small" onclick="copyText(${jsShort}, this)" title="Copy Short Link">📋 Short</button>
+                  <button class="btn-small btn-copy-small" onclick="copyText(${jsDispShort}, this)" title="Copy Short Link">📋 Short</button>
                   <button class="btn-small btn-copy-original" onclick="copyText(${jsOriginal}, this)" title="Copy Original Link">🔗 Original</button>
                   <button class="btn-small btn-delete-small" onclick="deleteLink(${codeJs}, ${jsDomain})" title="Delete for everyone">🔥 Delete</button>
                 </div>
@@ -5158,7 +5213,7 @@
                 </div>
                 <div class="data-row">
                   <span class="data-label">Short Link</span>
-                  <span class="data-value"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${escapeHTML(item.short)}</a></span>
+                  <span class="data-value"><a href="${safeShortHref}" class="history-short" target="_blank" rel="noopener noreferrer">${dispShortHtml}</a></span>
                 </div>
                 <div class="data-row">
                   <span class="data-label">Clicks</span>
@@ -5170,7 +5225,7 @@
                 <div class="data-row">
                   <span class="data-label">Actions</span>
                   <div class="action-btns">
-                    <button class="btn-small btn-copy-small" onclick="copyText(${jsShort}, this)" title="Copy Short Link">📋 Short</button>
+                    <button class="btn-small btn-copy-small" onclick="copyText(${jsDispShort}, this)" title="Copy Short Link">📋 Short</button>
                     <button class="btn-small btn-copy-original" onclick="copyText(${jsOriginal}, this)" title="Copy Original Link">🔗 Original</button>
                     <button class="btn-small btn-delete-small" onclick="deleteLink(${codeJs}, ${jsDomain})" title="Delete for everyone">🔥 Delete</button>
                   </div>
@@ -5296,7 +5351,7 @@
           return;
         }
 
-        statsUrl.textContent = item.short;
+        statsUrl.textContent = displayShort(item.short);
         list.innerHTML = '<div style="padding:40px; text-align:center;">Loading analytics...</div>';
         totalCount.textContent = '...';
 
@@ -5892,7 +5947,7 @@
         }
         const stripScheme = (u) => String(u || '').trim().replace(/^https?:\/\//i, '').replace(/[\r\n]+/g, '');
         const lines = items.map((l) => {
-          const domain = stripScheme(itemDomain(l));
+          const domain = stripScheme(displayHost(itemDomain(l)));
           const code = String(l.code || '').replace(/[\r\n]+/g, '');
           return `${domain}/${code} : ${stripScheme(l.original)}`;
         });
