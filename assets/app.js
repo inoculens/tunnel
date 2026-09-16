@@ -277,6 +277,52 @@
         justCreated = loaded;
       }
       loadJustCreated();
+      // Apex display map cache (www canonical -> apex). Display-only: lets
+      // the boot paint show apex.com/SLUG immediately, before the domain
+      // list arrives over the network (otherwise first paint shows www,
+      // then flickers to apex seconds later). Domain-truth is global (one
+      // doc per host), so no per-session keying. Live server data always
+      // wins once loaded; verification/payment/stats never read this.
+      const APEX_MAP_KEY = 'tunnel_apex_map';
+      let apexDisplayCache = {};
+      try {
+        const rawAM = localStorage.getItem(APEX_MAP_KEY);
+        if (rawAM) {
+          const parsedAM = JSON.parse(rawAM);
+          if (parsedAM && typeof parsedAM === 'object') {
+            for (const [k, v] of Object.entries(parsedAM)) {
+              if (typeof k === 'string' && typeof v === 'string'
+                && k.length > 0 && k.length <= 253 && v.length > 0 && v.length <= 253
+                && !/\s/.test(k) && !/\s/.test(v)) apexDisplayCache[k.toLowerCase()] = v.toLowerCase();
+            }
+          }
+        }
+      } catch (e) { apexDisplayCache = {}; }
+      function saveApexMapCache() {
+        try { localStorage.setItem(APEX_MAP_KEY, JSON.stringify(apexDisplayCache)); } catch (e) {}
+      }
+      // Rebuild the cache from the live domain list. Returns true when the
+      // map actually changed (callers re-render to converge the paint).
+      function syncApexCacheFromDomains() {
+        let next = {};
+        try {
+          for (const d of (userCustomDomains || [])) {
+            if (d && d.isApexFlow === true && d.apex && d.domain) {
+              const w = String(d.domain).toLowerCase();
+              const a = String(d.apex).toLowerCase();
+              if (w && a && w.length <= 253 && a.length <= 253 && !/\s/.test(w) && !/\s/.test(a)) next[w] = a;
+            }
+          }
+        } catch (e) { return false; }
+        let same = true;
+        try {
+          const ka = Object.keys(apexDisplayCache), kb = Object.keys(next);
+          same = ka.length === kb.length && ka.every((k) => apexDisplayCache[k] === next[k]);
+        } catch (e) { same = false; }
+        apexDisplayCache = next;
+        try { saveApexMapCache(); } catch (e) {}
+        return !same;
+      }
       function saveJustCreated() {
         try {
           const objJC = {};
@@ -411,6 +457,11 @@
         try {
           const hit = (userCustomDomains || []).find(d => d && d.isApexFlow === true && d.apex && String(d.domain || '').toLowerCase() === w);
           if (hit) return String(hit.apex).toLowerCase();
+        } catch (e) {}
+        // Boot cache: live list hasn't arrived yet (first paint) — the
+        // persisted map keeps apex labels stable with zero network wait.
+        try {
+          if (apexDisplayCache && typeof apexDisplayCache[w] === 'string' && apexDisplayCache[w]) return apexDisplayCache[w];
         } catch (e) {}
         // Just-created flow before the domain list reloads.
         try {
@@ -2244,7 +2295,15 @@
 
       async function loadUserDomains() {
         const sid = getSessionId();
-        if (!sid) return;
+        if (!sid) {
+          // No session: flags can never load — release any cold-boot hold
+          // immediately instead of waiting out the backstop timer.
+          if (window._historyDisplayHold) {
+            window._historyDisplayHold = false;
+            try { renderHistory(currentLinks); } catch (e) {}
+          }
+          return;
+        }
 
         // Same edge-lag window as links: a domain added seconds ago can 404
         // once before it becomes visible. Retry transient session misses
@@ -2256,7 +2315,21 @@
             const response = await getDomainsFn({ sessionId: sid });
             userCustomDomains = response.data.domains || [];
             window._domainsSettled = true;
+            // Converge the boot paint: if live flags differ from the cached
+            // map (or populate it first-run), repaint so www-first flickers
+            // never linger. No-op visually when identical.
+            let mapChanged = false;
+            try { mapChanged = syncApexCacheFromDomains(); } catch (e) {}
             renderDomainOptions();
+            if (mapChanged) {
+              try { renderHistory(currentLinks); } catch (e) {}
+            }
+            // Release a cold-boot display hold with live flags (see initApp):
+            // first correct paint happens here, never as www-first.
+            if (window._historyDisplayHold) {
+              window._historyDisplayHold = false;
+              try { renderHistory(currentLinks); } catch (e) {}
+            }
             return;
           } catch (err) {
             lastErr = err;
@@ -2269,6 +2342,13 @@
         // Render from cache anyway so dropdowns are never left empty;
         // _domainsSettled stays false so a later open retries the fetch.
         try { renderDomainOptions(); } catch (e) {}
+        // Release a cold-boot display hold even on failure: the 6s backstop
+        // also covers this, but settling now paints sooner (www-form,
+        // same as the pre-hold offline behavior).
+        if (window._historyDisplayHold) {
+          window._historyDisplayHold = false;
+          try { renderHistory(currentLinks); } catch (e) {}
+        }
         // Also show a toast notification
         if (typeof showToast === 'function') {
           showToast('Failed to load custom domains. Please refresh.', 'error');
@@ -4341,8 +4421,47 @@
             );
             if (cached.length) {
               currentLinks = cached;
-              try { renderHistory(currentLinks); } catch (e) { console.warn('cached paint failed:', e); }
-              dismissBootLoader();
+              // Cold-boot display hold (once per browser): custom links are
+              // cached but apex presentation data isn't (no map yet) — paint
+              // a spinner instead of www-first rows that would flicker to
+              // apex seconds later. System links can never be apex-mapped.
+              let holdForDisplay = false;
+              try {
+                const cacheEmpty = !apexDisplayCache || Object.keys(apexDisplayCache).length === 0;
+                if (cacheEmpty) {
+                  const sysH = (publicConfig && publicConfig.systemHost ? String(publicConfig.systemHost) : 's.inoculens.com').toLowerCase();
+                  holdForDisplay = cached.some((l) => {
+                    try {
+                      const h = hostOf(l && l.short);
+                      return !!h && h !== sysH;
+                    } catch (e) { return false; }
+                  });
+                }
+              } catch (e) { holdForDisplay = false; }
+              if (holdForDisplay) {
+                window._historyDisplayHold = true;
+                try {
+                  const holdContainer = document.getElementById('historyContainer');
+                  if (holdContainer) {
+                    holdContainer.innerHTML = `<div style="text-align:center; padding:60px 0;">
+                      <div class="loading-spinner" style="margin:0 auto 16px;"></div>
+                      <p style="color: var(--text-muted); font-size: 0.95rem;">Syncing your links...</p>
+                    </div>`;
+                  }
+                } catch (e) {}
+                // Absolute backstop: never strand on the spinner (offline /
+                // hung network falls through to the regular www-form paint).
+                setTimeout(() => {
+                  if (window._historyDisplayHold) {
+                    window._historyDisplayHold = false;
+                    try { renderHistory(currentLinks); } catch (e) {}
+                  }
+                }, 6000);
+                dismissBootLoader();
+              } else {
+                try { renderHistory(currentLinks); } catch (e) { console.warn('cached paint failed:', e); }
+                dismissBootLoader();
+              }
             }
             // Links + domains are independent — fetch in parallel instead of
             // serially. Fire-and-forget: both paint on arrival and handle
@@ -4430,10 +4549,18 @@
             });
           }
 
+          // Cold-boot hold: the domain settle paints with live apex flags —
+          // painting here would flash www-first rows. Skipped only while held.
+          if (window._historyDisplayHold && isInitialLoad && !isManualLoad) {
+            closeLoadingModal();
+            return;
+          }
           renderHistory(currentLinks);
         } catch (e) {
           console.error(e);
-          container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--danger)">Failed to sync session: ${escapeHTML(e.message)}</div>`;
+          if (!window._historyDisplayHold) {
+            container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--danger)">Failed to sync session: ${escapeHTML(e.message)}</div>`;
+          }
         } finally {
           closeLoadingModal();
         }
