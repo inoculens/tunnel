@@ -1463,7 +1463,7 @@
               btn.disabled = false;
               showCustomModal({
                 title: "Already Added",
-                message: `Short links live on <strong>${escapeHTML(pendingDomain)}</strong> (already in your account) — opening its setup so you can add the free apex redirect for <strong>${escapeHTML(window._apexName)}</strong>.`
+                message: `Short links live on <strong>${escapeHTML(displayHost(pendingDomain))}</strong> (already in your account) — opening its setup so you can add the free apex redirect for <strong>${escapeHTML(window._apexName)}</strong>.`
               });
               try { await manageDomain(pendingDomain); } catch (e) {}
               return;
@@ -1637,7 +1637,7 @@
           if (res.data && res.data.success) {
             await loadUserDomains();
             await fetchAndRenderSession(getSessionId());
-            showCustomModal({ title: "Reclaimed", message: `Domain <strong>${escapeHTML(pendingDomain)}</strong> + its links moved here.` });
+            showCustomModal({ title: "Reclaimed", message: `Domain <strong>${escapeHTML(displayHost(pendingDomain))}</strong> + its links moved here.` });
           } else {
             // Name apex records only for apex flows (backend echoes
             // isApexFlow on apex failures); plain claims keep the old text.
@@ -2459,7 +2459,8 @@
           title: menuDisp,
           message: `<div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 4px;">What would you like to manage?</div>
             <button class="modal-btn modal-btn-cancel" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('dns', ${escapeJS(d)})">Configure DNS</button>
-            ${apexRow}`,
+            ${apexRow}
+            <button class="modal-btn modal-btn-danger" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('delete', ${escapeJS(d)})">Delete Domain</button>`,
           showCancel: false,
           confirmText: "Close"
         });
@@ -2470,6 +2471,10 @@
         const d = String(domain || '').trim();
         if (!d) return;
         if (which === 'apex') openApexScreen(d);
+        // Delete reuses the verification screen's trigger verbatim: point it
+        // at this domain, then run the same function (same confirm, same
+        // backend call, same post-state).
+        else if (which === 'delete') { pendingDomain = d; currentDomain = d; deleteDomain(); }
         // DNS goes through the full manager entry flow (overlay show, session
         // check, input reset, domain load) — calling manageDomain() directly
         // would paint into a hidden overlay and look completely dead.
@@ -2642,13 +2647,23 @@
           const isVerified = domainData.isVerified === true;
           const paymentStatus = domainData.paymentStatus;
           const isPaid = paymentStatus === 'paid';
+          // Label follows what the user added (apex input -> apex label);
+          // domainToDelete below stays canonical for the backend call.
+          let deleteDisp = domainToDelete;
+          try {
+            const dd = displayHost(domainToDelete);
+            if (dd) deleteDisp = dd;
+            // Prefer authoritative flags just fetched (covers docs flagged
+            // after the local list was last loaded).
+            if (domainData.isApexFlow === true && domainData.apex) deleteDisp = domainData.apex;
+          } catch (e) {}
 
           // Show warning if domain was verified or paid
           if (isVerified || isPaid) {
             // Show confirmation dialog with warning
             const confirmed = await showCustomModal({
               title: "Delete Domain?",
-              message: `Are you sure you want to delete <strong>${escapeHTML(domainToDelete)}</strong>?` +
+              message: `Are you sure you want to delete <strong>${escapeHTML(deleteDisp)}</strong>?` +
                 `<div style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; padding: 12px; margin: 8px 0; color: #f28b82;">` +
                 `⚠️ <strong>Warning:</strong> This domain is ${isPaid ? 'paid and active' : 'verified'}. All links using this domain will be permanently deleted.</div>` +
                 `<div>If you want to use this domain again later, you'll need to pay again.</div>`,
@@ -2679,7 +2694,7 @@
           await loadUserDomains();
 
           // Show success message
-          let message = `Domain "${domainToDelete}" has been deleted.`;
+          let message = `Domain "${deleteDisp}" has been deleted.`;
           if (data.deletedUrls && data.deletedUrls > 0) {
             message += ` ${data.deletedUrls} associated link(s) were also deleted.`;
           }
@@ -2963,7 +2978,7 @@
               closeDomainManager();
               showCustomModal({
                 title: '🎉 Domain Activated!',
-                message: `Your domain <strong>${escapeHTML(pendingDomain)}</strong> has been added for free! You can now create short links using this domain.`
+                message: `Your domain <strong>${escapeHTML(displayHost(pendingDomain))}</strong> has been added for free! You can now create short links using this domain.`
               });
             }, 1500);
             return;
