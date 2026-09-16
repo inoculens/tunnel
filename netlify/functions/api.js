@@ -61,6 +61,10 @@ import {
   freshGet,
   getWithRetry,
   mapWithConcurrency,
+  apexRedirectTargets,
+  wwwForApex,
+  apexForWww,
+  verifyApexRedirect as verifyApexRedirectDns,
 } from "./lib/util.js";
 // Static import (not dynamic): node_bundler="nft" traces static imports for
 // the function bundle — a dynamic import() can be missed at bundle time and
@@ -348,6 +352,13 @@ async function domainInfo(doc, viewerSessionId = null) {
   // pending token via the pendingClaim branch). TXT is public DNS anyway,
   // but no reason to hand it to anyone who knows the domain name.
   const ownerToken = isOwner ? doc.verificationToken : null;
+  // Apex->www branch (additive): docs created via an apex input carry
+  // apexSource/isApexFlow. Plain subdomain docs have neither — frontend hides
+  // the apex redirect card for them, preserving the exact old flow.
+  const apexTargets = apexRedirectTargets();
+  const storedApex = typeof doc.apexSource === "string" && doc.apexSource ? doc.apexSource : null;
+  const derivedApex = apexForWww(doc.domain);
+  const apexHost = storedApex || (doc.isApexFlow === true ? derivedApex : null);
   return {
     domain: doc.domain,
     id: doc.domain,
@@ -358,6 +369,11 @@ async function domainInfo(doc, viewerSessionId = null) {
     coverageLifetime: doc.coverageLifetime === true,
     coverageValid: coverageValid(doc),
     apexTarget: typeof doc.apexTarget === "string" && doc.apexTarget ? doc.apexTarget : null,
+    isApexFlow: doc.isApexFlow === true,
+    apex: apexHost,
+    apexInstructions: apexHost
+      ? { apex: apexHost, a: apexTargets.ipv4, aaaa: apexTargets.ipv6 }
+      : null,
     dnsVerification: doc.dnsVerification,
     dnsVerificationToken: ownerToken,
     verificationToken: ownerToken,
@@ -1115,21 +1131,50 @@ const actions = {
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
     try { await bumpKindCounter(s, "domain-add", clientIp(event)); } catch { /* ignore */ }
     await requireTurnstile(s, p, event, "domain");
-    const host = cleanDomain(p.domain);
+    let host = cleanDomain(p.domain);
     if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
+    // Apex-only branch: an apex input (example.com) is served via the www
+    // canonical (www.example.com). Normalize here too so direct API calls
+    // behave like the UI. Non-apex inputs fall through untouched.
+    let apexSource = null;
+    let isApexFlow = false;
+    try {
+      if (await isApexDomain(host)) {
+        const canonical = wwwForApex(host);
+        if (!canonical) return fail(400, "invalid-argument", "Invalid domain name.");
+        apexSource = host;
+        host = canonical;
+        isApexFlow = true;
+      }
+    } catch { /* fail-open to normal path */ }
+    // Explicit apexSource param (sent by the UI apex branch) wins when the
+    // normalized host is its www canonical — lets reopened flows reassert.
+    // Guarded by isApexDomain so non-apex callers can't force the apex card.
+    const paramApex = cleanDomain(p.apexSource);
+    if (paramApex && (await isApexDomain(paramApex).catch(() => false)) && wwwForApex(paramApex) === host) {
+      apexSource = paramApex;
+      isApexFlow = true;
+    }
     // Only tunnel. (app) and s. (short links) are system hosts, plus the SaaS
     // infrastructure names and the apex itself. Everything else is a customer
     // domain — including other *.inoculens.com names, which route and validate
     // exactly like external domains (proxied CNAME to the SaaS target).
-    const reserved = new Set([systemShortHost(), routingTarget(), "tunnel.inoculens.com", "customers.inoculens.com", "proxy-fallback.inoculens.com", "inoculens.com"]);
-    if (reserved.has(host)) return fail(400, "invalid-argument", "This domain is reserved for INOCULENS infrastructure.");
-    // Authoritative apex block (frontend also warns live, but the backend
-    // decides — never let users pay for a domain that cannot work).
-    if (await isApexDomain(host)) return fail(400, "invalid-argument", apexBlockedMessage(host));
+    const reserved = new Set([systemShortHost(), routingTarget(), "tunnel.inoculens.com", "customers.inoculens.com", "proxy-fallback.inoculens.com", "inoculens.com", "www.inoculens.com"]);
+    if (reserved.has(host) || (apexSource && reserved.has(apexSource))) return fail(400, "invalid-argument", "This domain is reserved for INOCULENS infrastructure.");
+    // NOTE: former authoritative apex block removed — apex inputs normalize to
+    // www above and follow the standard www flow (CNAME+TXT gating, payment).
+    // The apex A/AAAA redirect check is advisory only (see verifyApexRedirect).
     if (!(await getSession(s, p.sessionId))) {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
     const existing = await freshGet(s, `domain/${host}`, { type: "json" });
+    // Stamp apex flow onto docs first created before the apex branch existed,
+    // but only when this caller came via an apex input for the same apex.
+    if (existing && isApexFlow && !existing.isApexFlow && apexSource) {
+      existing.isApexFlow = true;
+      existing.apexSource = apexSource;
+      try { await s.setJSON(`domain/${host}`, existing); } catch { /* ignore */ }
+    }
     if (existing) {
       if (existing.sessionId !== p.sessionId) {
         // Secure reclaim: ownership NEVER transfers here. A pending claim is
@@ -1176,9 +1221,37 @@ const actions = {
       discount: null,
       quote: null,
       createdAt: Date.now(),
+      ...(isApexFlow ? { isApexFlow: true, apexSource } : {}),
     };
     await s.setJSON(`domain/${host}`, doc);
     return ok(await domainInfo(doc, p.sessionId));
+  },
+
+  // Advisory apex redirect check (never blocks payment, never writes).
+  // Verifies the apex A/AAAA point at the free redirect edge for www docs.
+  async verifyApexRedirect(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "apex-check", ip, 20))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
+    const wwwHost = cleanDomain(p.domain);
+    if (!wwwHost) return fail(400, "invalid-argument", "Invalid domain name.");
+    const apex = cleanDomain(p.apex) || apexForWww(wwwHost);
+    if (!apex) return fail(400, "invalid-argument", "Apex redirect applies to www domains only.");
+    // Only the www canonical's owner (or any valid session for existence check?)
+    // may probe — require ownership to avoid oracle abuse across tenants.
+    if (p.sessionId && validSessionId(p.sessionId)) {
+      const doc = await freshGet(s, `domain/${wwwHost}`, { type: "json" }).catch(() => null);
+      if (doc && doc.sessionId !== p.sessionId) {
+        return fail(403, "permission-denied", "Not your domain.");
+      }
+    }
+    const r = await verifyApexRedirectDns(apex).catch(() => null);
+    if (!r) return fail(502, "unavailable", "DNS lookup failed, try again.");
+    return ok({ apex, www: wwwHost, ...r, ok: r.aValid && r.aaaaValid });
   },
 
   async getDomainVerificationInfo(s, p) {

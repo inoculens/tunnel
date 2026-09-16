@@ -939,6 +939,18 @@
       const domainManagerOverlay = document.getElementById('domainManagerOverlay');
       let currentStep = 1;
       let pendingDomain = '';
+      // Apex->www branch state (apex-only; plain subdomains never set these).
+      // _apexFlow=true means the user originally typed an apex (example.com)
+      // and we canonicalized to www.example.com. _apexName is the bare apex.
+      window._apexFlow = false;
+      window._apexName = '';
+      const APEX_REDIRECT_IPV4 = '65.21.184.101';
+      const APEX_REDIRECT_IPV6 = '2a01:4f9:c012:a304::1';
+      function wwwForApexInput(raw) {
+        const d = String(raw || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+        if (!d || d.startsWith('www.')) return null;
+        return `www.${d}`;
+      }
 
       async function showDomainManager(targetDomain = '') {
         if (!requireBackend()) return;
@@ -987,6 +999,11 @@
         if (apexHint) apexHint.style.display = 'none';
         const paymentInst = document.getElementById('paymentInstructions');
         if (paymentInst) paymentInst.style.display = 'none';
+        // Reset apex-only branch state (plain flow never sets it).
+        window._apexFlow = false;
+        window._apexName = '';
+        const apexCard0 = document.getElementById('apexRedirectCard');
+        if (apexCard0) apexCard0.style.display = 'none';
 
         // Load domains first before allowing any actions
         loadUserDomains().then(() => {
@@ -1005,6 +1022,8 @@
         unlockScroll();
         window.removeEventListener('keydown', handleDomainManagerEsc);
         pendingDomain = '';
+        window._apexFlow = false;
+        window._apexName = '';
         showStep('loading');
       }
 
@@ -1081,7 +1100,14 @@
             domain: data.domain || pendingDomain,
             isVerified: data.isVerified,
             dnsVerification: data.dnsVerification || {},
-            status: data.status
+            status: data.status,
+            isApexFlow: data.isApexFlow,
+            apex: data.apex,
+            apexInstructions: data.apexInstructions,
+            paymentStatus: data.paymentStatus,
+            coverageValid: data.coverageValid,
+            coverageLifetime: data.coverageLifetime,
+            coverageExpiresAt: data.coverageExpiresAt
           });
         } catch (err) {
           console.error('checkCurrentDomainStatus error:', err);
@@ -1298,7 +1324,7 @@
         return false;
       }
       function apexHintHTML(d) {
-        return `⚠️ <strong>${escapeHTML(d)}</strong> looks like a naked (apex) domain, which cannot work for short links — DNS forbids a CNAME at the apex, so routing and TLS can never validate. Use <strong>any subdomain you like</strong> instead — <strong>www.${escapeHTML(d)}</strong>, <strong>go.${escapeHTML(d)}</strong>, <strong>s.${escapeHTML(d)}</strong>, whatever you prefer (you can forward the apex to it free at your registrar).`;
+        return `ℹ️ <strong>${escapeHTML(d)}</strong> is a naked (apex) domain — short links will live on <strong>www.${escapeHTML(d)}</strong> (same $10/yr covers it), and the apex will forward there free (path-preserving, e.g. ${escapeHTML(d)}/abc → www.${escapeHTML(d)}/abc).`;
       }
       function refreshApexHint() {
         const input = document.getElementById('newDomainInput');
@@ -1314,23 +1340,31 @@
         return false;
       }
       // NOTE: no live 'input' listener here on purpose — partial input like
-      // "s." looks apex-like until the user finishes typing, so the warning
+      // "s." looks apex-like until the user finishes typing, so the hint
       // appears only after Next is pressed (proceedToAddDomain validates).
       async function proceedToAddDomain() {
         const input = document.getElementById('newDomainInput').value.trim();
         const btn = document.getElementById('addDomainProceedBtn');
         if (!input || btn.classList.contains('loading')) return;
 
-        pendingDomain = input.replace(/^https?:\/\//, '').replace(/\/$/, '');
+        let rawDomain = input.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
 
-        // Fast client-side apex block (backend enforces authoritatively).
-        if (isProbablyApex(pendingDomain)) {
-          refreshApexHint();
-          showCustomModal({
-            title: "Apex Domains Can't Be Used",
-            message: apexHintHTML(pendingDomain) + "<br><br>Change the input above to a www/subdomain version to continue — nothing was added or charged."
-          });
-          return;
+        // Apex-only branch: apex input canonicalizes to www (e.g. example.com
+        // -> www.example.com). Non-apex inputs fall through untouched.
+        window._apexFlow = false;
+        window._apexName = '';
+        if (isProbablyApex(rawDomain)) {
+          const canonical = wwwForApexInput(rawDomain);
+          if (canonical) {
+            window._apexFlow = true;
+            window._apexName = rawDomain;
+            pendingDomain = canonical;
+            refreshApexHint();
+          } else {
+            pendingDomain = rawDomain;
+          }
+        } else {
+          pendingDomain = rawDomain;
         }
 
         try {
@@ -1346,6 +1380,20 @@
           );
 
           if (domainExists) {
+            // Apex re-entry: www already owned (added before the apex branch
+            // existed). Open its verification so the free apex redirect card
+            // appears (backend stamps the flags on load). Plain duplicates
+            // keep the exact old message.
+            if (window._apexFlow && window._apexName) {
+              btn.classList.remove('loading');
+              btn.disabled = false;
+              showCustomModal({
+                title: "Already Added",
+                message: `Short links live on <strong>${escapeHTML(pendingDomain)}</strong> (already in your account) — opening its setup so you can add the free apex redirect for <strong>${escapeHTML(window._apexName)}</strong>.`
+              });
+              try { await manageDomain(pendingDomain); } catch (e) {}
+              return;
+            }
             showCustomModal({
               title: "Domain Already Added",
               message: `The domain <strong>${escapeHTML(pendingDomain)}</strong> is already in your account.`
@@ -1361,7 +1409,14 @@
           const addFn = functions.httpsCallable('addCustomDomain');
           const tsToken0 = window._tsToken || undefined;
           window._tsToken = undefined;
-          const addRes = await addFn({ domain: pendingDomain, type: 'managed', sessionId: getSessionId(), ...(tsToken0 ? { turnstileToken: tsToken0 } : {}) });
+          const addRes = await addFn({ domain: pendingDomain, type: 'managed', sessionId: getSessionId(), ...(window._apexFlow && window._apexName ? { apexSource: window._apexName } : {}), ...(tsToken0 ? { turnstileToken: tsToken0 } : {}) });
+          // Adopt backend apex flags (authoritative): apex inputs normalize to
+          // www server-side too, so direct/reopened flows stay consistent.
+          if (addRes.data) {
+            if (addRes.data.isApexFlow === true) window._apexFlow = true;
+            if (addRes.data.apex) window._apexName = addRes.data.apex;
+            if (addRes.data.domain) pendingDomain = addRes.data.domain;
+          }
           if (addRes.data && addRes.data.pendingClaim) {
             btn.classList.remove('loading');
             btn.disabled = false;
@@ -1411,7 +1466,7 @@
           const addFn = functions.httpsCallable('addCustomDomain');
           const tsToken1 = window._tsToken || undefined;
           window._tsToken = undefined;
-          const res = await addFn({ sessionId: getSessionId(), domain: pendingDomain, ...(tsToken1 ? { turnstileToken: tsToken1 } : {}) });
+          const res = await addFn({ sessionId: getSessionId(), domain: pendingDomain, ...(window._apexFlow && window._apexName ? { apexSource: window._apexName } : {}), ...(tsToken1 ? { turnstileToken: tsToken1 } : {}) });
           const data = res.data || {};
           if (data.pendingClaim) {
             btn.classList.remove('loading');
@@ -1420,6 +1475,9 @@
             showPendingClaimModal(data);
             return;
           }
+          if (data.isApexFlow === true) window._apexFlow = true;
+          if (data.apex) window._apexName = data.apex;
+          if (data.domain) pendingDomain = data.domain;
 
           // Set up the verification UI with the returned data
           setVerificationUI({
@@ -1428,7 +1486,10 @@
             sslVerification: data.sslVerification,
             status: data.status,
             isVerified: data.isVerified,
-            dnsVerification: data.dnsVerification
+            dnsVerification: data.dnsVerification,
+            isApexFlow: data.isApexFlow,
+            apex: data.apex,
+            apexInstructions: data.apexInstructions
           });
 
           showStep('verification');
@@ -1546,15 +1607,41 @@
         const recordName = (domainDoc.instructions && domainDoc.instructions.recordName) || domainName;
         const recordNameEl = document.getElementById('cnameRecordName');
         if (recordNameEl) recordNameEl.textContent = recordName;
-        // Grandfathered apex domains (blocked for new adds): explain + redirect.
+        // Grandfathered apex docs (domain/<apex> created before the apex->www
+        // branch): keep the explanatory note. New apex inputs canonicalize to
+        // www and never create apex docs, so this only fires for legacy rows.
         const apexNote = document.getElementById('apexNote');
         const isApexDoc = domainDoc.instructions && domainDoc.instructions.isApex;
         if (apexNote) {
           if (isApexDoc) {
-            apexNote.innerHTML = `⚠️ <strong>${escapeHTML(domainName)}</strong> is a naked (apex) domain and cannot work — DNS forbids a CNAME at the apex. Delete it and add <strong>any subdomain you like</strong> instead (<strong>www.${escapeHTML(domainName)}</strong>, <strong>go.${escapeHTML(domainName)}</strong>, …) — forward the apex to it free at your registrar.`;
+            apexNote.innerHTML = `⚠️ <strong>${escapeHTML(domainName)}</strong> is a naked (apex) domain from an older setup. Delete it and re-add <strong>${escapeHTML(domainName)}</strong> above — it will set up <strong>www.${escapeHTML(domainName)}</strong> plus a free apex redirect automatically.`;
             apexNote.style.display = 'block';
           } else {
             apexNote.style.display = 'none';
+          }
+        }
+
+        // Apex->www branch (additive, advisory-only): show the apex redirect
+        // card only when this flow started from an apex input. Plain subdomain
+        // flows keep it hidden and behave exactly as before.
+        const apexFlow = domainDoc.isApexFlow === true || window._apexFlow === true;
+        const apexHost = domainDoc.apex || (apexFlow ? (window._apexName || null) : null);
+        if (domainDoc.isApexFlow === true) window._apexFlow = true;
+        if (domainDoc.apex) window._apexName = domainDoc.apex;
+        const apexCard = document.getElementById('apexRedirectCard');
+        if (apexCard) {
+          if (apexFlow && apexHost) {
+            apexCard.style.display = 'flex';
+            const apexNameEl = document.getElementById('apexDomainName');
+            if (apexNameEl) apexNameEl.textContent = apexHost;
+            const aEl = document.getElementById('apexAValue');
+            const aaaaEl = document.getElementById('apexAaaaValue');
+            const ai = domainDoc.apexInstructions || {};
+            if (aEl) aEl.textContent = ai.a || APEX_REDIRECT_IPV4;
+            if (aaaaEl) aaaaEl.textContent = ai.aaaa || APEX_REDIRECT_IPV6;
+            updateApexStatusUI(null);
+          } else {
+            apexCard.style.display = 'none';
           }
         }
 
@@ -1631,6 +1718,24 @@
         updateStatusUI('cname', !!dns.cnameValid);
         updateStatusUI('txt', !!dns.txtVerified);
         updateRoutingUI((dns.routable === false) ? false : null);
+
+        // Apex card visibility (additive): only for apex->www flows.
+        if (domainData.isApexFlow === true) window._apexFlow = true;
+        if (domainData.apex) window._apexName = domainData.apex;
+        const apexCardS = document.getElementById('apexRedirectCard');
+        if (apexCardS) {
+          const showApex = window._apexFlow === true && !!(domainData.apex || window._apexName);
+          apexCardS.style.display = showApex ? 'flex' : 'none';
+          if (showApex) {
+            const nEl = document.getElementById('apexDomainName');
+            if (nEl) nEl.textContent = domainData.apex || window._apexName || '';
+            const aiS = domainData.apexInstructions || {};
+            const aElS = document.getElementById('apexAValue');
+            const aaaaElS = document.getElementById('apexAaaaValue');
+            if (aElS && aiS.a) aElS.textContent = aiS.a;
+            if (aaaaElS && aiS.aaaa) aaaaElS.textContent = aiS.aaaa;
+          }
+        }
 
         // Show/hide verification status in modal - only show when both verified AND active/paid
         // (and never alongside the routing error — updateRoutingUI invariant).
@@ -1905,6 +2010,56 @@
         }
       }
 
+      // Apex redirect badge (advisory only — never gates payment).
+      // null = not yet checked (Pending), true = redirect live (Verified),
+      // false = records missing/mismatched (Action needed).
+      function updateApexStatusUI(ok) {
+        const statusEl = document.getElementById('apexStatus');
+        const btnEl = document.getElementById('verifyApexBtn');
+        if (!statusEl) return;
+        if (ok === true) {
+          statusEl.className = 'domain-status status-active';
+          statusEl.textContent = 'Verified';
+          if (btnEl) btnEl.textContent = 'Re-verify entry';
+        } else if (ok === false) {
+          statusEl.className = 'domain-status status-pending';
+          statusEl.textContent = 'Action needed';
+          if (btnEl) btnEl.textContent = 'Verify Apex';
+        } else {
+          statusEl.className = 'domain-status status-pending';
+          statusEl.textContent = 'Pending';
+          if (btnEl) btnEl.textContent = 'Verify Apex';
+        }
+      }
+
+      async function verifyApexOnly() {
+        const apex = window._apexName || null;
+        const www = currentDomain || pendingDomain;
+        if (!apex || !www || !getSessionId()) {
+          showToast('Apex context missing: please re-open the domain manager.', 'error');
+          return;
+        }
+        const btn = document.getElementById('verifyApexBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
+        try {
+          const fn = functions.httpsCallable('verifyApexRedirect');
+          const res = await fn({ domain: www, apex, sessionId: getSessionId() });
+          const ok = res.data && res.data.ok === true;
+          updateApexStatusUI(ok);
+          if (ok) {
+            showToast('Apex redirect verified! example.com links will forward to www.', 'success');
+          } else {
+            showToast('Apex redirect not detected yet. Check the A/AAAA at @ (DNS-only) and retry.', 'error');
+          }
+        } catch (e) {
+          console.error('verifyApexOnly Exception:', e);
+          updateApexStatusUI(false);
+          showToast('Error verifying apex: ' + (e.message || 'Unknown error'), 'error');
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      }
+
 
 
       async function continueToPaymentFromVerification() {
@@ -2057,6 +2212,17 @@
       async function manageDomain(domain) {
         pendingDomain = domain;
         currentDomain = domain;
+        // Reassert apex branch when reopening a www doc created via apex input.
+        // Plain subdomain docs carry no apex flags — card stays hidden.
+        // Keep flags when managing the flagged www canonical (apex re-entry);
+        // clear them when switching to any other domain so plain flows stay exact.
+        try {
+          const flaggedWww = window._apexName ? wwwForApexInput(window._apexName) : null;
+          if (!window._apexFlow || flaggedWww !== String(domain || '').toLowerCase()) {
+            window._apexFlow = false;
+            window._apexName = '';
+          }
+        } catch (e) { window._apexFlow = false; window._apexName = ''; }
 
         // Defensive: everything below paints into domainManagerOverlay, so
         // make sure it is visible (the showDomainManager entry flow normally
@@ -2076,8 +2242,11 @@
         // Fetch latest domain info and set up verification UI
         try {
           const addFn = functions.httpsCallable('addCustomDomain');
-          const res = await addFn({ sessionId: getSessionId(), domain: domain });
+          const res = await addFn({ sessionId: getSessionId(), domain: domain, ...(window._apexFlow && window._apexName ? { apexSource: window._apexName } : {}) });
           const data = res.data || {};
+          if (data.isApexFlow === true) window._apexFlow = true;
+          if (data.apex) window._apexName = data.apex;
+          if (data.domain) { pendingDomain = data.domain; currentDomain = data.domain; }
 
           setVerificationUI({
             domain: data.domain || domain,
@@ -2085,7 +2254,10 @@
             sslVerification: data.sslVerification,
             status: data.status,
             isVerified: data.isVerified || false, // Pass sticky verification status
-            dnsVerification: data.dnsVerification
+            dnsVerification: data.dnsVerification,
+            isApexFlow: data.isApexFlow,
+            apex: data.apex,
+            apexInstructions: data.apexInstructions
           });
         } catch (err) {
           console.error('Error loading domain info:', err);
@@ -2359,7 +2531,10 @@
             sslVerification: data.sslVerification || (data.cloudflareValidationRecords && { records: data.cloudflareValidationRecords }),
             status: data.status,
             dnsVerification: data.dnsVerification,
-            isVerified: data.isVerified
+            isVerified: data.isVerified,
+            isApexFlow: data.isApexFlow,
+            apex: data.apex,
+            apexInstructions: data.apexInstructions
           });
 
         } catch (err) {
