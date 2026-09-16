@@ -2369,11 +2369,14 @@
           return;
         }
         const ready = info.status === 'active' && info.coverageValid === true;
+        // Display form follows what the user added (apex input -> apex label);
+        // the canonical d below still drives all actions + routing storage.
+        const menuDisp = (info.isApexFlow === true && info.apex) ? info.apex : d;
         const apexRow = ready
           ? `<button class="modal-btn modal-btn-ok" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('apex', ${escapeJS(d)})">Configure APEX routing</button>`
           : `<div style="margin-top: 12px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); font-size: 0.8rem; color: var(--text-muted); text-align: center;">APEX routing unlocks once the domain is paid and active.</div>`;
         showCustomModal({
-          title: d,
+          title: menuDisp,
           message: `<div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 4px;">What would you like to manage?</div>
             <button class="modal-btn modal-btn-cancel" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('dns', ${escapeJS(d)})">Configure DNS</button>
             ${apexRow}`,
@@ -2403,6 +2406,7 @@
       function closeApexScreen() {
         if (!window._apexOpen) return;
         window._apexOpen = false;
+        window._apexDisplay = '';
         const overlay = document.getElementById('apexOverlay');
         if (overlay) overlay.style.display = 'none';
         unlockScroll();
@@ -2420,13 +2424,21 @@
       async function openApexScreen(domain) {
         const d = String(domain || '').trim();
         if (!d || !getSessionId()) return;
+        // Canonical www host drives ALL backend calls below (the apexTarget is
+        // stored on the www doc; the apex root forwards there, so one target
+        // covers both). _apexDisplay is label-only: what the user added.
         window._apexDomain = d;
+        window._apexDisplay = d;
         const overlay = document.getElementById('apexOverlay');
         const locked = document.getElementById('apexDomainLocked');
         const input = document.getElementById('apexTargetInput');
         const errBox = document.getElementById('apexError');
         const curBox = document.getElementById('apexCurrent');
-        if (locked) locked.textContent = d;
+        try {
+          const prelim = displayHost(d);
+          if (prelim) window._apexDisplay = prelim;
+        } catch (e) {}
+        if (locked) locked.textContent = window._apexDisplay;
         if (input) { input.value = ''; input.disabled = true; }
         if (errBox) errBox.style.display = 'none';
         if (curBox) curBox.style.display = 'none';
@@ -2447,6 +2459,13 @@
           }
           const current = typeof info.apexTarget === 'string' ? info.apexTarget : '';
           if (input) { input.value = current; input.disabled = false; }
+          // Authoritative display correction from the doc flags (plain docs:
+          // identical to d, so no visible change outside apex flows).
+          try {
+            if (info.isApexFlow === true && info.apex) window._apexDisplay = info.apex;
+            else window._apexDisplay = d;
+            if (locked) locked.textContent = window._apexDisplay;
+          } catch (e) {}
           if (curBox && current) {
             curBox.innerHTML = `Currently routing root visitors to:<br><span style="word-break: break-all; color: var(--text);">${escapeHTML(current)}</span>`;
             curBox.style.display = 'block';
@@ -2480,8 +2499,9 @@
           const res = await fn({ domain: d, sessionId: getSessionId(), target });
           if (window._apexDomain !== d) return;
           const saved = (res.data && res.data.apexTarget) || target;
+          const savedDisp = window._apexDisplay || d;
           closeApexScreen();
-          showCustomModal({ title: "Saved", message: `Visitors to <strong>${escapeHTML(d)}</strong> will now land on:<br><span style="word-break: break-all;">${escapeHTML(saved)}</span>` });
+          showCustomModal({ title: "Saved", message: `Visitors to <strong>${escapeHTML(savedDisp)}</strong> will now land on:<br><span style="word-break: break-all;">${escapeHTML(saved)}</span>` });
           try { await loadUserDomains(); } catch (e) {}
         } catch (e) {
           if (window._apexDomain !== d) return;
@@ -2496,7 +2516,7 @@
         if (!d || !getSessionId()) return;
         const ok = await showCustomModal({
           title: "Remove APEX routing?",
-          message: `Visitors to <strong>${escapeHTML(d)}</strong> will land on INOCULENS Tunnel again.`,
+          message: `Visitors to <strong>${escapeHTML(window._apexDisplay || d)}</strong> will land on INOCULENS Tunnel again.`,
           showCancel: true, danger: true, confirmText: "Remove", cancelText: "Keep"
         });
         if (!ok || window._apexDomain !== d) return;
