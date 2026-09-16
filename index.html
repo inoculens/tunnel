@@ -360,7 +360,6 @@
           <button class="modal-btn modal-btn-ok" id="addDomainProceedBtn" onclick="proceedToAddDomain()"
             style="height: 48px; width: 80px;">Next</button>
         </div>
-        <div id="apexHint" style="display: none; margin-bottom: 16px; padding: 10px 14px; background: rgba(245,166,35,0.12); border: 1px solid rgba(245,166,35,0.4); border-radius: 8px; color: #f5a623; font-size: 0.82rem; line-height: 1.5;"></div>
       </div>
 
       <div id="addDomainStep2" style="display: none;">
@@ -406,6 +405,43 @@
 
         <!-- Per-field verification buttons -->
         <div style="margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px;">
+          <!-- Apex redirect (shown ONLY for apex->www flow; hidden for plain subdomains) -->
+          <div id="apexRedirectCard"
+            style="display: none; padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); flex-direction: column;">
+            <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Apex Redirect</label>
+            <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 8px;">Makes <span id="apexDomainName" style="font-family: monospace; color: var(--text);">example.com</span> forward to your www links (path-preserving). Add these records at your apex (@).</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">A record @ (apex):</div>
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+              <div id="apexAValue"
+                style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">65.21.184.101</div>
+              <button class="copy-btn" onclick="copyTextFromElement('apexAValue')" title="Copy A"
+                style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+            </div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">AAAA record @ (apex, IPv6):</div>
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+              <div id="apexAaaaValue"
+                style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">2a01:4f9:c012:a304::1</div>
+              <button class="copy-btn" onclick="copyTextFromElement('apexAaaaValue')" title="Copy AAAA"
+                style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">Use DNS-only (grey cloud OFF). Keep only these records at @. HTTPS activates a few minutes after DNS points here.</div>
+            <div style="display: flex; align-items: center; justify-content: flex-start; gap: 8px;">
+              <button id="verifyApexBtn" class="btn-verify" onclick="verifyApexOnly()">Verify Apex</button>
+              <span id="apexStatus" class="domain-status status-pending"
+                style="font-size: 0.7rem; font-weight: 600;">PENDING</span>
+            </div>
+          </div>
+
           <div
             style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">
             <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">CNAME Record (Routing)</label>
@@ -474,43 +510,6 @@
             <div style="display: flex; align-items: center; justify-content: flex-start; gap: 8px;">
               <button id="verifyTxtBtn" class="btn-verify" onclick="verifyTxtOnly()">Verify TXT</button>
               <span id="txtStatus" class="domain-status status-pending"
-                style="font-size: 0.7rem; font-weight: 600;">PENDING</span>
-            </div>
-          </div>
-
-          <!-- Apex redirect (shown ONLY for apex->www flow; hidden for plain subdomains) -->
-          <div id="apexRedirectCard"
-            style="display: none; padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); flex-direction: column;">
-            <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Apex Redirect (optional, free)</label>
-            <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 8px;">Makes <span id="apexDomainName" style="font-family: monospace; color: var(--text);">example.com</span> forward to your www links (path-preserving). Payment only needs CNAME + TXT above — this can be finished later.</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">A record @ (apex):</div>
-            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-              <div id="apexAValue"
-                style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">65.21.184.101</div>
-              <button class="copy-btn" onclick="copyTextFromElement('apexAValue')" title="Copy A"
-                style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-              </button>
-            </div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">AAAA record @ (apex, IPv6):</div>
-            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-              <div id="apexAaaaValue"
-                style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">2a01:4f9:c012:a304::1</div>
-              <button class="copy-btn" onclick="copyTextFromElement('apexAaaaValue')" title="Copy AAAA"
-                style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-              </button>
-            </div>
-            <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">Use DNS-only (grey cloud OFF). Keep only these records at @. HTTPS activates a few minutes after DNS points here.</div>
-            <div style="display: flex; align-items: center; justify-content: flex-start; gap: 8px;">
-              <button id="verifyApexBtn" class="btn-verify" onclick="verifyApexOnly()">Verify Apex</button>
-              <span id="apexStatus" class="domain-status status-pending"
                 style="font-size: 0.7rem; font-weight: 600;">PENDING</span>
             </div>
           </div>

@@ -1163,7 +1163,8 @@ const actions = {
     if (reserved.has(host) || (apexSource && reserved.has(apexSource))) return fail(400, "invalid-argument", "This domain is reserved for INOCULENS infrastructure.");
     // NOTE: former authoritative apex block removed — apex inputs normalize to
     // www above and follow the standard www flow (CNAME+TXT gating, payment).
-    // The apex A/AAAA redirect check is advisory only (see verifyApexRedirect).
+    // The apex A/AAAA redirect is additionally required before payment
+    // (enforced client-side via verifyApexRedirect + Continue gating).
     if (!(await getSession(s, p.sessionId))) {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
@@ -1227,8 +1228,9 @@ const actions = {
     return ok(await domainInfo(doc, p.sessionId));
   },
 
-  // Advisory apex redirect check (never blocks payment, never writes).
+  // Apex redirect check (live DNS read, never writes).
   // Verifies the apex A/AAAA point at the free redirect edge for www docs.
+  // Required before payment in apex flows (client-side Continue gating).
   async verifyApexRedirect(s, p, event) {
     const ip = clientIp(event);
     if (!(await checkRate(s, "apex-check", ip, 20))) {
@@ -1321,6 +1323,23 @@ const actions = {
         checks: { cname: !!live.cname, txt: !!live.txt, routable: live.routable ?? null },
         status: doc.status,
       });
+    }
+    // Apex flows must also prove the redirect before ownership moves — same
+    // rule as payment gating in the first-time flow. Plain subdomains skip.
+    if (doc.isApexFlow === true) {
+      const claimApex = (typeof doc.apexSource === "string" && doc.apexSource) || apexForWww(doc.domain);
+      if (claimApex) {
+        const ar = await verifyApexRedirectDns(claimApex).catch(() => null);
+        const apexOk = !!ar && ar.aValid === true && ar.aaaaValid === true;
+        if (!apexOk) {
+          return ok({
+            success: false,
+            isVerified: false,
+            checks: { cname: true, txt: true, apex: false, routable: live.routable ?? null },
+            status: doc.status,
+          });
+        }
+      }
     }
     // Transfer ownership.
     const fromSid = doc.sessionId;

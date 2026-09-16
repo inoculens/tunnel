@@ -995,8 +995,6 @@
         // Reset inputs
         const input = document.getElementById('newDomainInput');
         if (input) input.value = '';
-        const apexHint = document.getElementById('apexHint');
-        if (apexHint) apexHint.style.display = 'none';
         const paymentInst = document.getElementById('paymentInstructions');
         if (paymentInst) paymentInst.style.display = 'none';
         // Reset apex-only branch state (plain flow never sets it).
@@ -1323,25 +1321,9 @@
         if (parts.length === 3 && APEX_DOUBLE_SUFFIX.has(parts.slice(1).join('.'))) return true;
         return false;
       }
-      function apexHintHTML(d) {
-        return `ℹ️ <strong>${escapeHTML(d)}</strong> is a naked (apex) domain — short links will live on <strong>www.${escapeHTML(d)}</strong> (same $10/yr covers it), and the apex will forward there free (path-preserving, e.g. ${escapeHTML(d)}/abc → www.${escapeHTML(d)}/abc).`;
-      }
-      function refreshApexHint() {
-        const input = document.getElementById('newDomainInput');
-        const hint = document.getElementById('apexHint');
-        if (!input || !hint) return false;
-        const v = input.value.trim().replace(/^https?:\/\//, '').split('/')[0];
-        if (v && isProbablyApex(v)) {
-          hint.innerHTML = apexHintHTML(v);
-          hint.style.display = 'block';
-          return true;
-        }
-        hint.style.display = 'none';
-        return false;
-      }
-      // NOTE: no live 'input' listener here on purpose — partial input like
-      // "s." looks apex-like until the user finishes typing, so the hint
-      // appears only after Next is pressed (proceedToAddDomain validates).
+      // NOTE: no live apex hint on purpose — apex inputs silently
+      // canonicalize to www in proceedToAddDomain; the verification step
+      // shows the records. Nothing to warn about.
       async function proceedToAddDomain() {
         const input = document.getElementById('newDomainInput').value.trim();
         const btn = document.getElementById('addDomainProceedBtn');
@@ -1359,7 +1341,6 @@
             window._apexFlow = true;
             window._apexName = rawDomain;
             pendingDomain = canonical;
-            refreshApexHint();
           } else {
             pendingDomain = rawDomain;
           }
@@ -1509,13 +1490,30 @@
         const cname = (data.instructions && data.instructions.cnameTarget) || 'customers.inoculens.com';
         const claimCnameName = String(pendingDomain || '');
         const claimTxtHost = `verification.${String(pendingDomain || '')}`;
+        // Apex-only branch: claimants who typed an apex prove the redirect too,
+        // mirroring the verification step order (Apex -> CNAME -> TXT).
+        // Plain subdomain claims render exactly as before.
+        const claimApexFlow = (data && data.isApexFlow === true) || window._apexFlow === true;
+        const claimApex = (data && data.apex) || window._apexName || null;
+        const claimAi = (data && data.apexInstructions) || {};
+        const claimA = claimAi.a || APEX_REDIRECT_IPV4;
+        const claimAaaa = claimAi.aaaa || APEX_REDIRECT_IPV6;
         const copySvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
         const copyBtnStyle = 'background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 30px; height: 30px;';
         const copyRow = (id, value) => `<div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;"><div id="${id}" style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${escapeHTML(value)}</div><button class="copy-btn" onclick="copyTextFromElement('${id}')" title="Copy" style="${copyBtnStyle}">${copySvg}</button></div>`;
+        const apexCard = (claimApexFlow && claimApex)
+          ? `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
+          + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Apex Redirect</label>`
+          + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px;">Makes <strong>${escapeHTML(claimApex)}</strong> forward to your www links. Add at your apex (@), DNS-only:</div>`
+          + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">A record @:</div>${copyRow('claimApexA', claimA)}`
+          + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">AAAA record @:</div>${copyRow('claimApexAaaa', claimAaaa)}`
+          + `</div>`
+          : '';
         showCustomModal({
           title: "Domain held by another session",
           message: `This name is attached to a different session. To reclaim it (plus its links + stats), prove DNS control:`
             + `<div style="margin: 16px 0; display: flex; flex-direction: column; gap: 8px; text-align: left;">`
+            + apexCard
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
             + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">CNAME Record (Routing)</label>`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Record name:</div>${copyRow('claimCnameName', claimCnameName)}`
@@ -1548,7 +1546,10 @@
             await fetchAndRenderSession(getSessionId());
             showCustomModal({ title: "Reclaimed", message: `Domain <strong>${escapeHTML(pendingDomain)}</strong> + its links moved here.` });
           } else {
-            showCustomModal({ title: "Not yet", message: "DNS proof not found yet (CNAME + TXT). Wait for propagation and try Verify Claim again." });
+            const needApex = res.data && res.data.checks && res.data.checks.apex === false;
+            showCustomModal({ title: "Not yet", message: needApex
+              ? "DNS proof not found yet (Apex redirect + CNAME + TXT). Wait for propagation and try Verify Claim again."
+              : "DNS proof not found yet (CNAME + TXT). Wait for propagation and try Verify Claim again." });
           }
         } catch (e) {
           closeLoadingModal();
@@ -1567,7 +1568,7 @@
       let currentDomain = null;
       let currentSessionId = null;
 
-      let verificationState = { cname: null, txt: null }; // Track per-field verification state
+      let verificationState = { cname: null, txt: null, apex: null }; // Track per-field verification state
       let paymentScreenToken = 0; // Drops late payment-screen paints after a domain switch
 
       function setVerificationUI(domainDoc) {
@@ -1621,9 +1622,10 @@
           }
         }
 
-        // Apex->www branch (additive, advisory-only): show the apex redirect
-        // card only when this flow started from an apex input. Plain subdomain
-        // flows keep it hidden and behave exactly as before.
+        // Apex->www branch (additive): show the apex redirect card only when
+        // this flow started from an apex input. Plain subdomain flows keep it
+        // hidden and behave exactly as before. In apex flows the redirect
+        // gates payment together with CNAME + TXT.
         const apexFlow = domainDoc.isApexFlow === true || window._apexFlow === true;
         const apexHost = domainDoc.apex || (apexFlow ? (window._apexName || null) : null);
         if (domainDoc.isApexFlow === true) window._apexFlow = true;
@@ -1652,7 +1654,10 @@
           cname: dns.cnameValid || false,
           txt: dns.txtVerified || false,
           // false = definitively unroutable (no edge address); null = ok/unknown.
-          routable: (dns.routable === false) ? false : null
+          routable: (dns.routable === false) ? false : null,
+          // Apex redirect has no server-side sticky state: every fresh
+          // verification context starts unchecked (badge shows Pending).
+          apex: null
         };
 
         // Initialize button labels
@@ -1845,13 +1850,16 @@
           // a domain with no usable edge address cannot serve links, so it
           // must not take payment. SSL provisions automatically via Cloudflare
           // SaaS HTTP validation after the CNAME is live — it must NOT block
-          // payment (takes minutes in background).
+          // payment (takes minutes in background). Apex flows additionally
+          // require the apex redirect check: the user typed an apex because
+          // they want apex links, so payment waits for it too.
           const isPermanentlyVerified = window.domainIsVerified === true;
           // Coverage gates activity too: a stale 'active' flag with lapsed
           // coverage must behave as expired (renewable), never as done.
           const coverageOk = !window.domainCoverage || window.domainCoverage.lifetime === true || window.domainCoverage.valid === true;
           const isDomainActive = window.domainIsActive === true && coverageOk;
-          const readyForPayment = ((cnameOk && txtOk) || isPermanentlyVerified) && routableOk;
+          const apexOk = window._apexFlow !== true || verificationState.apex === true;
+          const readyForPayment = ((cnameOk && txtOk) || isPermanentlyVerified) && routableOk && apexOk;
           const allChecksPass = readyForPayment;
 
           if (isDomainActive) {
@@ -2010,13 +2018,15 @@
         }
       }
 
-      // Apex redirect badge (advisory only — never gates payment).
+      // Apex redirect badge (required in apex flows — gates payment;
+      // plain subdomain flows never show the card and ignore this state).
       // null = not yet checked (Pending), true = redirect live (Verified),
       // false = records missing/mismatched (Action needed).
       function updateApexStatusUI(ok) {
+        verificationState.apex = (ok === true) ? true : (ok === false ? false : null);
         const statusEl = document.getElementById('apexStatus');
         const btnEl = document.getElementById('verifyApexBtn');
-        if (!statusEl) return;
+        if (!statusEl) { updateContinueButton(); return; }
         if (ok === true) {
           statusEl.className = 'domain-status status-active';
           statusEl.textContent = 'Verified';
@@ -2030,6 +2040,7 @@
           statusEl.textContent = 'Pending';
           if (btnEl) btnEl.textContent = 'Verify Apex';
         }
+        updateContinueButton();
       }
 
       async function verifyApexOnly() {
@@ -2078,6 +2089,28 @@
 
           // Trust the backend's verification state (prioritize sticky isVerified flag)
           const isVerified = data.isVerified === true || (data.dnsVerification?.cnameValid && data.dnsVerification?.txtVerified);
+
+          // Apex flows require the redirect too (live re-check: the badge
+          // alone must not let a removed record through to payment).
+          if (isVerified && window._apexFlow === true && window._apexName) {
+            try {
+              const apexFn = functions.httpsCallable('verifyApexRedirect');
+              const apexRes = await apexFn({ domain: currentDomain, apex: window._apexName, sessionId: getSessionId() });
+              const apexOk = apexRes.data && apexRes.data.ok === true;
+              updateApexStatusUI(apexOk);
+              if (!apexOk) {
+                showToast("Apex redirect not detected yet. Point the apex A/AAAA at the redirect edge and click 'Verify Apex'.", "error");
+                updateContinueButton();
+                return;
+              }
+            } catch (apexErr) {
+              console.error("Apex re-check error:", apexErr);
+              updateApexStatusUI(false);
+              showToast("Apex redirect check failed: " + (apexErr.message || 'Unknown error') + ". Please verify the apex records.", "error");
+              updateContinueButton();
+              return;
+            }
+          }
 
           if (isVerified) {
             // SUCCESS: Check if payment is already done or domain is active.
