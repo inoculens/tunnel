@@ -23,7 +23,7 @@
  * Query-param fallback (?c=, ?h=) is permanent for SaaS Worker proxies,
  * direct function hits, and deploy-skew safety.
  */
-import { store, newClickId, clientIp, trustedRawIp, isIpLiteral, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard, buildAppTargets, shouldServeInterstitial } from "./lib/util.js";
+import { store, newClickId, truncateIp, clickClientIp, isIpLiteral, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard, buildAppTargets, shouldServeInterstitial } from "./lib/util.js";
 
 const HOME = process.env.HOME_URL || "https://tunnel.inoculens.com/";
 
@@ -189,25 +189,29 @@ export async function handler(event) {
     if (link.quarantined) {
       return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
     }
-    const rawIp = trustedRawIp(event);
+    // Attribution source is path-aware (edge stamp vs Cloudflare value —
+    // see clickClientIp): the generic trustedRawIp demonstrably yields edge
+    // egress on this rewritten path, so it must not feed click rows/buckets.
+    const rawIp = clickClientIp(event, host);
     const storeDetail = await shouldStoreClickDetail(s, host, link.code, rawIp);
-    // Full visitor address (new field; the truncated ip above stays the
+    // Full visitor address (new field; the truncated ip below stays the
     // privacy-preserving default everywhere else). Stored only when the
     // source actually resolved to an IP literal — never "unknown".
     const fullIp = isIpLiteral(rawIp) ? String(rawIp).trim() : null;
+    const truncIp = truncateIp(rawIp);
     if (storeDetail) {
       const id = newClickId();
       await s.setJSON(`${clicksPrefix(host, link.code)}${id}`, {
         id,
         timestamp: Date.now(),
-        ip: clientIp(event),
+        ip: truncIp,
         ...(fullIp ? { fullIp } : {}),
       });
     } else {
       await s.setJSON(`${clicksPrefix(host, link.code)}flood-${Date.now().toString(36)}`, {
         id: `flood-${Date.now().toString(36)}`,
         timestamp: Date.now(),
-        ip: clientIp(event),
+        ip: truncIp,
         ...(fullIp ? { fullIp } : {}),
         flood: true,
       }).catch(() => {});

@@ -477,6 +477,42 @@ export function trustedRawIp(event) {
   return firstPublicIp(lowered["x-forwarded-for"]) || "unknown";
 }
 
+// Click attribution with path-aware source selection (resolve.js only).
+// Why not trustedRawIp: on the edge-rewritten resolve path the Netlify
+// headers demonstrably carry edge-egress IPs (Frankfurt EC2 recorded for
+// real ISP/VPN visitors, 2026-09), so they are excluded here entirely.
+//   - Custom host (always SaaS-proxied): cf-connecting-ip, set by
+//     Cloudflare itself (client forgeries are overwritten before our
+//     Worker) and forwarded verbatim by tunnel-custom-host.
+//   - System host (direct): x-tunnel-client-ip, stamped at edge ingress
+//     from context.ip with overwrite semantics (client forgeries replaced).
+//   - Last resort: first public X-Forwarded-For entry.
+// Every source is validated as a routable IP literal; anything else falls
+// through to "unknown" rather than recording infrastructure addresses.
+export function clickClientIp(event, servingHost) {
+  const h = event.headers || {};
+  const lowered = {};
+  for (const [k, v] of Object.entries(h)) lowered[String(k).toLowerCase()] = v;
+  const pick = (v) => String(v || "").split(",")[0].trim();
+  const validOrEmpty = (v) => (v && isIpLiteral(v) && !isNonRoutableIp(v) ? v : "");
+  const sys = systemShortHost();
+  const isCustom = !!cleanDomain(servingHost) && cleanDomain(servingHost) !== sys;
+  if (isCustom) {
+    return (
+      validOrEmpty(pick(lowered["cf-connecting-ip"])) ||
+      validOrEmpty(pick(lowered["x-tunnel-client-ip"])) ||
+      firstPublicIp(lowered["x-forwarded-for"]) ||
+      "unknown"
+    );
+  }
+  return (
+    validOrEmpty(pick(lowered["x-tunnel-client-ip"])) ||
+    validOrEmpty(pick(lowered["cf-connecting-ip"])) ||
+    firstPublicIp(lowered["x-forwarded-for"]) ||
+    "unknown"
+  );
+}
+
 function expandIPv6Groups(ip) {
   const noSuffix = String(ip || "").trim().toLowerCase().split("/")[0];
   if (!noSuffix.includes(":")) return null;
@@ -497,19 +533,26 @@ function expandIPv6Groups(ip) {
 }
 
 export function clientIp(event) {
-  const raw = trustedRawIp(event);
-  if (raw.includes(":") && raw.includes(".")) return raw; // unexpected mix, keep
-  if (raw.includes(":")) {
+  return truncateIp(trustedRawIp(event));
+}
+
+// Truncation shared by clientIp (rate limits, admin) and click logging:
+// IPv4 → /24, IPv6 → /64. Privacy-preserving default; full addresses are
+// stored only in the dedicated click fullIp field (see resolve.js).
+export function truncateIp(raw) {
+  const r = String(raw ?? "");
+  if (r.includes(":") && r.includes(".")) return r; // unexpected mix, keep
+  if (r.includes(":")) {
     // IPv6 → /64, expanded first so compressed spellings share one bucket.
-    const groups = expandIPv6Groups(raw);
+    const groups = expandIPv6Groups(r);
     if (!groups) return "v6invalid";
     return groups.slice(0, 4).join(":") + "::/64";
   }
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(raw)) {
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(r)) {
     // IPv4 → zero last octet
-    return raw.split(".").slice(0, 3).join(".") + ".0";
+    return r.split(".").slice(0, 3).join(".") + ".0";
   }
-  return raw;
+  return r;
 }
 
 // ---------- Simple rate limiting (per IP, per minute window) ----------

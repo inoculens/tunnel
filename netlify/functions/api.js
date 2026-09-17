@@ -17,6 +17,8 @@ import {
   newToken,
   detectPlatform,
   clientIp,
+  truncateIp,
+  clickClientIp,
   trustedRawIp,
   checkRate,
   verifyDns,
@@ -893,10 +895,14 @@ const actions = {
   },
 
   // TEMPORARY diagnostic (remove after the 2026-09 IP-attribution fix is
-  // verified): echoes back how trustedRawIp resolves THIS request. Stores
-  // nothing, logs nothing. Values are truncated to /24 (IPv4) exactly like
-  // click rows so the owner can compare against their known ISP/VPN address
-  // without handling full addresses. Admin-gated like all admin* actions.
+  // verified): echoes back how click attribution resolves THIS request.
+  // Stores nothing, logs nothing. Values are truncated to /24 (IPv4) exactly
+  // like click rows so the owner can compare against their known ISP/VPN
+  // address without handling full addresses. Admin-gated like all admin*
+  // actions. NOTE: this endpoint is NOT edge-rewritten (app-host passthrough),
+  // so xTunnelClientIp here proves the stamp mechanism; click rows additionally
+  // depend on the resolve rewrite preserving it (same header road as the
+  // long-working x-tunnel-code/host headers).
   async debugIp(s, p, event) {
     await needAdmin(s, p, event);
     const h = event.headers || {};
@@ -908,17 +914,28 @@ const actions = {
     };
     const xff = String(lowered["x-forwarded-for"] || "");
     const segs = xff.split(",").map((x) => x.trim()).filter(Boolean);
+    const truncOf = (v) => {
+      try { return trunc24(v); } catch { return "?"; }
+    };
+    let clickSystem = "?";
+    let clickCustom = "?";
+    try { clickSystem = truncOf(clickClientIp(event, "s.inoculens.com")); } catch {}
+    try { clickCustom = truncOf(clickClientIp(event, "www.example.com")); } catch {}
     return ok({
       present: {
         xNf: !!lowered["x-nf-client-connection-ip"],
         clientIp: !!lowered["client-ip"],
         cfConnectingIp: !!lowered["cf-connecting-ip"],
         xBbIp: !!lowered["x-bb-ip"],
+        xTunnelClientIp: !!lowered["x-tunnel-client-ip"],
       },
       xffSegments: segs.length,
       xffFirst: trunc24(segs[0] || ""),
       xffLast: trunc24(segs[segs.length - 1] || ""),
+      xTunnelValue: trunc24(lowered["x-tunnel-client-ip"] || ""),
       chosen: trunc24(trustedRawIp(event)),
+      clickPickSystem: clickSystem,
+      clickPickCustom: clickCustom,
     });
   },
 

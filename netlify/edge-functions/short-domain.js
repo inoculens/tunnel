@@ -40,6 +40,20 @@ export default async (request, context) => {
     return;
   }
   const host = url.hostname.toLowerCase();
+  // Authoritative visitor IP, stamped at edge ingress via the documented
+  // context.ip (headers are unreliable here by Netlify's own account, so we
+  // don't read them — we write). Overwrite (never preserve): a client-sent
+  // forgery must not survive. Runs before every return below, including app
+  // passthrough, so the stamp is present on all downstream paths.
+  // NOTE: on SaaS-proxied traffic the edge peer is Cloudflare egress, so the
+  // resolver prefers the Worker-forwarded CF-Connecting-IP for custom hosts
+  // and uses this stamp for direct (system-host) traffic — see clickClientIp.
+  try {
+    const edgeIp = context && typeof context.ip === "string" ? context.ip.trim() : "";
+    if (edgeIp) request.headers.set("x-tunnel-client-ip", edgeIp);
+  } catch {
+    // Local dev / runtimes without context.ip: downstream falls back.
+  }
   // App host serves the site normally.
   if (APP_HOSTS.has(host)) return;
   // SaaS infrastructure hosts should never serve short links directly.
