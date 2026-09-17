@@ -892,6 +892,36 @@ const actions = {
     return fail(status, code, `Test mail failed: ${reason}. Check SMTP_HOST/PORT/user/password in Netlify env (redeploy after changing them) and the function logs.`);
   },
 
+  // TEMPORARY diagnostic (remove after the 2026-09 IP-attribution fix is
+  // verified): echoes back how trustedRawIp resolves THIS request. Stores
+  // nothing, logs nothing. Values are truncated to /24 (IPv4) exactly like
+  // click rows so the owner can compare against their known ISP/VPN address
+  // without handling full addresses. Admin-gated like all admin* actions.
+  async debugIp(s, p, event) {
+    await needAdmin(s, p, event);
+    const h = event.headers || {};
+    const lowered = {};
+    for (const [k, v] of Object.entries(h)) lowered[String(k).toLowerCase()] = v;
+    const trunc24 = (v) => {
+      const m = String(v || "").trim().match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
+      return m ? `${m[1]}.${m[2]}.${m[3]}.0/24` : (String(v || "").includes(":") ? "ipv6-present" : "absent");
+    };
+    const xff = String(lowered["x-forwarded-for"] || "");
+    const segs = xff.split(",").map((x) => x.trim()).filter(Boolean);
+    return ok({
+      present: {
+        xNf: !!lowered["x-nf-client-connection-ip"],
+        clientIp: !!lowered["client-ip"],
+        cfConnectingIp: !!lowered["cf-connecting-ip"],
+        xBbIp: !!lowered["x-bb-ip"],
+      },
+      xffSegments: segs.length,
+      xffFirst: trunc24(segs[0] || ""),
+      xffLast: trunc24(segs[segs.length - 1] || ""),
+      chosen: trunc24(trustedRawIp(event)),
+    });
+  },
+
   async getLinksBySession(s, p) {
     await needSession(s, p.sessionId);
     const links = await listLinksOfSession(s, p.sessionId);

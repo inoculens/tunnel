@@ -23,7 +23,7 @@
  * Query-param fallback (?c=, ?h=) is permanent for SaaS Worker proxies,
  * direct function hits, and deploy-skew safety.
  */
-import { store, newClickId, clientIp, trustedRawIp, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard, buildAppTargets, shouldServeInterstitial } from "./lib/util.js";
+import { store, newClickId, clientIp, trustedRawIp, isIpLiteral, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard, buildAppTargets, shouldServeInterstitial } from "./lib/util.js";
 
 const HOME = process.env.HOME_URL || "https://tunnel.inoculens.com/";
 
@@ -191,18 +191,24 @@ export async function handler(event) {
     }
     const rawIp = trustedRawIp(event);
     const storeDetail = await shouldStoreClickDetail(s, host, link.code, rawIp);
+    // Full visitor address (new field; the truncated ip above stays the
+    // privacy-preserving default everywhere else). Stored only when the
+    // source actually resolved to an IP literal — never "unknown".
+    const fullIp = isIpLiteral(rawIp) ? String(rawIp).trim() : null;
     if (storeDetail) {
       const id = newClickId();
       await s.setJSON(`${clicksPrefix(host, link.code)}${id}`, {
         id,
         timestamp: Date.now(),
         ip: clientIp(event),
+        ...(fullIp ? { fullIp } : {}),
       });
     } else {
       await s.setJSON(`${clicksPrefix(host, link.code)}flood-${Date.now().toString(36)}`, {
         id: `flood-${Date.now().toString(36)}`,
         timestamp: Date.now(),
         ip: clientIp(event),
+        ...(fullIp ? { fullIp } : {}),
         flood: true,
       }).catch(() => {});
     }

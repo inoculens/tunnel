@@ -5579,7 +5579,7 @@
             <div class="click-entry">
               <div>
                 <div class="click-time font-bold">${escapeHTML(dateStr)}</div>
-                <div class="click-ip">${escapeHTML(click.ip)}</div>
+                <div class="click-ip">${escapeHTML(click.fullIp || click.ip)}</div>
               </div>
               <button class="click-delete" onclick="removeClickEntry(${escapeJS(item.code)}, ${escapeJS(click.id)}, ${escapeJS(itemDomain(item))})" title="Delete entry">🗑️</button>
             </div>

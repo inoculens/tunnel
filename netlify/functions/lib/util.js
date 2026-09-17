@@ -421,28 +421,60 @@ export function shouldServeInterstitial(ua, targets) {
   return false;
 }
 
-// ---------- Client IP (trusted first, truncated for privacy) ----------
-// Trust order: Netlify infra headers first (not client-spoofable),
-// X-Forwarded-For LAST (client-controlled). For XFF fallback take the LAST
-// entry (closest to LB), not the first (attacker-controlled).
+// ---------- Client IP (visitor attribution for click analytics) ----------
+// Trust order (evidence-based):
+// 1. x-nf-client-connection-ip — the ONLY header Netlify commits to
+//    maintaining (staff-confirmed). Stamped by Netlify's edge.
+// 2. cf-connecting-ip — set authoritatively by Cloudflare on SaaS traffic
+//    (our tunnel-custom-host Worker forwards it verbatim; direct hits only
+//    carry it if the client forged it, which pollutes just the forger's
+//    own rows/buckets).
+// Dropped (all previously trusted here): client-ip (removed by Netlify in
+// 2022; since observed carrying 127.0.0.1 / CGNAT garbage) and x-bb-ip
+// (internal implementation detail slated for removal per Netlify staff).
+// X-Forwarded-For fallback takes the FIRST public entry, never the last:
+// the last hop is our own infrastructure (proxies append downstream),
+// while the first entry is the original client as seen at ingress.
+
+export function isIpLiteral(v) {
+  const s = String(v || "").trim();
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(s)) return true;
+  if (s.includes(":")) return true;
+  return false;
+}
+
+function isNonRoutableIp(v) {
+  const s = String(v || "").trim().toLowerCase();
+  if (s === "unknown" || s === "") return true;
+  if (s === "127.0.0.1" || s === "::1") return true;
+  if (s.startsWith("127.") || s === "0.0.0.0" || s === "::") return true;
+  if (/^10\./.test(s) || /^192\.168\./.test(s) || /^169\.254\./.test(s)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(s)) return true;
+  if (s.startsWith("fe80:") || s.startsWith("fc00:") || s.startsWith("fd")) {
+    if (s.includes(":")) return true;
+  }
+  return false;
+}
+
+function firstPublicIp(v) {
+  const parts = String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
+  for (const p of parts) {
+    if (!isIpLiteral(p) || isNonRoutableIp(p)) continue;
+    return p;
+  }
+  return "";
+}
 
 export function trustedRawIp(event) {
   const h = event.headers || {};
   const lowered = {};
   for (const [k, v] of Object.entries(h)) lowered[String(k).toLowerCase()] = v;
   const pick = (v) => String(v || "").split(",")[0].trim();
-  const pickLast = (v) => {
-    const parts = String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
-    return parts.length ? parts[parts.length - 1] : "";
-  };
-  return (
-    pick(lowered["x-nf-client-connection-ip"]) ||
-    pick(lowered["client-ip"]) ||
-    pick(lowered["cf-connecting-ip"]) ||
-    pick(lowered["x-bb-ip"]) ||
-    pickLast(lowered["x-forwarded-for"]) ||
-    "unknown"
-  );
+  const nf = pick(lowered["x-nf-client-connection-ip"]);
+  if (nf && isIpLiteral(nf) && !isNonRoutableIp(nf)) return nf;
+  const cf = pick(lowered["cf-connecting-ip"]);
+  if (cf && isIpLiteral(cf) && !isNonRoutableIp(cf)) return cf;
+  return firstPublicIp(lowered["x-forwarded-for"]) || "unknown";
 }
 
 function expandIPv6Groups(ip) {
