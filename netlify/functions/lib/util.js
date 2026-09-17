@@ -497,11 +497,18 @@ export function clickClientIp(event, servingHost) {
   const validOrEmpty = (v) => (v && isIpLiteral(v) && !isNonRoutableIp(v) ? v : "");
   const sys = systemShortHost();
   const isCustom = !!cleanDomain(servingHost) && cleanDomain(servingHost) !== sys;
+  // Custom hosts are always SaaS-proxied. Proven in production (2026-09):
+  // CF-Connecting-IP does NOT arrive (stripped or rewritten to egress in
+  // transit) while the edge stamp IS Cloudflare egress here — so neither may
+  // win; both would record infrastructure as the visitor. Order:
+  // X-Tunnel-Forwarded (custom name set by our Worker, untouched in transit)
+  // → first-public XFF → CF-Connecting-IP (kept as fallback: harmless when
+  // absent, catches the world where it arrives genuine) → honest "unknown".
   if (isCustom) {
     return (
-      validOrEmpty(pick(lowered["cf-connecting-ip"])) ||
-      validOrEmpty(pick(lowered["x-tunnel-client-ip"])) ||
+      validOrEmpty(pick(lowered["x-tunnel-forwarded"])) ||
       firstPublicIp(lowered["x-forwarded-for"]) ||
+      validOrEmpty(pick(lowered["cf-connecting-ip"])) ||
       "unknown"
     );
   }
