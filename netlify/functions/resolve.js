@@ -153,54 +153,6 @@ export async function handler(event) {
     return { statusCode: 302, headers: { Location: HOME, "Cache-Control": "no-store" } };
   }
 
-  // TEMPORARY diagnostic (REMOVE AFTER the 2026-09 SaaS attribution fix is
-  // verified): echoes resolve-ingress attribution instead of serving.
-  // Trigger: ?dbgip=1 (direct hits) OR the reserved path __dbgip_tunnel
-  // (survives every rewrite, since slugs travel by path). Records nothing,
-  // counts nothing, works on unknown codes too. All values truncated to /24
-  // (IPv4) so the owner can compare against their known ISP/VPN address
-  // without handling full addresses.
-  if ((qs.dbgip || "").toString().trim() === "1" || code === "__dbgip_tunnel") {
-    const trunc24 = (v) => {
-      const m = String(v || "").trim().match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
-      return m ? `${m[1]}.${m[2]}.${m[3]}.0/24` : (String(v || "").includes(":") ? "ipv6-present" : "absent");
-    };
-    const pick1 = (v) => String(v || "").split(",")[0].trim();
-    const xffAll = String(lowered["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean);
-    let winner = "?";
-    try { winner = trunc24(clickClientIp(event, host)); } catch {}
-    const body = JSON.stringify({
-      via: (qs.dbgip || "").toString().trim() === "1" ? "query" : "path",
-      host,
-      isCustom: !!host && host !== systemShortHost(),
-      present: {
-        xTunnelHost: !!lowered["x-tunnel-host"],
-        qsH: !!qs.h,
-        xForwardedHost: !!lowered["x-forwarded-host"],
-        cfConnectingIp: !!lowered["cf-connecting-ip"],
-        xTunnelForwarded: !!lowered["x-tunnel-forwarded"],
-        xTunnelClientIp: !!lowered["x-tunnel-client-ip"],
-        xNf: !!lowered["x-nf-client-connection-ip"],
-      },
-      xffSegments: xffAll.length,
-      xffOrdered: xffAll.map(trunc24),
-      cfValue: trunc24(pick1(lowered["cf-connecting-ip"])),
-      xTunnelForwardedValue: trunc24(pick1(lowered["x-tunnel-forwarded"])),
-      xTunnelClientIpValue: trunc24(pick1(lowered["x-tunnel-client-ip"])),
-      xNfValue: trunc24(pick1(lowered["x-nf-client-connection-ip"])),
-      winner,
-    });
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": "no-store",
-        "X-Robots-Tag": "noindex",
-      },
-      body,
-    };
-  }
-
   // A link clicked seconds after creation can still be missing from the
   // edge cache — retry briefly before calling it unknown (same read-your-
   // writes gap as the app's session sync). Budget stays sub-second so
