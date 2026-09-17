@@ -33,6 +33,7 @@
   <meta name="keywords"
     content="URL shortener, premium link shortener, custom domain, deep link generator, YouTube deep links, Instagram deep links, link analytics, shorten links, branded links" />
   <meta name="author" content="INOCULENS" />
+  <meta name="application-name" content="INOCULENS Tunnel" />
   <meta name="theme-color" content="#0f0f0f" />
   <link rel="stylesheet" href="/assets/common.css?v=20260915">
 
@@ -64,10 +65,11 @@
   <!-- Canonical URL -->
   <link rel="canonical" href="https://tunnel.inoculens.com/" />
 
-  <!-- Favicon -->
+  <!-- Favicon (single-brand icon set, stable URLs for Google Search) -->
   <link rel="icon" type="image/x-icon" href="/visuals/favicon.ico" />
   <link rel="icon" type="image/png" sizes="32x32" href="/visuals/favicon-32x32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="/visuals/favicon-16x16.png" />
+  <link rel="icon" type="image/png" sizes="180x180" href="/visuals/logo-touch-180.png" />
   <link rel="apple-touch-icon" href="/visuals/logo-touch-180.png" />
   <!-- First-paint hint: the header logo is above the fold on every load -->
   <link rel="preload" as="image" href="/visuals/logo-header-64.png" fetchpriority="high" />
@@ -83,42 +85,53 @@
   <!-- CACHE BUST: bump ?v= on a bundle below whenever THAT file changes (per-file versions are fine) -->
   <link rel="stylesheet" href="/assets/app.css?v=20260914">
 
-  <!-- Structured Data (JSON-LD) for SEO — single WebApplication entity -->
+  <!-- Structured Data (JSON-LD) for SEO — WebSite (site name) + WebApplication (app) -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
-    "@type": "WebApplication",
-    "@id": "https://tunnel.inoculens.com/#app",
-    "name": "INOCULENS Tunnel",
-    "url": "https://tunnel.inoculens.com",
-    "description": "Free URL shortener with custom domain support and deep links for YouTube, Instagram, TikTok, Facebook, X and LinkedIn, plus detailed real-time link analytics. No account needed.",
-    "inLanguage": "en",
-    "isAccessibleForFree": true,
-    "applicationCategory": "UtilitiesApplication",
-    "operatingSystem": "Web Browser",
-    "browserRequirements": "Requires JavaScript",
-    "offers": {
-      "@type": "Offer",
-      "price": "0",
-      "priceCurrency": "USD"
-    },
-    "creator": {
-      "@type": "Organization",
-      "name": "INOCULENS",
-      "url": "https://inoculens.com"
-    },
-    "featureList": [
-      "Free URL shortening with custom slugs",
-      "Custom domain support with automatic SSL",
-      "Deep links for YouTube",
-      "Deep links for Instagram",
-      "Deep links for TikTok",
-      "Deep links for Facebook",
-      "Deep links for X (Twitter)",
-      "Deep links for LinkedIn",
-      "Real-time click analytics",
-      "Click tracking and history",
-      "No account required, session-based"
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://tunnel.inoculens.com/#website",
+        "name": "INOCULENS Tunnel",
+        "alternateName": ["tunnel.inoculens.com", "INOCULENS"],
+        "url": "https://tunnel.inoculens.com/"
+      },
+      {
+        "@type": "WebApplication",
+        "@id": "https://tunnel.inoculens.com/#app",
+        "name": "INOCULENS Tunnel",
+        "url": "https://tunnel.inoculens.com",
+        "description": "Free URL shortener with custom domain support and deep links for YouTube, Instagram, TikTok, Facebook, X and LinkedIn, plus detailed real-time link analytics. No account needed.",
+        "inLanguage": "en",
+        "isAccessibleForFree": true,
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "Web Browser",
+        "browserRequirements": "Requires JavaScript",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "creator": {
+          "@type": "Organization",
+          "name": "INOCULENS",
+          "url": "https://inoculens.com"
+        },
+        "featureList": [
+          "Free URL shortening with custom slugs",
+          "Custom domain support with automatic SSL",
+          "Deep links for YouTube",
+          "Deep links for Instagram",
+          "Deep links for TikTok",
+          "Deep links for Facebook",
+          "Deep links for X (Twitter)",
+          "Deep links for LinkedIn",
+          "Real-time click analytics",
+          "Click tracking and history",
+          "No account required, session-based"
+        ]
+      }
     ]
   }
   </script>
