@@ -2050,6 +2050,7 @@ const actions = {
         success: true,
         converted: true,
         isVerified: true,
+        linksMoved: movedCount,
         ...(await domainInfo(dest, p.sessionId)),
         coverageExpiresAt: dest.coverageExpiresAt || null,
         coverageLifetime: dest.coverageLifetime === true,
@@ -2081,6 +2082,9 @@ const actions = {
     }
     await s.setJSON(`domain/${doc.domain}`, doc);
     // Move links (history + stats follow: clicks/ keyed by host/code).
+    // The count is reported so the UI can say exactly what moved — a silent
+    // zero-move success is indistinguishable from a broken transfer otherwise.
+    let movedLinks = 0;
     try {
       const blobs = await listAll(s, "link/");
       const docs = await mapWithConcurrency(blobs, 12, (b) =>
@@ -2099,6 +2103,7 @@ const actions = {
         }
         return s.setJSON(linkKey(l.domain || doc.domain, l.code), l);
       });
+      movedLinks = mine.length;
       await bumpSessionLinkCount(s, p.sessionId, mine.length);
       if (fromSid) await bumpSessionLinkCount(s, fromSid, -mine.length);
     } catch (e) {
@@ -2107,6 +2112,7 @@ const actions = {
     return ok({
       success: true,
       isVerified: true,
+      linksMoved: movedLinks,
       status: doc.status,
       paymentStatus: doc.paymentStatus,
       coverageExpiresAt: doc.coverageExpiresAt || null,

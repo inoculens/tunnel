@@ -305,6 +305,39 @@
       // map actually changed (callers re-render to converge the paint).
       // Fallback docs map www canonical -> displayName (what the user typed:
       // apex stays apex, www stays www). Primaries need no mapping.
+      // Optimistic domain-list seeding: after a host-changing operation the
+      // fresh doc can lag out of listAll for seconds. Seed it locally so
+      // display mapping, dropdowns, and shortening target the live doc
+      // immediately; the authoritative reload right after converges any
+      // difference. Push-if-absent plus mapping-only updates: never overwrite
+      // a fuller stored doc with slim data.
+      function upsertUserDomain(info) {
+        try {
+          if (!info || !info.domain) return;
+          const key = String(info.domain).toLowerCase();
+          const list = userCustomDomains || [];
+          const idx = list.findIndex((d) => d && String(d.domain || '').toLowerCase() === key);
+          if (idx < 0) {
+            list.push({
+              domain: info.domain,
+              displayName: info.displayName || info.domain,
+              isApexFlow: info.isApexFlow === true,
+              apex: info.apex || null,
+              status: info.status || null,
+              paymentStatus: info.paymentStatus || null,
+              isVerified: info.isVerified === true,
+              coverageValid: info.coverageValid === true,
+            });
+            userCustomDomains = list;
+            return;
+          }
+          const prev = list[idx] || {};
+          list[idx] = { ...prev };
+          if (typeof info.displayName === 'string' && info.displayName) list[idx].displayName = info.displayName;
+          if (typeof info.isApexFlow === 'boolean') list[idx].isApexFlow = info.isApexFlow;
+          if (typeof info.apex === 'string' || info.apex === null) list[idx].apex = info.apex || null;
+        } catch (e) {}
+      }
       function syncApexCacheFromDomains() {
         let next = {};
         try {
@@ -1995,9 +2028,20 @@
             window._claimFallback = false;
             window._claimCanonical = null;
             await loadUserDomains();
+            try { upsertUserDomain(res.data); } catch (e) {}
+            try { renderDomainOptions(); } catch (e) {}
             await fetchAndRenderSession(getSessionId());
             try { reconcileAfterHostChange(res.data.domain || pendingDomain); } catch (e) {}
-            showCustomModal({ title: "Reclaimed", message: `Domain <strong>${escapeHTML(displayHost(pendingDomain))}</strong> + its links moved here.` });
+            const movedN = Number(res.data.linksMoved);
+            const movedMsg = Number.isFinite(movedN)
+              ? (movedN > 0
+                ? `Domain <strong>${escapeHTML(displayHost(pendingDomain))}</strong> + ${movedN} link${movedN === 1 ? '' : 's'} moved here.`
+                : `Domain <strong>${escapeHTML(displayHost(pendingDomain))}</strong> reclaimed. No links were stored on it — nothing to move.`)
+              : `Domain <strong>${escapeHTML(displayHost(pendingDomain))}</strong> + its links moved here.`;
+            showCustomModal({ title: "Reclaimed", message: movedMsg }).then(() => {
+              // The first-step dialog must not linger behind a finished claim.
+              try { closeDomainManager(); } catch (e) {}
+            });
           } else {
             // Name redirect records only for fallback flows (backend echoes
             // isApexFlow on fallback failures); primaries keep routing text.
@@ -2708,6 +2752,8 @@
           window._fallbackFor = '';
           updateApexStatusUI(null);
           await loadUserDomains();
+          try { upsertUserDomain(data); } catch (e) {}
+          try { renderDomainOptions(); } catch (e) {}
           setVerificationUI({
             domain: data.domain || cur,
             displayName: data.displayName || data.domain || cur,
@@ -2838,6 +2884,8 @@
           if (data.isApexFlow === true) window._apexFlow = true;
           if (data.apex) window._apexName = data.apex;
           await loadUserDomains();
+          try { upsertUserDomain(data); } catch (e) {}
+          try { renderDomainOptions(); } catch (e) {}
           setVerificationUI({
             domain: data.domain || www,
             displayName: data.displayName || www,
