@@ -1717,12 +1717,19 @@
         const claimTxtHost = `verification.${String(pendingDomain || '')}`;
         // Fresh badge state per open; redirect intent (if any) for check-only use.
         window._claimChecks = { cname: null, txt: null, apex: null };
+        window._claimData = data || null;
+        window._claimCanonical = null;
+        // Intent starts ON only for the fallback-entry path (explicit literal).
+        // Never derived from main-flow _apexFlow/_apexName (stale-host risk).
+        window._claimFallback = (data && data.fallback === true) ? true : false;
         window._claimApexSource = (data && data.apex) || null;
-        // Fallback pairing on claims mirrors the add-flow: paired docs prove
-        // the apex redirect too; primaries prove routing (CNAME/ALIAS/ANAME)
-        // + TXT only. Same yellow fallback path is available via banner.
-        const claimApexFlow = (data && data.isApexFlow === true) || window._apexFlow === true;
-        const claimApex = (data && data.apex) || window._apexName || (data && data.fallback && data.fallback.apex) || null;
+        // Redirect host for this claim: the paired doc's stored host, else the
+        // claimed host itself (uniform rule: fallback on X redirects X).
+        // Main-flow window._apexFlow/_apexName are NEVER read here — they can
+        // be stale from an unrelated setup and would show the wrong host.
+        const pairedClaim = data && data.isApexFlow === true;
+        const claimApex = (data && data.apex) || String(pendingDomain || '') || null;
+        const claimApexFlow = pairedClaim || window._claimFallback === true;
         const claimAi = (data && data.apexInstructions) || (data && data.fallback) || {};
         const claimA = claimAi.a || APEX_REDIRECT_IPV4;
         const claimAaaa = claimAi.aaaa || APEX_REDIRECT_IPV6;
@@ -1732,10 +1739,15 @@
         const verifyRow = (btnId, statusId, field, label) => `<div style="display: flex; align-items: center; justify-content: flex-start; gap: 8px;">`
           + `<button id="${btnId}" class="btn-verify" onclick="verifyClaimField('${field}')">${label}</button>`
           + `<span id="${statusId}" class="domain-status status-pending" style="font-size: 0.7rem; font-weight: 600;">PENDING</span></div>`;
-        const apexCard = (claimApexFlow && claimApex)
-          ? `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
+        // Redirect card is always rendered (hidden until needed) so the
+        // fallback toggle never rebuilds the modal: paired docs show it
+        // straight away, unpaired docs reveal it via the yellow banner.
+        const apexCard = (claimApex && String(claimApex).indexOf('.') !== -1)
+          ? `<div id="claimBackLink" style="display: none; text-align: left; margin-bottom: 4px;">`
+          + `<button type="button" onclick="claimToggleFallback(false)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();claimToggleFallback(false);}" style="background:transparent;border:none;color:var(--text-muted);font-family:'DM Sans',sans-serif;font-size:0.75rem;font-weight:600;cursor:pointer;padding:2px 4px;text-decoration:underline;text-underline-offset:2px;" title="Back to the recommended DNS setup">← Use recommended DNS instead</button></div>`
+          + `<div id="claimApexWrap" style="display: none; padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); flex-direction: column;">`
           + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Redirect</label>`
-          + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px;">Makes <strong>${escapeHTML(claimApex)}</strong> forward to your links (path-preserving). Add these records for that exact host (DNS-only):</div>`
+          + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px;">Makes <strong id="claimApexDomainName">${escapeHTML(claimApex)}</strong> forward to your links (path-preserving). Add these records for that exact host (DNS-only):</div>`
           + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">A record:</div>${copyRow('claimApexA', claimA)}`
           + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">AAAA record:</div>${copyRow('claimApexAaaa', claimAaaa)}`
           + verifyRow('claimVerifyApexBtn', 'claimApexStatus', 'apex', 'Verify redirect')
@@ -1743,6 +1755,7 @@
           : '';
         showCustomModal({
           title: "Domain held by another session",
+          wide: true,
           message: `This name is attached to a different session. To reclaim it (plus its links + stats), prove DNS control:`
             + `<div style="margin: 16px 0; display: flex; flex-direction: column; gap: 8px; text-align: left;">`
             + apexCard
@@ -1753,6 +1766,7 @@
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to:</div>${copyRow('claimCnameTarget', cname)}`
             + verifyRow('claimVerifyRoutingBtn', 'claimRoutingStatus', 'cname', 'Verify routing')
             + `</div>`
+            + `<div id="claimFallbackBanner" style="display: none; padding: 10px 12px; background: rgba(245,166,35,0.12); border: 1px solid rgba(245,166,35,0.45); border-radius: 8px; font-size: 0.8rem; color: #fbd665; text-align: center;">⚠️ Can you not add any of the above? <u style="cursor: pointer; text-decoration: underline; text-underline-offset: 2px;" onclick="claimToggleFallback(true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();claimToggleFallback(true);}" tabindex="0" role="button" aria-label="Try the fallback">Try the fallback</u></div>`
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
             + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">TXT Record (Ownership)</label>`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>${copyRow('claimTxtHost', claimTxtHost)}`
@@ -1765,7 +1779,56 @@
           cancelText: "Cancel"
         }).then(async (ok) => {
           if (ok) verifyPendingClaim();
+          else {
+            window._claimFallback = false;
+            window._claimCanonical = null;
+          }
         });
+        paintClaimFallback();
+      }
+      // Fallback intent paint for the claim modal: banner ⇄ redirect card +
+      // toggle-back link, and the routing record-name follows the intent
+      // (claimed host, or its www canonical under fallback). TXT ownership
+      // always stays on the claimed host. A routing badge from the other mode
+      // is reset to Pending — its meaning just changed hosts.
+      function paintClaimFallback() {
+        try {
+          const data = window._claimData || {};
+          const paired = data.isApexFlow === true;
+          const intent = !paired && window._claimFallback === true;
+          const redirectHost = data.apex || String(pendingDomain || '');
+          const banner = document.getElementById('claimFallbackBanner');
+          const wrap = document.getElementById('claimApexWrap');
+          const back = document.getElementById('claimBackLink');
+          const recName = document.getElementById('claimCnameName');
+          const apexName = document.getElementById('claimApexDomainName');
+          if (banner) banner.style.display = (!paired && !intent) ? 'block' : 'none';
+          if (wrap) wrap.style.display = (paired || intent) ? 'flex' : 'none';
+          if (back) back.style.display = intent ? 'block' : 'none';
+          if (recName) recName.textContent = (intent && window._claimCanonical) || String(pendingDomain || '');
+          if (apexName && redirectHost) apexName.textContent = redirectHost;
+          if (intent) claimStatusUI('cname', null);
+        } catch (e) {}
+      }
+      function claimToggleFallback(on) {
+        if (on) {
+          const h = String(pendingDomain || '').toLowerCase();
+          if (!h || h.indexOf('.') === -1) {
+            showToast('Fallback pairing is not available for that address.', 'error');
+            return;
+          }
+          const w = `www.${h}`;
+          if (w.length > 253) {
+            showToast('Fallback pairing is not available for that address.', 'error');
+            return;
+          }
+          window._claimCanonical = w;
+          window._claimFallback = true;
+        } else {
+          window._claimFallback = false;
+          window._claimCanonical = null;
+        }
+        paintClaimFallback();
       }
       // Claim badge painter: identical lifecycle to the main verification
       // screen (PENDING → FAILED, TRY AGAIN / VERIFIED). Each button repaints
@@ -1818,7 +1881,9 @@
             domain: pendingDomain,
             sessionId: getSessionId(),
             field,
-            ...(field === 'apex' && window._claimApexSource ? { apexSource: window._claimApexSource } : {}),
+            ...(window._claimFallback === true
+              ? { fallback: true, apexSource: window._claimApexSource || pendingDomain }
+              : {}),
           });
           const data = res.data || {};
           const checks = data.checks || {};
@@ -1869,16 +1934,27 @@
           const fn = functions.httpsCallable('verifyClaimedDomainDns');
           const tsToken2 = window._tsToken || undefined;
           window._tsToken = undefined;
-          const res = await fn({ domain: pendingDomain, sessionId: getSessionId(), ...(window._apexFlow === true && window._apexName ? { apexSource: window._apexName, fallback: true } : {}), ...(tsToken2 ? { turnstileToken: tsToken2 } : {}) });
+          const res = await fn({ domain: pendingDomain, sessionId: getSessionId(), ...(window._claimFallback === true ? { fallback: true, apexSource: window._claimApexSource || pendingDomain } : {}), ...(tsToken2 ? { turnstileToken: tsToken2 } : {}) });
           closeLoadingModal();
           if (res.data && res.data.success) {
+            // Converted takeovers move hosts (X → www.X): follow the result so
+            // payment and link actions land on the live doc, and drop stale
+            // just-created markers for the retired host (no ghost rows).
+            if (res.data.domain) { pendingDomain = res.data.domain; currentDomain = res.data.domain; }
+            if (res.data.converted === true && res.data.apex) {
+              try { untrackJustCreatedDomain(res.data.apex); } catch (e) {}
+            }
+            window._claimFallback = false;
+            window._claimCanonical = null;
             await loadUserDomains();
             await fetchAndRenderSession(getSessionId());
+            try { reconcileAfterHostChange(res.data.domain || pendingDomain); } catch (e) {}
             showCustomModal({ title: "Reclaimed", message: `Domain <strong>${escapeHTML(displayHost(pendingDomain))}</strong> + its links moved here.` });
           } else {
-            // Name apex records only for fallback flows (backend echoes
+            // Name redirect records only for fallback flows (backend echoes
             // isApexFlow on fallback failures); primaries keep routing text.
-            const claimIsApex = window._apexFlow === true || (res.data && res.data.isApexFlow === true);
+            // Intent-scoped: main-flow _apexFlow is never read here.
+            const claimIsApex = window._claimFallback === true || (res.data && res.data.isApexFlow === true);
             const needApex = claimIsApex && res.data && res.data.checks && res.data.checks.apex === false;
             showCustomModal({ title: "Not yet", message: needApex
               ? "DNS proof not found yet (redirect + routing + TXT). Wait for propagation and try Verify Claim again."
@@ -7123,9 +7199,15 @@
           peekBtn.textContent = 'Show';
         }
       }
-      function showCustomModal({ title, message, showCancel = false, danger = false, showInput = false, inputPlaceholder = '', inputType = 'text', confirmText = '', cancelText = '' }) {
+      function showCustomModal({ title, message, showCancel = false, danger = false, showInput = false, inputPlaceholder = '', inputType = 'text', confirmText = '', cancelText = '', wide = false }) {
         return new Promise((resolve) => {
           const { overlay, titleEl, messageEl, cancelBtn, okBtn, inputEl } = modalEls();
+          // Wide variant (domain takeover): match the verification screen's
+          // card width. Toggled every open so it never leaks to other dialogs.
+          try {
+            const card = titleEl.closest('.modal-card');
+            if (card) card.classList.toggle('modal-card-wide', !!wide);
+          } catch (e) {}
           const peekWrap = document.getElementById('modalInputPeek');
           const peekBox = peekWrap ? peekWrap.parentElement : null;
 

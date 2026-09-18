@@ -1844,6 +1844,13 @@
       animation: matteModalIn 0.22s cubic-bezier(0.32, 0.72, 0, 1);
     }
 
+    /* Wide variant: same width as the domain verification screen
+       (550–600px card). Scoped class so no other dialog changes size;
+       narrow screens still collapse to full width via width: 100%. */
+    .modal-card.modal-card-wide {
+      max-width: 600px;
+    }
+
     @keyframes matteModalIn {
       from {
         transform: scale(0.96) translateY(8px);

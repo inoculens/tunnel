@@ -1761,17 +1761,27 @@ const actions = {
     // the transfer path below (every click still feeds the pace counter
     // above, so a burst still challenges at transfer). Checks are fixed to
     // this doc's records (public DNS anyway), so no oracle is opened.
+    // Fallback intent for this claim: an explicit redirect host that is either
+    // the claimed host itself (banner path: pair X with a new www.X) or pairs
+    // with it as canonical (enter-fallback path: stamp the pair in place).
+    // Anything else is ignored (never trusted for pairing).
+    const pairedDoc = doc.isApexFlow === true;
+    const storedRedirect = (typeof doc.apexSource === "string" && doc.apexSource) || null;
+    const intentR = cleanDomain(p.apexSource);
+    const intentValid = !!intentR && (intentR === doc.domain || fallbackCanonicalFor(intentR) === doc.domain);
+    // Redirect host for intent mode: explicit when valid, else the claimed
+    // host itself for bare-flag calls. An explicit but non-pairing apexSource
+    // (e.g. stale client state) disables intent rather than migrating blindly.
+    const intentHost = intentValid ? intentR : ((p.fallback === true && !pairedDoc && !intentR) ? doc.domain : null);
+    const useIntent = !!intentHost;
     const claimField = p.field === "cname" || p.field === "txt" || p.field === "apex" ? p.field : null;
     if (claimField) {
-      const pairedDoc = doc.isApexFlow === true;
-      const storedRedirect = (typeof doc.apexSource === "string" && doc.apexSource) || null;
+      // Redirect host: stored pairing wins; otherwise the validated intent
+      // (for intent on the claimed host itself, that host IS the redirect).
+      let redirect = storedRedirect || (pairedDoc ? apexForWww(doc.domain) : null);
+      if (!redirect && useIntent) redirect = intentHost;
+      if (!redirect) return fail(400, "invalid-argument", "Redirect check applies to fallback-paired setups only.");
       if (claimField === "apex") {
-        let redirect = storedRedirect || (pairedDoc ? apexForWww(doc.domain) : null);
-        if (!redirect) {
-          const intent = cleanDomain(p.apexSource);
-          if (intent && fallbackCanonicalFor(intent) === doc.domain) redirect = intent;
-        }
-        if (!redirect) return fail(400, "invalid-argument", "Redirect check applies to fallback-paired setups only.");
         const ar = await verifyApexRedirectDns(redirect).catch(() => null);
         if (!ar) return fail(503, "unavailable", "DNS lookup failed, try again.");
         return ok({
@@ -1784,7 +1794,14 @@ const actions = {
           status: doc.status,
         });
       }
-      const live = await verifyDns(doc.domain, doc.pendingClaim.token, claimField).catch(() => ({
+      // Routing host follows the intent: the www canonical when pairing a
+      // fresh redirect host, else the claimed host itself (paired or plain).
+      let routeHost = doc.domain;
+      if (!pairedDoc && useIntent && intentHost === doc.domain) {
+        routeHost = fallbackCanonicalFor(doc.domain);
+        if (!routeHost) return fail(400, "invalid-argument", "Fallback pairing is not available for that address.");
+      }
+      const live = await verifyDns(routeHost, doc.pendingClaim.token, claimField).catch(() => ({
         cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null,
         cfSslStatus: null, routingMethod: null, routingUnknown: true, txtUnknown: true,
       }));
@@ -1798,6 +1815,7 @@ const actions = {
         ...(stale ? { stale: true } : {}),
         isVerified: false,
         ...(pairedDoc ? { isApexFlow: true, apex: storedRedirect || apexForWww(doc.domain) } : {}),
+        ...(useIntent && !pairedDoc ? { isApexFlow: true, apex: intentHost } : {}),
         checks: {
           cname: claimField === "cname" ? !!live.cname : null,
           txt: claimField === "txt" ? !!live.txt : null,
@@ -1850,6 +1868,135 @@ const actions = {
           });
         }
       }
+    }
+    // Same-label guard (claimant's own docs): pairing or migrating must never
+    // twin a label the claimant already shows elsewhere. Effective-label rule
+    // mirrors addCustomDomain. Fail-open: a twin is confusion, not data loss.
+    const ownLabelTaken = async (label) => {
+      try {
+        const blobs = await listAll(s, "domain/");
+        const docs = await mapWithConcurrency(blobs, 12, (b) =>
+          freshGet(s, b.key, { type: "json" }).catch(() => null)
+        );
+        const want = String(label || "").toLowerCase();
+        return docs.some((d) => d && d.sessionId === p.sessionId &&
+          String(d.domain || "").toLowerCase() !== doc.domain.toLowerCase() &&
+          String(((typeof d.displayName === "string" && d.displayName) ? d.displayName : null) ||
+            ((d.isApexFlow === true && d.apexSource) ? d.apexSource : null) ||
+            d.domain || "").toLowerCase() === want);
+      } catch { return false; }
+    };
+    // STAMP transfer (enter-fallback path: the claimed doc IS the canonical,
+    // the redirect intent pairs with it). Full routing + TXT proof on the doc
+    // plus the redirect on the intent host, then transfer in place and stamp
+    // the pairing with the typed label. Falls through to the shared tail.
+    if (useIntent && !pairedDoc && intentHost !== doc.domain) {
+      const redirS = await verifyApexRedirectDns(intentHost).catch(() => null);
+      const redirSOk = !!redirS && redirS.aValid === true && redirS.aaaaValid === true;
+      if (!(live.cname && live.txt && redirSOk)) {
+        return ok({
+          success: false,
+          isVerified: false,
+          isApexFlow: true,
+          apex: intentHost,
+          checks: { cname: !!live.cname, txt: !!live.txt, apex: redirSOk, routable: live.routable ?? null, routingMethod: live.routingMethod || null },
+          status: doc.status,
+        });
+      }
+      if (await ownLabelTaken(intentHost)) {
+        return fail(409, "already-exists", `You already have ${intentHost} — open its setup instead of adding it twice.`);
+      }
+      doc.isApexFlow = true;
+      doc.apexSource = intentHost;
+      doc.displayName = intentHost;
+      // Fall through to the shared transfer tail below.
+    }
+    // Fallback-intent takeover of an unpaired doc: prove TXT on X (pending
+    // token), routing on www.X (any method, no token needed), and the redirect
+    // on X — then migrate everything into a new paired www.X doc owned by the
+    // claimant. Coverage and payment state carry over exactly like a plain
+    // takeover (no new payment). Refuses when the canonical is occupied.
+    if (useIntent && !pairedDoc && intentHost === doc.domain) {
+      const W = fallbackCanonicalFor(doc.domain);
+      if (!W) return fail(400, "invalid-argument", "Fallback pairing is not available for that address.");
+      const occupied = await freshGet(s, `domain/${W}`, { type: "json" }).catch(() => null);
+      if (occupied) {
+        return fail(409, "already-exists", `${W} is already set up — delete it or claim it first.`);
+      }
+      const X = doc.domain;
+      const token = doc.pendingClaim.token;
+      const [txtLive, routeLive] = await Promise.all([
+        verifyDns(X, token, "txt").catch(() => ({ txt: false, txtUnknown: true })),
+        verifyDns(W, null, "cname").catch(() => ({ cname: false, routable: null, routingMethod: null, routingUnknown: true })),
+      ]);
+      const redir = await verifyApexRedirectDns(X).catch(() => null);
+      const redirOk = !!redir && redir.aValid === true && redir.aaaaValid === true;
+      const routeOk = !!routeLive.cname;
+      const txtOk = !!txtLive.txt;
+      if (!(txtOk && routeOk && redirOk)) {
+        return ok({
+          success: false,
+          isVerified: false,
+          isApexFlow: true,
+          apex: X,
+          checks: {
+            cname: routeOk,
+            txt: txtOk,
+            apex: redirOk,
+            routable: routeLive.routable === false ? false : routeLive.routable === true ? true : null,
+            routingMethod: routeLive.routingMethod || null,
+          },
+          status: doc.status,
+        });
+      }
+      // Count links for session bookkeeping before the move.
+      let movedCount = 0;
+      try {
+        const blobs = await listAll(s, "link/");
+        for (const b of blobs) {
+          if (!String(b.key || "").startsWith(`link/${X}/`)) continue;
+          const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
+          if (l && l.code) movedCount++;
+        }
+      } catch { /* best effort; bumps stay approximate */ }
+      const fromSid = doc.sessionId;
+      const dest = await migrateDomainSetup(s, p, doc, X, W, { display: X, paired: true, redirect: X });
+      dest.verificationToken = token;
+      dest.isVerified = true;
+      dest.pendingClaim = null;
+      dest.dnsVerification = {
+        cnameValid: true,
+        txtVerified: true,
+        sslVerified: false,
+        routable: routeLive.routable === false ? false : routeLive.routable === true ? true : null,
+        routingMethod: routeLive.routingMethod || null,
+      };
+      refreshCoverage(dest);
+      if (dest.isVerified && dest.paymentStatus === "paid" && coverageValid(dest)) {
+        dest.status = "active";
+        await ensureSaaSHostname(dest);
+        const cf = cfConfig() ? await cfGetCustomHostname(dest.domain) : null;
+        if (cf) {
+          dest.cfHostnameId = cf.id || dest.cfHostnameId || null;
+          dest.cfHostnameStatus = cf.status || null;
+          dest.cfSslStatus = cf.ssl?.status || null;
+          dest.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : dest.dnsVerification.sslVerified;
+        }
+      }
+      await s.setJSON(`domain/${dest.domain}`, dest);
+      try {
+        await bumpSessionLinkCount(s, p.sessionId, movedCount);
+        if (fromSid) await bumpSessionLinkCount(s, fromSid, -movedCount);
+      } catch { /* best effort */ }
+      return ok({
+        success: true,
+        converted: true,
+        isVerified: true,
+        ...(await domainInfo(dest, p.sessionId)),
+        coverageExpiresAt: dest.coverageExpiresAt || null,
+        coverageLifetime: dest.coverageLifetime === true,
+        coverageValid: coverageValid(dest),
+      });
     }
     // Transfer ownership.
     const fromSid = doc.sessionId;
