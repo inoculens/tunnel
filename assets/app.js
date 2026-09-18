@@ -2457,6 +2457,13 @@
           });
           showStep('verification');
           try { reconcileAfterHostChange(data.domain || cur); } catch (e) {}
+          // A retired host leaves just-created markers + local rows pointing
+          // at a doc that no longer exists (ghost rows that 404). Drop the
+          // markers and re-pull the server list whenever the host changed.
+          if (data.domain && String(data.domain).toLowerCase() !== String(cur).toLowerCase()) {
+            try { untrackJustCreatedDomain(cur); } catch (e) {}
+            try { await fetchAndRenderSession(getSessionId()); } catch (e) {}
+          }
           if (data.restored === true) {
             showToast('Recommended DNS restored — add the routing and TXT records for this address.', 'success');
           } else if (data.relabeled === true) {
@@ -2578,6 +2585,15 @@
           });
           showStep('verification');
           try { reconcileAfterHostChange(data.domain || www); } catch (e) {}
+          // Retired/converted hosts: drop stale just-created markers and
+          // re-pull the server list so moved links render under their new
+          // host instead of ghosting under the retired one.
+          try {
+            if (data.retired) { try { untrackJustCreatedDomain(data.retired); } catch (e) {} }
+            if (data.converted === true || data.retired) {
+              try { await fetchAndRenderSession(getSessionId()); } catch (e) {}
+            }
+          } catch (e) {}
           if (data.converted === true) {
             showToast('Converted — links, stats, and coverage moved over; no new payment needed.', 'success');
           }

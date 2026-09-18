@@ -457,16 +457,23 @@
       align-items: center;
       gap: 8px;
       flex-shrink: 0;
-      width: 140px; /* Reduced by 30% from 200px as per user request */
+      min-width: 140px; /* Reduced by 30% from 200px as per user request */
     }
 
     .domain-actions-group > * {
-      flex: 1; /* Both button and status badge take equal space */
       text-align: center;
       display: inline-flex;
       justify-content: center;
       align-items: center;
+    }
+
+    .domain-actions-group > button {
+      flex: 1; /* Manage button takes the free space */
       min-width: 0; /* Allow shrinking if needed */
+    }
+
+    .domain-actions-group > span {
+      flex-shrink: 0; /* Status pill always fits its text (ACTION NEEDED etc.) */
     }
 
     .domain-option:last-child {

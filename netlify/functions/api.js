@@ -1364,7 +1364,7 @@ const actions = {
     // the user then owns two genuinely independent setups by design.
     const retirePristinePrimary = async (primaryHost) => {
       try {
-        if (!primaryHost || primaryHost === host) return;
+        if (!primaryHost || primaryHost === host) return false;
         const primaryDoc = await freshGet(s, `domain/${primaryHost}`, { type: "json" });
         const pristine =
           primaryDoc &&
@@ -1377,7 +1377,7 @@ const actions = {
           !primaryDoc.quote?.address &&
           !(Array.isArray(primaryDoc.quoteHistory) && primaryDoc.quoteHistory.length) &&
           !coverageValid(primaryDoc);
-        if (!pristine) return;
+        if (!pristine) return false;
         let hasLinks = false;
         try {
           const blobs = await listAll(s, "link/");
@@ -1389,14 +1389,20 @@ const actions = {
             }
           }
         } catch { hasLinks = true; /* fail-closed: keep on read error */ }
-        if (hasLinks) return;
+        if (hasLinks) return false;
         try {
           if (cfConfig()) await cfDeleteCustomHostname(primaryHost).catch(() => null);
         } catch { /* best effort */ }
         await s.delete(`domain/${primaryHost}`);
+        return true;
       } catch { /* dedupe best-effort, never blocks */ }
+      return false;
     };
-    if (isApexFlow && apexSource) await retirePristinePrimary(apexSource);
+    // Silent retires must be visible to the UI: without this flag the frontend
+    // keeps just-created markers (and selections) for a host that no longer
+    // exists, painting ghost rows that 404 on click.
+    let retiredHost = null;
+    if (isApexFlow && apexSource && (await retirePristinePrimary(apexSource))) retiredHost = apexSource;
     const existing = await freshGet(s, `domain/${host}`, { type: "json" });
     // Twin state: same-session primary on the redirect host carrying value.
     // Pairing must never implicitly take over such a setup (its DNS serves
@@ -1440,7 +1446,7 @@ const actions = {
         }
         if (twinTouched) {
           const dest = await migrateDomainSetup(s, p, twinDoc, apexSource, host, { display: displayName || apexSource, paired: true, redirect: apexSource });
-          return ok({ ...(await domainInfo(dest, p.sessionId)), converted: true });
+          return ok({ ...(await domainInfo(dest, p.sessionId)), converted: true, retired: apexSource });
         }
         // Pristine → fall through (dedupe retired it; normal create below).
       }
@@ -1473,7 +1479,9 @@ const actions = {
     // pristine apex primary left behind by an earlier fallback entry, so the
     // list converges back to one entry without the user deleting anything.
     if (existing && existing.isApexFlow && existing.sessionId === p.sessionId) {
-      await retirePristinePrimary(existing.apexSource || apexSource || null);
+      if (await retirePristinePrimary(existing.apexSource || apexSource || null)) {
+        retiredHost = retiredHost || existing.apexSource || apexSource || null;
+      }
     }
     if (existing) {
       if (existing.sessionId !== p.sessionId) {
@@ -1493,6 +1501,7 @@ const actions = {
         return ok({
           ...(await domainInfo(existing, p.sessionId)),
           pendingClaim: true,
+          ...(retiredHost ? { retired: retiredHost } : {}),
           pendingToken: existing.pendingClaim.token,
           instructions: {
             cnameTarget: route,
@@ -1503,7 +1512,8 @@ const actions = {
           },
         });
       }
-      return ok(await domainInfo(existing, p.sessionId)); // idempotent re-entry
+      // Idempotent re-entry (a retire may still have happened above).
+      return ok({ ...(await domainInfo(existing, p.sessionId)), ...(retiredHost ? { retired: retiredHost } : {}) });
     }
     // Same-label twin guards: one display label per session, so the UI (which
     // shows exactly what was typed) can never list a name twice. The label
@@ -1560,7 +1570,7 @@ const actions = {
       ...(isApexFlow ? { isApexFlow: true, apexSource } : {}),
     };
     await s.setJSON(`domain/${host}`, doc);
-    return ok(await domainInfo(doc, p.sessionId));
+    return ok({ ...(await domainInfo(doc, p.sessionId)), ...(retiredHost ? { retired: retiredHost } : {}) });
   },
 
   // Apex redirect check: live DNS read for the caller's OWN www doc.
@@ -1613,10 +1623,11 @@ const actions = {
   // - Own primary still exists on the redirect host, or entry was via the
   //   canonical: unpair in place. Same doc, same TXT token (already-added TXT
   //   stays valid), verification / payment / coverage untouched.
-  // - Otherwise: pristine setups swap for a fresh primary on the entered host;
-  //   touched setups reverse-migrate (links, stats, coverage, quotes all move
-  //   back, no new payment). A foreign occupant on the entered host can never
-  //   be displaced — exit then keeps the setup working under its canonical.
+  // - Otherwise the entered host is restored via migration (pristine or
+  //   touched alike — links, stats, coverage, quotes all move back, no new
+  //   payment), so nothing is ever orphaned on the retired host. A foreign
+  //   occupant on the entered host can never be displaced — exit then keeps
+  //   the setup working under its canonical.
   async exitFallbackMode(s, p, event) {
     const ip = clientIp(event);
     if (!(await checkRate(s, "exit-fallback", ip, 10))) {
