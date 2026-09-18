@@ -2053,8 +2053,9 @@
             if (btnEl) btnEl.textContent = 'Re-verify entry';
           } else if (ok === false) {
             statusEl.className = 'domain-status status-pending';
-            // CNAME/TXT require user action, so failures show 'Failed'.
-            statusEl.textContent = 'Failed';
+            // Routing/TXT require user action: every verification badge in
+            // the app (routing, TXT, redirect) fails with identical text.
+            statusEl.textContent = 'Failed, try again';
           } else {
             statusEl.className = 'domain-status status-pending';
             statusEl.textContent = 'Pending';
@@ -2308,7 +2309,8 @@
           if (btnEl) btnEl.textContent = 'Re-verify entry';
         } else if (ok === false) {
           statusEl.className = 'domain-status status-pending';
-          statusEl.textContent = 'Action needed';
+          // Same failure text as every other verification badge in the app.
+          statusEl.textContent = 'Failed, try again';
           if (btnEl) btnEl.textContent = 'Verify redirect';
         } else {
           statusEl.className = 'domain-status status-pending';
