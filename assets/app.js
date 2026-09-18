@@ -1753,11 +1753,20 @@
             apexCard.style.display = 'none';
           }
         }
-        // Yellow fallback banner: always visible under the routing card (per
-        // product decision), including subdomains. Opens the paired flow.
+        // Yellow fallback banner: visible on primary setups only. Once the
+        // fallback card itself is showing (paired doc or explicitly opened),
+        // the banner hides — it must never appear twice on the same screen.
         try {
           const fbBanner = document.getElementById('fallbackBanner');
-          if (fbBanner) fbBanner.style.display = 'block';
+          if (fbBanner) {
+            const cardVisible = (() => {
+              try {
+                const c = document.getElementById('apexRedirectCard');
+                return !!c && c.style.display !== 'none';
+              } catch (e) { return false; }
+            })();
+            fbBanner.style.display = cardVisible ? 'none' : 'block';
+          }
         } catch (e) {}
 
 
@@ -1862,7 +1871,14 @@
         }
         try {
           const fbB = document.getElementById('fallbackBanner');
-          if (fbB) fbB.style.display = 'block';
+          if (fbB) {
+            let cardVisibleS = false;
+            try {
+              const cS = document.getElementById('apexRedirectCard');
+              cardVisibleS = !!cS && cS.style.display !== 'none';
+            } catch (e) {}
+            fbB.style.display = cardVisibleS ? 'none' : 'block';
+          }
         } catch (e) {}
 
         // Show/hide verification status in modal - only show when both verified AND active/paid
@@ -2268,21 +2284,73 @@
         } catch (e) {}
         await enterFallbackMode(wwwRoot, root, true);
       }
+      // Fallback banner busy state: same look as other loaders — disables the
+      // link and shows progress while the server call runs. Never leaves the
+      // banner stuck: always restored on completion.
+      function setFallbackBusy(busy) {
+        try {
+          const banner = document.getElementById('fallbackBanner');
+          if (!banner) return null;
+          if (!banner.dataset.origHtml) banner.dataset.origHtml = banner.innerHTML;
+          if (busy) {
+            banner.style.opacity = '0.7';
+            banner.style.pointerEvents = 'none';
+            banner.innerHTML = '⚠️ Opening fallback options… <span class="spinner-small" style="display:inline-block;vertical-align:-2px;"></span>';
+          } else {
+            banner.style.opacity = '';
+            banner.style.pointerEvents = '';
+            if (banner.dataset.origHtml) banner.innerHTML = banner.dataset.origHtml;
+          }
+        } catch (e) {}
+        return null;
+      }
+      function isTurnstileRequiredError(e) {
+        const m = String((e && e.message) || '');
+        return m === 'TURNSTILE_REQUIRED' || /TURNSTILE_REQUIRED/i.test(m) || String((e && e.code) || '') === 'TURNSTILE_REQUIRED';
+      }
       async function enterFallbackMode(wwwHost, apexHost, skipConfirm) {
         const www = String(wwwHost || '').toLowerCase();
         const apex = String(apexHost || '').toLowerCase();
         if (!www || !apex || !getSessionId()) return;
         // If the www pair already exists in this session, just open it.
         // Otherwise create/stamp it as fallback (same host = in-place stamp,
-        // apex entry = new www doc, both non-destructive to primaries).
+        // apex entry = new www doc; a pristine apex primary is retired
+        // server-side so the list never shows two identical entries).
         window._fallbackOpen = true;
         window._fallbackFor = www;
         window._apexFlow = true;
         window._apexName = apex;
-        try {
+        setFallbackBusy(true);
+        const attemptFallback = async (turnstileToken) => {
           const addFn = functions.httpsCallable('addCustomDomain');
-          const res = await addFn({ domain: www, apexSource: apex, fallback: true, sessionId: getSessionId() });
-          const data = res.data || {};
+          return addFn({
+            domain: www, apexSource: apex, fallback: true, sessionId: getSessionId(),
+            ...(turnstileToken ? { turnstileToken } : (window._tsToken ? { turnstileToken: window._tsToken } : {})),
+          });
+        };
+        try {
+          window._tsToken = undefined;
+          let res;
+          try {
+            res = await attemptFallback();
+          } catch (e) {
+            // Risk-based human check (fast loops): solve once and retry, same
+            // pattern as the add-domain entry. Never surface the raw code.
+            if (isTurnstileRequiredError(e) && !window._tsRetried) {
+              window._tsRetried = true;
+              setFallbackBusy(false);
+              const token = await showTurnstileChallenge();
+              window._tsRetried = false;
+              if (!token) {
+                showToast('Human check cancelled — fallback not opened.', 'error');
+                return;
+              }
+              setFallbackBusy(true);
+              res = await attemptFallback(token);
+            } else throw e;
+          }
+          window._tsToken = undefined;
+          const data = (res && res.data) || {};
           if (data.pendingClaim) {
             showPendingClaimModal({ ...data, isApexFlow: true, apex, fallback: true });
             return;
@@ -2308,7 +2376,20 @@
           showStep('verification');
         } catch (e) {
           console.error('enterFallbackMode failed:', e);
-          showToast(e.message || 'Could not open fallback.', 'error');
+          // Friendly message: raw backend codes (e.g. TURNSTILE_REQUIRED)
+          // must never reach the toast.
+          if (isTurnstileRequiredError(e)) {
+            showToast('Quick human check needed — please try again.', 'error');
+          } else {
+            showToast(e.message || 'Could not open fallback options.', 'error');
+          }
+          // Back out the optimistic fallback flags so gating can't require an
+          // apex redirect that was never actually opened.
+          window._fallbackOpen = false;
+          window._fallbackFor = '';
+        } finally {
+          window._tsRetried = false;
+          setFallbackBusy(false);
         }
       }
 

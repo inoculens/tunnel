@@ -1240,6 +1240,48 @@ const actions = {
     if (!(await getSession(s, p.sessionId))) {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
+    // Fallback dedupe helper: entering fallback from an apex primary
+    // (example.com) creates the www pair (www.example.com) displaying the same
+    // apex label. A pristine apex primary (same session, no DNS proof, no
+    // payment, no payment address shown, no promo, no links) is retired so
+    // Manage never lists two identical entries. Strictly fail-closed: anything
+    // touched (verified, paid, quoted, discounted, claimed, linked) is kept —
+    // the user then owns two genuinely independent setups by design.
+    const retirePristineApexPrimary = async (apexHost) => {
+      try {
+        if (!apexHost || apexHost === host) return;
+        const apexDoc = await freshGet(s, `domain/${apexHost}`, { type: "json" });
+        const pristine =
+          apexDoc &&
+          apexDoc.sessionId === p.sessionId &&
+          apexDoc.paymentStatus !== "paid" &&
+          apexDoc.isVerified !== true &&
+          apexDoc.status === "pending_verification" &&
+          !apexDoc.pendingClaim &&
+          !apexDoc.discount &&
+          !apexDoc.quote?.address &&
+          !(Array.isArray(apexDoc.quoteHistory) && apexDoc.quoteHistory.length) &&
+          !coverageValid(apexDoc);
+        if (!pristine) return;
+        let hasLinks = false;
+        try {
+          const blobs = await listAll(s, "link/");
+          for (const b of blobs) {
+            const k = String(b.key || "");
+            if (k.startsWith(`link/${apexHost}/`)) {
+              const l = await freshGet(s, k, { type: "json" }).catch(() => null);
+              if (l) { hasLinks = true; break; }
+            }
+          }
+        } catch { hasLinks = true; /* fail-closed: keep on read error */ }
+        if (hasLinks) return;
+        try {
+          if (cfConfig()) await cfDeleteCustomHostname(apexHost).catch(() => null);
+        } catch { /* best effort */ }
+        await s.delete(`domain/${apexHost}`);
+      } catch { /* dedupe best-effort, never blocks */ }
+    };
+    if (isApexFlow && apexSource) await retirePristineApexPrimary(apexSource);
     const existing = await freshGet(s, `domain/${host}`, { type: "json" });
     // Stamp fallback pairing onto docs missing it — owner sessions ONLY.
     // A stranger's fallback input must never mutate another session's doc (no
@@ -1262,6 +1304,12 @@ const actions = {
           await s.setJSON(`domain/${host}`, existing);
         } catch { /* display-only, ignore */ }
       }
+    }
+    // Self-heal pre-existing duplicates: reopening a paired www doc retires a
+    // pristine apex primary left behind by an earlier fallback entry, so the
+    // list converges back to one entry without the user deleting anything.
+    if (existing && existing.isApexFlow && existing.sessionId === p.sessionId) {
+      await retirePristineApexPrimary(existing.apexSource || apexSource || null);
     }
     if (existing) {
       if (existing.sessionId !== p.sessionId) {
