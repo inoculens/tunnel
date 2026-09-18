@@ -1113,6 +1113,8 @@
         const apexCard0 = document.getElementById('apexRedirectCard');
         if (apexCard0) apexCard0.style.display = 'none';
         syncExitFallbackRow();
+        // Consent never carries across opens: every added domain gets a fresh tick.
+        resetConsentBox();
 
         // Load domains first before allowing any actions
         loadUserDomains().then(() => {
@@ -1135,6 +1137,7 @@
         window._apexName = '';
         window._fallbackOpen = false;
         window._fallbackFor = '';
+        resetConsentBox();
         showStep('loading');
       }
 
@@ -1237,7 +1240,10 @@
         const myToken = ++paymentScreenToken;
         // Snapshot BEFORE reset: resetPaymentScreen() unchecks the box, so a
         // just-made tick must be captured here or it can never reach the request.
-        const consentFlag = withdrawalConsentChecked();
+        // Scoped to this domain only: a tick left over from another domain's
+        // screen (dialog was closed, or manage switched domains) must NOT be
+        // re-sent — the user has to tick afresh for every domain they add.
+        const consentFlag = window._consentForDomain === myDomain && withdrawalConsentChecked();
         resetPaymentScreen();
         if (consentFlag) {
           const consentBox = document.getElementById('withdrawalConsent');
@@ -1296,12 +1302,7 @@
           removeBtn.disabled = false;
           removeBtn.textContent = 'Remove';
         }
-        const consentBox = document.getElementById('withdrawalConsent');
-        const consentNote = document.getElementById('withdrawalConsentNote');
-        const consentWrap = document.getElementById('withdrawalConsentBox');
-        if (consentBox) { consentBox.checked = false; consentBox.disabled = false; }
-        if (consentNote) consentNote.style.display = 'none';
-        if (consentWrap) consentWrap.style.borderColor = '';
+        resetConsentBox();
         if (backBtn) {
           backBtn.disabled = false;
           backBtn.style.opacity = '';
@@ -1367,6 +1368,23 @@
       }
 
       // EU withdrawal consent (Terms 3.3): checkbox state helpers.
+      // A tick ALWAYS belongs to exactly one domain. The checkbox DOM outlives
+      // domain switches (close/open, manage A -> manage B), so a stale tick
+      // must never count for another domain — otherwise opening B's payment
+      // screen would snapshot A's tick and record consent B never gave.
+      // window._consentForDomain tracks which domain was ticked for; every
+      // dialog open/close/switch clears it (see resetConsentBox callers).
+      function resetConsentBox() {
+        try {
+          const box = document.getElementById('withdrawalConsent');
+          const note = document.getElementById('withdrawalConsentNote');
+          const wrap = document.getElementById('withdrawalConsentBox');
+          if (box) { box.checked = false; box.disabled = false; }
+          if (note) note.style.display = 'none';
+          if (wrap) wrap.style.borderColor = '';
+        } catch (e) {}
+        window._consentForDomain = '';
+      }
       function withdrawalConsentChecked() {
         const box = document.getElementById('withdrawalConsent');
         return !!box && box.checked === true;
@@ -1376,7 +1394,10 @@
         const note = document.getElementById('withdrawalConsentNote');
         const wrap = document.getElementById('withdrawalConsentBox');
         if (box) {
-          if (recorded === true) { box.checked = true; box.disabled = true; }
+          if (recorded === true) {
+            box.checked = true; box.disabled = true;
+            try { window._consentForDomain = pendingDomain; } catch (e) {}
+          }
           else if (recorded === false) { box.checked = false; box.disabled = false; }
         }
         if (note) note.style.display = 'none';
@@ -1398,6 +1419,9 @@
         window._withdrawalListen = true;
         const box = document.getElementById('withdrawalConsent');
         if (box) box.addEventListener('change', () => {
+          // Attribute the tick to the domain on screen right now — this is
+          // what authorizes loadPaymentScreen's snapshot below to send it.
+          try { window._consentForDomain = box.checked ? pendingDomain : ''; } catch (e) {}
           const details = document.getElementById('paymentDetails');
           if (box.checked && details && details.style.display === 'none') loadPaymentScreen();
         });
@@ -2374,7 +2398,9 @@
             fallback: data.fallback || null
           });
           showStep('verification');
-          if (data.relabeled === true) {
+          if (data.restored === true) {
+            showToast('Recommended DNS restored — add the routing and TXT records for this address.', 'success');
+          } else if (data.relabeled === true) {
             showToast('Kept everything — now shown on its www address; links work exactly as before.', 'success');
           } else {
             showToast('Back on the recommended DNS setup.', 'success');
@@ -2630,14 +2656,29 @@
       }
 
       function animateSuccess(el) {
-        const originalBg = el.style.background;
-        const originalColor = el.style.color;
+        if (!el) return;
+        // Per-element timer: a second fast click must cancel the first
+        // restore first — otherwise it captures the green flash as the
+        // "original" and the field stays green forever. Originals are
+        // captured only while idle, restored (and forgotten) at the end.
+        try { if (el.__tunnelCopyTimer !== null && el.__tunnelCopyTimer !== undefined) clearTimeout(el.__tunnelCopyTimer); } catch (e) {}
+        el.__tunnelCopyTimer = null;
+        if (el.__tunnelCopyOrig === undefined) {
+          el.__tunnelCopyOrig = { bg: el.style.background, color: el.style.color };
+        }
         el.style.background = 'rgba(34, 197, 94, 0.2)';
         el.style.color = '#6fcf7f';
-        setTimeout(() => {
-          el.style.background = originalBg;
-          el.style.color = originalColor;
-        }, 500);
+        try {
+          el.__tunnelCopyTimer = setTimeout(() => {
+            try {
+              const o = el.__tunnelCopyOrig || { bg: '', color: '' };
+              el.style.background = o.bg;
+              el.style.color = o.color;
+            } catch (e) {}
+            try { delete el.__tunnelCopyOrig; } catch (e) { el.__tunnelCopyOrig = undefined; }
+            el.__tunnelCopyTimer = null;
+          }, 500);
+        } catch (e) {}
       }
 
       async function loadUserDomains() {
@@ -2717,6 +2758,8 @@
       async function manageDomain(domain) {
         pendingDomain = domain;
         currentDomain = domain;
+        // Fresh domain context: consent ticks belong to one domain only.
+        resetConsentBox();
         // Fallback state is authoritative from the backend doc (isApexFlow).
         // Clear stale local flags when switching domains; reopening the same
         // paired www keeps them. Never force fallback for primaries.

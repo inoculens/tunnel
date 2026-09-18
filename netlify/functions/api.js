@@ -226,12 +226,20 @@ async function ensureSaaSHostname(doc) {
 // no pendingClaim, no www.X doc, explicit p.convert === true.
 // Non-atomic by design (batched writes); the hourly watcher window is
 // negligible and moved lastPaymentAt/paidAt guards keep it consistent.
-async function migratePrimaryToFallback(s, p, srcDoc, host, redirect, display) {
+// Move a whole domain setup between hosts within one session — links (short
+// URLs rewritten), click rows, count shards, coverage/payment state, quotes,
+// promo grant, consent, and root-routing target all follow. Used both ways:
+// primary -> fallback pair on convert (no new payment) and pair -> primary on
+// exit (the entered host is fixed in stone: exit must never morph it into the
+// canonical). Fresh DNS state + fresh token on arrival (new names need new
+// records); SaaS hostname of the abandoned host is dropped best-effort.
+// Caller guarantees: same session, destination host free, explicit user intent.
+async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, paired, redirect }) {
   const delegation = sslDelegationTarget();
   const now = Date.now();
   const dest = {
-    domain: host,
-    displayName: display || redirect,
+    domain: destHost,
+    displayName: display || destHost,
     sessionId: p.sessionId,
     status: "pending_verification",
     paymentStatus: srcDoc.paymentStatus === "paid" ? "paid" : "unpaid",
@@ -255,50 +263,49 @@ async function migratePrimaryToFallback(s, p, srcDoc, host, redirect, display) {
     cfHostnameStatus: null,
     cfSslStatus: null,
     createdAt: now,
-    isApexFlow: true,
-    apexSource: redirect,
+    ...(paired ? { isApexFlow: true, apexSource: redirect } : {}),
   };
-  await s.setJSON(`domain/${host}`, dest);
-  // Links move host (short URLs rewritten to the canonical); bodies keep
+  await s.setJSON(`domain/${destHost}`, dest);
+  // Links move host (short URLs rewritten to the destination); bodies keep
   // tokens, labels, counts, and quarantine flags. Write-new-then-delete.
   const linkBlobs = await listAll(s, "link/");
-  const doomedLinks = linkBlobs.filter((b) => String(b.key || "").startsWith(`link/${redirect}/`));
+  const doomedLinks = linkBlobs.filter((b) => String(b.key || "").startsWith(`link/${srcHost}/`));
   await mapWithConcurrency(doomedLinks, 12, async (b) => {
     const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
     if (!l || !l.code) return;
-    const nl = { ...l, domain: host };
+    const nl = { ...l, domain: destHost };
     try {
       const u = new URL(l.short);
-      u.hostname = host;
+      u.hostname = destHost;
       nl.short = u.toString();
-    } catch { nl.short = `https://${host}/${l.code}`; }
-    await s.setJSON(linkKey(host, l.code), nl);
+    } catch { nl.short = `https://${destHost}/${l.code}`; }
+    await s.setJSON(linkKey(destHost, l.code), nl);
     await s.delete(b.key);
   });
   // Click detail rows carry no host field — re-key only.
-  const clickBlobs = await listAll(s, `clicks/${redirect}/`);
+  const clickBlobs = await listAll(s, `clicks/${srcHost}/`);
   await mapWithConcurrency(clickBlobs, 12, async (b) => {
     const key = String(b.key || "");
-    const rest = key.slice(`clicks/${redirect}/`.length);
+    const rest = key.slice(`clicks/${srcHost}/`.length);
     if (!rest || rest.includes("..")) return;
     const c = await freshGet(s, key, { type: "json" }).catch(() => null);
-    if (c) await s.setJSON(`clicks/${host}/${rest}`, c);
+    if (c) await s.setJSON(`clicks/${destHost}/${rest}`, c);
     await s.delete(key);
   });
   // Count shards + day aggs: counts/<h>/<code>/… — swap the host segment.
-  const countBlobs = await listAll(s, `counts/${redirect}/`);
+  const countBlobs = await listAll(s, `counts/${srcHost}/`);
   await mapWithConcurrency(countBlobs, 12, async (b) => {
     const parts = String(b.key || "").split("/");
     if (parts.length < 4 || parts[0] !== "counts") return;
-    parts[1] = host;
+    parts[1] = destHost;
     const c = await freshGet(s, b.key, { type: "json" }).catch(() => null);
     if (c) await s.setJSON(parts.join("/"), c);
     await s.delete(b.key);
   });
   try {
-    if (cfConfig()) await cfDeleteCustomHostname(redirect).catch(() => null);
-  } catch { /* best effort: redirect serves 301s, never links */ }
-  await s.delete(`domain/${redirect}`);
+    if (cfConfig()) await cfDeleteCustomHostname(srcHost).catch(() => null);
+  } catch { /* best effort: abandoned host no longer serves links */ }
+  await s.delete(`domain/${srcHost}`);
   return dest;
 }
 
@@ -1407,7 +1414,7 @@ const actions = {
           return fail(409, "failed-precondition", `A takeover claim is pending on ${apexSource} — resolve it first.`);
         }
         if (twinTouched) {
-          const dest = await migratePrimaryToFallback(s, p, twinDoc, host, apexSource, displayName || apexSource);
+          const dest = await migrateDomainSetup(s, p, twinDoc, apexSource, host, { display: displayName || apexSource, paired: true, redirect: apexSource });
           return ok({ ...(await domainInfo(dest, p.sessionId)), converted: true });
         }
         // Pristine → fall through (dedupe retired it; normal create below).
@@ -1575,18 +1582,16 @@ const actions = {
   },
 
   // Exit fallback pairing: back to the recommended DNS setup (CNAME / ALIAS /
-  // ANAME / flattened CNAME directly on the host), no delete-and-restart.
-  // Owner-only, never destructive to anything of value:
-  // - Entered via www (or apex primary still exists): unpair in place. Same
-  //   doc, same TXT token (already-added TXT stays valid), verification /
-  //   payment / coverage untouched. Display falls back to the canonical host
-  //   when it would otherwise duplicate the surviving apex entry.
-  // - Entered via apex and the apex primary is gone: the www doc is swapped
-  //   back for a fresh apex primary when pristine (same strict guard as entry
-  //   dedupe: unpaid, unverified, no payment address shown, no promo, no
-  //   claim, no links). A touched setup instead unpairs in place and relabels
-  //   to its www address — links keep serving from www exactly as before, only
-  //   the app label changes, so exit never costs data, stats, or coverage.
+  // ANAME / flattened CNAME directly on the entered host), no delete-and-restart.
+  // The entered host is fixed in stone: exit always restores it, never the
+  // canonical. Owner-only, never destructive to anything of value:
+  // - Own primary still exists on the redirect host, or entry was via the
+  //   canonical: unpair in place. Same doc, same TXT token (already-added TXT
+  //   stays valid), verification / payment / coverage untouched.
+  // - Otherwise: pristine setups swap for a fresh primary on the entered host;
+  //   touched setups reverse-migrate (links, stats, coverage, quotes all move
+  //   back, no new payment). A foreign occupant on the entered host can never
+  //   be displaced — exit then keeps the setup working under its canonical.
   async exitFallbackMode(s, p, event) {
     const ip = clientIp(event);
     if (!(await checkRate(s, "exit-fallback", ip, 10))) {
@@ -1622,14 +1627,34 @@ const actions = {
       await s.setJSON(`domain/${doc.domain}`, doc);
       return ok(await domainInfo(doc, p.sessionId));
     }
-    // Entered via apex, apex primary gone: swap back for a fresh apex primary
-    // when pristine; a touched setup unpairs in place and relabels to www
-    // (same doc, same links/coverage — exit never destroys value).
+    // Entered via the redirect host and no own primary exists there: restore
+    // the entered host as a primary so the registered name never morphs into
+    // the canonical. Pristine setups swap (fresh primary, nothing to lose);
+    // touched setups reverse-migrate (links, stats, coverage, quotes all move
+    // back, no new payment). Either way the redirect host must be free — a
+    // foreign occupant can never be displaced, so exit then keeps this setup
+    // working under its canonical instead (function preserved, label bent).
+    if (doc.pendingClaim) {
+      return fail(409, "failed-precondition", "A takeover claim is pending on this setup — resolve it first.");
+    }
+    if (apexPrimary) {
+      doc.isApexFlow = false;
+      delete doc.apexSource;
+      doc.displayName = doc.domain;
+      await s.setJSON(`domain/${doc.domain}`, doc);
+      return ok({ ...(await domainInfo(doc, p.sessionId)), relabeled: true });
+    }
+    // Defense in depth: the restored host is re-validated like a fresh
+    // registration (registrable, unreserved, not a public suffix), even
+    // though it paired successfully on entry.
+    const reservedExit = new Set([systemShortHost(), routingTarget(), "tunnel.inoculens.com", "customers.inoculens.com", "proxy-fallback.inoculens.com", "inoculens.com", "www.inoculens.com"]);
+    if (!apex || !cleanDomain(apex) || reservedExit.has(apex.toLowerCase()) || (await isPublicSuffix(apex).catch(() => false))) {
+      return fail(400, "invalid-argument", "That address can no longer be restored — delete the domain and re-add it instead.");
+    }
     const pristine =
       doc.paymentStatus !== "paid" &&
       doc.isVerified !== true &&
       doc.status === "pending_verification" &&
-      !doc.pendingClaim &&
       !doc.discount &&
       !doc.quote?.address &&
       !(Array.isArray(doc.quoteHistory) && doc.quoteHistory.length) &&
@@ -1645,18 +1670,8 @@ const actions = {
       }
     } catch { hasLinks = true; /* fail-closed: keep on read error */ }
     if (!pristine || hasLinks) {
-      doc.isApexFlow = false;
-      delete doc.apexSource;
-      doc.displayName = doc.domain;
-      await s.setJSON(`domain/${doc.domain}`, doc);
-      return ok({ ...(await domainInfo(doc, p.sessionId)), relabeled: true });
-    }
-    // Defense in depth: the restored apex is re-validated like a fresh
-    // registration (registrable, unreserved, not a public suffix), even
-    // though it paired successfully on entry.
-    const reservedExit = new Set([systemShortHost(), routingTarget(), "tunnel.inoculens.com", "customers.inoculens.com", "proxy-fallback.inoculens.com", "inoculens.com", "www.inoculens.com"]);
-    if (!apex || !cleanDomain(apex) || reservedExit.has(apex.toLowerCase()) || (await isPublicSuffix(apex).catch(() => false))) {
-      return fail(400, "invalid-argument", "That apex address can no longer be restored — delete the domain and re-add it instead.");
+      const dest = await migrateDomainSetup(s, p, doc, doc.domain, apex, { display: apex, paired: false, redirect: null });
+      return ok({ ...(await domainInfo(dest, p.sessionId)), restored: true });
     }
     try {
       if (cfConfig()) await cfDeleteCustomHostname(doc.domain).catch(() => null);
@@ -1681,7 +1696,7 @@ const actions = {
       createdAt: Date.now(),
     };
     await s.setJSON(`domain/${apex}`, fresh);
-    return ok(await domainInfo(fresh, p.sessionId));
+    return ok({ ...(await domainInfo(fresh, p.sessionId)), restored: true });
   },
 
   async getDomainVerificationInfo(s, p) {
