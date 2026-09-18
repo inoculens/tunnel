@@ -595,6 +595,18 @@ async function doh(name, type) {
   }
 }
 
+// Same as doh(), but distinguishes transport failure ({ ok:false }) from a
+// definitive empty answer ({ ok:true, answers:[] }). Lets per-field checks
+// fail OPEN on hiccups (keep the stored badge) while still failing CLOSED
+// on definitive negatives.
+async function dohResult(name, type) {
+  try {
+    return { ok: true, answers: await doh(name, type) };
+  } catch {
+    return { ok: false, answers: [] };
+  }
+}
+
 export function routingTarget() {
   // SaaS CNAME target customers must point at (proxied, Cloudflare for SaaS).
   // INOCULENS account (inoculens.com): customers.inoculens.com -> proxy-fallback
@@ -668,20 +680,43 @@ export async function isApexDomain(domain) {
   try {
     const { default: psl } = await import("psl");
     const parsed = psl.parse(d);
-    if (parsed && !parsed.error && parsed.domain) {
+    if (parsed && !parsed.error) {
+      // A bare public suffix (co.uk, com, …) parses cleanly with NO domain —
+      // it is never a registrable apex. Previously this fell through to the
+      // label heuristic (≤2 labels → true) and paired public suffixes.
+      if (!parsed.domain) return false;
       return !parsed.subdomain;
     }
   } catch { /* fall through to label heuristic */ }
   return d.split(".").length <= 2;
 }
 
-export function apexBlockedMessage(host) {
-  return (
-    `Apex (naked) domains can't be used for short links — DNS does not allow a CNAME at the apex, ` +
-    `so neither routing nor TLS can ever validate for "${host}". ` +
-    `Use any subdomain you like instead — www.${host}, go.${host}, s.${host}, links.${host}, anything. ` +
-    `Tip: most registrars offer free domain forwarding — forward ${host} to your Tunnel subdomain so visitors still find you.`
-  );
+// True when the host IS a public suffix (co.uk, com, …) — not registrable,
+// so it can never be a customer domain. psl-unavailable fails closed here
+// (unknown suffix ⇒ not provably public), unlike the apex heuristic.
+export async function isPublicSuffix(host) {
+  const d = cleanDomain(host);
+  if (!d) return false;
+  try {
+    const { default: psl } = await import("psl");
+    const parsed = psl.parse(d);
+    if (parsed && !parsed.error) return !parsed.domain;
+  } catch { /* unknown on lookup failure */ }
+  return false;
+}
+
+// Registrable root (eTLD+1) for any host: go.example.co.uk -> example.co.uk.
+// Null when unknown — callers show no zone context instead of a bogus root
+// (the old last-two-labels slice mis-derived multi-label suffix zones).
+export async function registrableRoot(host) {
+  const d = cleanDomain(host);
+  if (!d) return null;
+  try {
+    const { default: psl } = await import("psl");
+    const parsed = psl.parse(d);
+    if (parsed && !parsed.error && parsed.domain) return parsed.domain;
+  } catch { /* null below */ }
+  return null;
 }
 
 export function dcvDelegationSuffix() {
@@ -795,7 +830,15 @@ export async function cfDeleteCustomHostname(domain) {
   }
 }
 
-export async function verifyDns(domain, token) {
+export async function verifyDns(domain, token, only = null) {
+  // Per-field mode: each Verify button checks ONLY its own record.
+  //   only === "cname" → routing (CNAME/ALIAS/ANAME/flattened) + routable.
+  //   only === "txt"   → ownership TXT only.
+  //   otherwise        → full check (payment gating, claim transfers).
+  // Skipped sections keep their defaults (false/null); callers must persist
+  // and return ONLY the requested field, never the skipped defaults.
+  const wantRouting = only !== "txt";
+  const wantTxt = only !== "cname";
   const target = routingTarget().toLowerCase().replace(/\.$/, "");
   // Only the live SaaS target is accepted.
   // Routing is valid via ANY of: standard CNAME, ALIAS, ANAME, or flattened
@@ -805,7 +848,7 @@ export async function verifyDns(domain, token) {
   // `checks.cname` stays the routing-valid flag for backward compat; the
   // specific mechanism travels in `checks.routingMethod` + `checks.alias`.
   const acceptedTargets = new Set([target]);
-  const checks = { cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null, cfSslStatus: null, routingMethod: null, alias: false };
+  const checks = { cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null, cfSslStatus: null, routingMethod: null, alias: false, routingUnknown: false, txtUnknown: false };
 
   // Authoritative CNAME check via the Cloudflare API when the hostname has
   // a record there (grey or proxied): public DoH HIDES the CNAME of proxied
@@ -814,13 +857,15 @@ export async function verifyDns(domain, token) {
   // is authoritative in both states. Names without a record there are never
   // found and fall through to DoH below.
   let apiCheckedCname = false;
-  if (cfConfig()) {
+  let apiFoundCname = false;
+  if (wantRouting && cfConfig()) {
     try {
       const list = await cfFetch(`/dns_records?name.exact=${encodeURIComponent(cleanDomain(domain))}&per_page=10`);
       const arr = Array.isArray(list) ? list : list?.result || [];
       const cnameRec = arr.find((r) => String(r.type || "").toUpperCase() === "CNAME");
       if (cnameRec) {
         apiCheckedCname = true;
+        apiFoundCname = true;
         const apiOk = acceptedTargets.has(String(cnameRec.content || "").toLowerCase().replace(/\.$/, ""));
         checks.cname = apiOk;
         if (apiOk) checks.routingMethod = "cname";
@@ -837,13 +882,15 @@ export async function verifyDns(domain, token) {
     }
   }
 
-  if (!apiCheckedCname) {
-    try {
-      const cname = await doh(domain, "CNAME");
-      const cnameOk = cname.some((v) => acceptedTargets.has(v.toLowerCase().replace(/\.$/, "")));
+  let cnameDohOk = false;
+  if (wantRouting && !apiCheckedCname) {
+    const r = await dohResult(domain, "CNAME");
+    cnameDohOk = r.ok;
+    if (r.ok) {
+      const cnameOk = r.answers.some((v) => acceptedTargets.has(v.toLowerCase().replace(/\.$/, "")));
       checks.cname = cnameOk;
       if (cnameOk) checks.routingMethod = "cname";
-    } catch {
+    } else {
       checks.cname = false;
     }
   }
@@ -856,35 +903,46 @@ export async function verifyDns(domain, token) {
   // read at the same moment so edge rotation cannot false-negative across
   // sequential lookups. TXT ownership is still required separately, so pointing
   // at the shared edge alone never proves ownership.
-  if (!checks.cname) {
-    try {
-      const [aDomain, aaaaDomain, aTarget, aaaaTarget] = await Promise.all([
-        doh(domain, "A").catch(() => []),
-        doh(domain, "AAAA").catch(() => []),
-        doh(target, "A").catch(() => []),
-        doh(target, "AAAA").catch(() => []),
-      ]);
-      const normV4 = (v) => String(v || "").trim();
-      const normV6 = (v) => String(v || "").trim().toLowerCase().replace(/\.$/, "");
-      const targetV4 = new Set((Array.isArray(aTarget) ? aTarget : []).map(normV4).filter(Boolean));
-      const targetV6 = new Set((Array.isArray(aaaaTarget) ? aaaaTarget : []).map(normV6).filter(Boolean));
-      const domV4 = Array.isArray(aDomain) ? aDomain.map(normV4) : [];
-      const domV6 = Array.isArray(aaaaDomain) ? aaaaDomain.map(normV6) : [];
-      const v4Hit = targetV4.size > 0 && domV4.some((ip) => targetV4.has(ip));
-      const v6Hit = targetV6.size > 0 && domV6.some((ip) => targetV6.has(ip));
-      if (v4Hit || v6Hit) {
-        checks.cname = true;
-        checks.alias = true;
-        checks.routingMethod = "alias";
-      }
-    } catch { /* keep false */ }
+  let aliasAllOk = false;
+  if (wantRouting && !checks.cname) {
+    const [rA, rAaaa, rTA, rTAaaa] = await Promise.all([
+      dohResult(domain, "A"),
+      dohResult(domain, "AAAA"),
+      dohResult(target, "A"),
+      dohResult(target, "AAAA"),
+    ]);
+    aliasAllOk = rA.ok && rAaaa.ok && rTA.ok && rTAaaa.ok;
+    const normV4 = (v) => String(v || "").trim();
+    const normV6 = (v) => String(v || "").trim().toLowerCase().replace(/\.$/, "");
+    const targetV4 = new Set(rTA.answers.map(normV4).filter(Boolean));
+    const targetV6 = new Set(rTAaaa.answers.map(normV6).filter(Boolean));
+    const domV4 = rA.answers.map(normV4);
+    const domV6 = rAaaa.answers.map(normV6);
+    const v4Hit = targetV4.size > 0 && domV4.some((ip) => targetV4.has(ip));
+    const v6Hit = targetV6.size > 0 && domV6.some((ip) => targetV6.has(ip));
+    if (v4Hit || v6Hit) {
+      checks.cname = true;
+      checks.alias = true;
+      checks.routingMethod = "alias";
+    }
   }
 
-  try {
-    const txt = await doh(`verification.${domain}`, "TXT");
-    checks.txt = txt.some((v) => v.replace(/"/g, "").trim() === token);
-  } catch {
-    checks.txt = false;
+  // Unknown (vs negative): a routing "false" only counts when at least one
+  // lookup actually answered — an authoritative API CNAME, a completed CNAME
+  // query, or a complete alias set. All-transport-failure ⇒ unknown, and
+  // per-field callers keep the stored badge instead of flipping it.
+  if (wantRouting && !checks.cname) {
+    checks.routingUnknown = !(apiFoundCname || cnameDohOk || aliasAllOk);
+  }
+
+  if (wantTxt) {
+    const r = await dohResult(`verification.${domain}`, "TXT");
+    if (r.ok) {
+      checks.txt = r.answers.some((v) => v.replace(/"/g, "").trim() === token);
+    } else {
+      checks.txt = false;
+      checks.txtUnknown = true;
+    }
   }
 
   // Routability: does the name resolve to a usable edge address? Ownership
@@ -892,65 +950,71 @@ export async function verifyDns(domain, token) {
   // a same-zone grey CNAME bottoming out at the originless fallback 100::).
   // Fail-open by design: lookup errors yield null (unknown, never blocks);
   // only a definitive empty/discard answer yields false.
-  try {
-    const [a, aaaa] = await Promise.all([
-      doh(domain, "A").catch(() => null),
-      doh(domain, "AAAA").catch(() => null),
-    ]);
-    if (a === null && aaaa === null) {
+  // Routing-scoped: skipped in TXT-only mode (caller keeps stored value).
+  if (wantRouting) {
+    try {
+      const [a, aaaa] = await Promise.all([
+        doh(domain, "A").catch(() => null),
+        doh(domain, "AAAA").catch(() => null),
+      ]);
+      if (a === null && aaaa === null) {
+        checks.routable = null;
+      } else {
+        const v4 = Array.isArray(a) ? a.map(String) : [];
+        const v6 = Array.isArray(aaaa) ? aaaa.map(String) : [];
+        const usableV6 = v6.filter((ip) => {
+          const n = ip.toLowerCase().replace(/\.$/, "");
+          return n !== "100::" && n !== "::" && n !== "::1";
+        });
+        checks.routable = v4.length > 0 || usableV6.length > 0;
+      }
+    } catch {
       checks.routable = null;
-    } else {
-      const v4 = Array.isArray(a) ? a.map(String) : [];
-      const v6 = Array.isArray(aaaa) ? aaaa.map(String) : [];
-      const usableV6 = v6.filter((ip) => {
-        const n = ip.toLowerCase().replace(/\.$/, "");
-        return n !== "100::" && n !== "::" && n !== "::1";
-      });
-      checks.routable = v4.length > 0 || usableV6.length > 0;
     }
-  } catch {
-    checks.routable = null;
   }
 
   // SaaS certificate/hostname status when Cloudflare is configured — the
   // same lookup for every custom domain (HTTP validation needs no extra
-  // customer record beyond the CNAME).
-  if (cfConfig()) {
-    const cf = await cfGetCustomHostname(domain);
-    if (cf) {
-      checks.cfHostnameStatus = cf.status || null;
-      checks.cfSslStatus = cf.ssl?.status || null;
-      // HTTP validation provisions automatically once CNAME is correct.
-      checks.ssl = cf.ssl?.status === "active";
-    } else {
-      // No custom hostname yet: SSL cannot be active. It will be created
-      // automatically after payment (see api.js ensureSaaSHostname).
-      checks.ssl = false;
+  // customer record beyond the CNAME). Skipped in per-field mode: cert state
+  // is display-only and must never overwrite stored values with a default.
+  if (wantRouting && wantTxt) {
+    if (cfConfig()) {
+      const cf = await cfGetCustomHostname(domain);
+      if (cf) {
+        checks.cfHostnameStatus = cf.status || null;
+        checks.cfSslStatus = cf.ssl?.status || null;
+        // HTTP validation provisions automatically once CNAME is correct.
+        checks.ssl = cf.ssl?.status === "active";
+      } else {
+        // No custom hostname yet: SSL cannot be active. It will be created
+        // automatically after payment (see api.js ensureSaaSHostname).
+        checks.ssl = false;
+      }
+      // Explicit delegation (TXT/delegated method) still honored if configured.
+      const delegation = sslDelegationTarget();
+      if (delegation && !checks.ssl) {
+        try {
+          const cname = await doh(`_acme-challenge.${domain}`, "CNAME");
+          const want = delegation.toLowerCase().replace(/\.$/, "");
+          if (cname.some((v) => v.toLowerCase().replace(/\.$/, "") === want)) checks.ssl = true;
+        } catch { /* keep API result */ }
+      }
+      return checks;
     }
-    // Explicit delegation (TXT/delegated method) still honored if configured.
+
+    // No Cloudflare token (local dev): TLS follows routing when AUTO_SSL is on.
     const delegation = sslDelegationTarget();
-    if (delegation && !checks.ssl) {
+    if (delegation) {
       try {
         const cname = await doh(`_acme-challenge.${domain}`, "CNAME");
         const want = delegation.toLowerCase().replace(/\.$/, "");
-        if (cname.some((v) => v.toLowerCase().replace(/\.$/, "") === want)) checks.ssl = true;
-      } catch { /* keep API result */ }
+        checks.ssl = cname.some((v) => v.toLowerCase().replace(/\.$/, "") === want);
+      } catch {
+        checks.ssl = false;
+      }
+    } else if (process.env.AUTO_SSL !== "0") {
+      checks.ssl = checks.cname;
     }
-    return checks;
-  }
-
-  // No Cloudflare token (local dev): TLS follows routing when AUTO_SSL is on.
-  const delegation = sslDelegationTarget();
-  if (delegation) {
-    try {
-      const cname = await doh(`_acme-challenge.${domain}`, "CNAME");
-      const want = delegation.toLowerCase().replace(/\.$/, "");
-      checks.ssl = cname.some((v) => v.toLowerCase().replace(/\.$/, "") === want);
-    } catch {
-      checks.ssl = false;
-    }
-  } else if (process.env.AUTO_SSL !== "0") {
-    checks.ssl = checks.cname;
   }
 
   return checks;

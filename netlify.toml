@@ -9,8 +9,14 @@
 #     SaaS CNAME target (proxied): customers.inoculens.com
 #       -> proxy-fallback.inoculens.com (fallback origin, active)
 #       -> Worker tunnel-custom-host (*/* route) -> https://s.inoculens.com/<code>
-#   Customers: CNAME <custom> -> customers.inoculens.com
+#   Customers (ANY hostname, apex or subdomain — each is an independent
+#   setup with its own payment): CNAME — or ALIAS / ANAME / flattened CNAME
+#   (all verified via visible CNAME or live A/AAAA equality, IPv4 or IPv6)
+#     <custom> -> customers.inoculens.com
 #              TXT verification.<custom> -> <token> (ownership)
+#   Fallback pairing (IP safety net for providers without ALIAS): one www doc
+#   covers apex+www via apex A/AAAA -> 65.21.184.101 / 2a01:4f9:c012:a304::1
+#   (redirect edge, DNS-only) + www routing as above; single payment.
 #   Certificates use HTTP validation (automatic, no _acme-challenge record).
 #
 # DOMAINS on this Netlify site (Site settings → Domains, DNS-only in Cloudflare):
@@ -19,13 +25,17 @@
 #   DO NOT proxy s/tunnel through Cloudflare (orange cloud OFF) — they serve
 #   Netlify directly. customers.* + proxy-fallback are proxied (SaaS Worker
 #   origin).
-#   Custom domains (ANY DNS provider, plain records): CNAME <custom> ->
-#   customers.inoculens.com + TXT verification.<custom>. Backend verifies over
-#   public DNS and auto-creates a SaaS custom hostname (HTTP validation) after
-#   payment — identically for every domain. Only s./tunnel. are the app and
-#   can never be claimed (reserved).
+#   Custom domains (ANY DNS provider, plain records): routing record (CNAME /
+#   ALIAS / ANAME / flattened CNAME) <custom> -> customers.inoculens.com +
+#   TXT verification.<custom>. Backend verifies over public DNS and
+#   auto-creates a SaaS custom hostname (HTTP validation) after payment —
+#   identically for every domain. System/infra names (s., tunnel.,
+#   customers., proxy-fallback, inoculens.com, www.inoculens.com) are reserved
+#   and can never be claimed; bare public suffixes are rejected outright.
 #   Routing is handled by netlify/edge-functions/short-domain.js:
-#     s.<any>/ or <custom>/            → 301 to https://tunnel.inoculens.com/
+#     s.inoculens.com/                 → 301 to https://tunnel.inoculens.com/
+#     <custom>/                        → resolve function (paid domain apexTarget,
+#                                        else 302 to the app landing page)
 #     s.<any>/<code>, <custom>/<code>  → resolve function (redirect + clicks)
 # - Required env vars (Site settings → Environment variables):
 #     SITE_URL=s.inoculens.com                     (system short-link host)

@@ -25,6 +25,8 @@ import {
   dcvDelegationTargetFor,
   dcvDelegationSuffix,
   isApexDomain,
+  isPublicSuffix,
+  registrableRoot,
   sslDelegationTarget,
   cfConfig,
   cfGetCustomHostname,
@@ -366,16 +368,19 @@ async function domainInfo(doc, viewerSessionId = null) {
   // Fallback card context for ANY host: paired apex/www when known, else the
   // zone's apex/www so users without ALIAS support still have a path. The
   // card is display-only here; gating still uses isApexFlow + live DNS.
+  // Roots come from the public-suffix list (registrableRoot) — never from a
+  // naive last-two-labels slice, which mis-derives multi-label suffix zones
+  // (go.example.co.uk is example.co.uk, not co.uk).
   let fallbackApex = apexHost;
   if (!fallbackApex) {
     try {
       if (await isApexDomain(doc.domain)) fallbackApex = cleanDomain(doc.domain);
       else {
         const a = apexForWww(doc.domain);
-        if (a) fallbackApex = a;
+        if (a && (await isApexDomain(a).catch(() => false))) fallbackApex = a;
         else {
-          const root = String(doc.domain || "").split(".").slice(-2).join(".");
-          if (root && (await isApexDomain(root).catch(() => false))) fallbackApex = root;
+          const root = await registrableRoot(doc.domain).catch(() => null);
+          if (root && root !== cleanDomain(doc.domain) && (await isApexDomain(root).catch(() => false))) fallbackApex = root;
         }
       }
     } catch { /* keep null */ }
@@ -1176,15 +1181,13 @@ const actions = {
     const fallbackRequested =
       p.fallback === true || p.mode === "fallback" || p.useFallback === true;
     // Explicit apexSource pairing (legacy + new UI): valid only when it is a
-    // real apex whose www canonical equals the (possibly canonicalized) host.
+    // real registrable apex whose www canonical equals the host. The same rule
+    // covers fallback entered from the www side (apexSource=apex, host=www).
+    // Bare public suffixes (co.uk, …) fail isApexDomain and never pair.
     const paramApex = cleanDomain(p.apexSource);
     let paramApexValid = false;
     try {
       if (paramApex && (await isApexDomain(paramApex).catch(() => false)) && wwwForApex(paramApex) === host) {
-        paramApexValid = true;
-      } else if (paramApex && fallbackRequested) {
-        // Fallback entered from the www side sends apexSource=apex while host
-        // is already www — same pairing, accepted here too.
         paramApexValid = true;
       }
     } catch { /* pairing ignored */ }
@@ -1213,7 +1216,9 @@ const actions = {
           // read-only via domainInfo().fallback, and switching to
           // www.<root> is an explicit, confirmed new domain client-side.
           const derivedApex = apexForWww(host);
-          if (derivedApex) {
+          // The stripped remainder must itself be a registrable apex —
+          // www.co.uk strips to a bare public suffix, which must not pair.
+          if (derivedApex && (await isApexDomain(derivedApex).catch(() => false))) {
             apexSource = derivedApex;
             isApexFlow = true;
           }
@@ -1234,6 +1239,11 @@ const actions = {
     // Apex and www are independent primaries: each needs its own doc/payment.
     const reserved = new Set([systemShortHost(), routingTarget(), "tunnel.inoculens.com", "customers.inoculens.com", "proxy-fallback.inoculens.com", "inoculens.com", "www.inoculens.com"]);
     if (reserved.has(host) || (apexSource && reserved.has(apexSource)) || reserved.has(displayName)) return fail(400, "invalid-argument", "This domain is reserved for INOCULENS infrastructure.");
+    // Bare public suffixes (co.uk, com, …) are not registrable and can never
+    // verify — reject instead of creating an uncompletable setup.
+    try {
+      if (await isPublicSuffix(host).catch(() => false)) return fail(400, "invalid-argument", "That address is a public suffix, not a domain you can own. Use your own domain (e.g. example.com) instead.");
+    } catch { /* fail-open: suffix check never blocks registration */ }
     // Primary apex docs (example.com as its own host) follow the standard flow
     // (routing + TXT gating, payment). Fallback pairing additionally requires
     // the apex A/AAAA redirect before payment (client-side Continue gating).
@@ -1402,6 +1412,111 @@ const actions = {
     }
     if (!r) return fail(502, "unavailable", "DNS lookup failed, try again.");
     return ok({ apex, www: wwwHost, ...r, ok: r.aValid && r.aaaaValid });
+  },
+
+  // Exit fallback pairing: back to the recommended DNS setup (CNAME / ALIAS /
+  // ANAME / flattened CNAME directly on the host), no delete-and-restart.
+  // Owner-only, never destructive to anything of value:
+  // - Entered via www (or apex primary still exists): unpair in place. Same
+  //   doc, same TXT token (already-added TXT stays valid), verification /
+  //   payment / coverage untouched. Display falls back to the canonical host
+  //   when it would otherwise duplicate the surviving apex entry.
+  // - Entered via apex and the apex primary is gone: the www doc is swapped
+  //   back for a fresh apex primary when pristine (same strict guard as entry
+  //   dedupe: unpaid, unverified, no payment address shown, no promo, no
+  //   claim, no links). A touched setup instead unpairs in place and relabels
+  //   to its www address — links keep serving from www exactly as before, only
+  //   the app label changes, so exit never costs data, stats, or coverage.
+  async exitFallbackMode(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "exit-fallback", ip, 10))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
+    const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    if (doc.isApexFlow !== true) return ok(await domainInfo(doc, p.sessionId)); // already primary
+    const apex = (typeof doc.apexSource === "string" && doc.apexSource) || apexForWww(doc.domain);
+    const enteredViaApex = !!apex &&
+      (doc.displayName || "").toLowerCase() === apex.toLowerCase() &&
+      doc.domain.toLowerCase() !== apex.toLowerCase();
+    let apexPrimary = null;
+    if (apex && apex.toLowerCase() !== doc.domain.toLowerCase()) {
+      apexPrimary = await freshGet(s, `domain/${apex}`, { type: "json" }).catch(() => null);
+    }
+    const ownApexPrimary = apexPrimary && apexPrimary.sessionId === p.sessionId ? apexPrimary : null;
+    if (ownApexPrimary || !enteredViaApex) {
+      doc.isApexFlow = false;
+      delete doc.apexSource;
+      // Avoid twin labels with the surviving apex entry.
+      if (ownApexPrimary && (doc.displayName || "").toLowerCase() === (apex || "").toLowerCase()) {
+        doc.displayName = doc.domain;
+      }
+      if (!doc.displayName) doc.displayName = doc.domain;
+      await s.setJSON(`domain/${doc.domain}`, doc);
+      return ok(await domainInfo(doc, p.sessionId));
+    }
+    // Entered via apex, apex primary gone: swap back for a fresh apex primary
+    // when pristine; a touched setup unpairs in place and relabels to www
+    // (same doc, same links/coverage — exit never destroys value).
+    const pristine =
+      doc.paymentStatus !== "paid" &&
+      doc.isVerified !== true &&
+      doc.status === "pending_verification" &&
+      !doc.pendingClaim &&
+      !doc.discount &&
+      !doc.quote?.address &&
+      !(Array.isArray(doc.quoteHistory) && doc.quoteHistory.length) &&
+      !coverageValid(doc);
+    let hasLinks = false;
+    try {
+      const blobs = await listAll(s, "link/");
+      for (const b of blobs) {
+        if (String(b.key || "").startsWith(`link/${doc.domain}/`)) {
+          const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
+          if (l) { hasLinks = true; break; }
+        }
+      }
+    } catch { hasLinks = true; /* fail-closed: keep on read error */ }
+    if (!pristine || hasLinks) {
+      doc.isApexFlow = false;
+      delete doc.apexSource;
+      doc.displayName = doc.domain;
+      await s.setJSON(`domain/${doc.domain}`, doc);
+      return ok({ ...(await domainInfo(doc, p.sessionId)), relabeled: true });
+    }
+    // Defense in depth: the restored apex is re-validated like a fresh
+    // registration (registrable, unreserved, not a public suffix), even
+    // though it paired successfully on entry.
+    const reservedExit = new Set([systemShortHost(), routingTarget(), "tunnel.inoculens.com", "customers.inoculens.com", "proxy-fallback.inoculens.com", "inoculens.com", "www.inoculens.com"]);
+    if (!apex || !cleanDomain(apex) || reservedExit.has(apex.toLowerCase()) || (await isPublicSuffix(apex).catch(() => false))) {
+      return fail(400, "invalid-argument", "That apex address can no longer be restored — delete the domain and re-add it instead.");
+    }
+    try {
+      if (cfConfig()) await cfDeleteCustomHostname(doc.domain).catch(() => null);
+    } catch { /* best effort */ }
+    await s.delete(`domain/${doc.domain}`);
+    const delegation = sslDelegationTarget();
+    const fresh = {
+      domain: apex,
+      displayName: apex,
+      sessionId: p.sessionId,
+      status: "pending_verification",
+      paymentStatus: "unpaid",
+      isVerified: false,
+      verificationToken: newToken(32),
+      sslTarget: delegation || `automatic via Cloudflare (${routingTarget()})`,
+      dnsVerification: { cnameValid: false, txtVerified: false, sslVerified: false },
+      cfHostnameId: null,
+      cfHostnameStatus: null,
+      cfSslStatus: null,
+      discount: null,
+      quote: null,
+      createdAt: Date.now(),
+    };
+    await s.setJSON(`domain/${apex}`, fresh);
+    return ok(await domainInfo(fresh, p.sessionId));
   },
 
   async getDomainVerificationInfo(s, p) {
@@ -1594,7 +1709,15 @@ const actions = {
 
   async verifyCustomDomainDns(s, p) {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
-    const live = await verifyDns(doc.domain, doc.verificationToken).catch(() => ({
+    // Per-field mode: each Verify button checks ONLY its own record.
+    // "cname" → routing (CNAME/ALIAS/ANAME/flattened) + routable.
+    // "txt"   → ownership TXT. Anything else → full check (unchanged).
+    // Only the requested field is persisted and reported live; the other
+    // keeps its stored value so one button can never flip the other's badge.
+    const field = p.field === "cname" || p.field === "txt" ? p.field : "all";
+    const only = field === "all" ? null : field;
+    const stored = doc.dnsVerification || {};
+    const live = await verifyDns(doc.domain, doc.verificationToken, only).catch(() => ({
       cname: false,
       txt: false,
       ssl: false,
@@ -1602,22 +1725,40 @@ const actions = {
       cfHostnameStatus: null,
       cfSslStatus: null,
       routingMethod: null,
+      routingUnknown: true,
+      txtUnknown: true,
     }));
+    // Fail-open on hiccups (per-field only): a transport failure is UNKNOWN,
+    // not negative — the stored badge survives and the UI reports stale. A
+    // definitive empty answer still flips the badge. Full mode ("all", payment
+    // gating and direct API calls) keeps the legacy fail-closed persist.
+    const stale =
+      (field === "cname" && live.routingUnknown === true) ||
+      (field === "txt" && live.txtUnknown === true);
     // routable: true = resolves to edge, false = definitively unservable as
     // configured, null = unknown (fail-open, never blocks on lookup hiccups).
     // Routing valid = CNAME OR ALIAS OR ANAME OR flattened CNAME (live.cname).
-    const routable = live.routable === false ? false : live.routable === true ? true : null;
+    const liveRoutable = live.routable === false ? false : live.routable === true ? true : null;
+    const routable = field === "txt" || (field === "cname" && stale)
+      ? (stored.routable === false ? false : stored.routable === true ? true : null)
+      : liveRoutable;
+    const cnameValid = field === "txt" || (field === "cname" && stale) ? !!stored.cnameValid : !!live.cname;
+    const txtVerified = field === "cname" || (field === "txt" && stale) ? !!stored.txtVerified : !!live.txt;
     doc.dnsVerification = {
-      cnameValid: !!live.cname,
-      txtVerified: !!live.txt,
-      sslVerified: !!live.ssl,
+      cnameValid,
+      txtVerified,
+      sslVerified: field === "all" ? !!live.ssl : !!stored.sslVerified,
       routable,
-      routingMethod: live.routingMethod || null,
+      routingMethod: field === "txt" || (field === "cname" && stale) ? (stored.routingMethod || null) : (live.routingMethod || null),
     };
-    if (live.cfHostnameStatus) doc.cfHostnameStatus = live.cfHostnameStatus;
-    if (live.cfSslStatus) doc.cfSslStatus = live.cfSslStatus;
+    if (field === "all") {
+      if (live.cfHostnameStatus) doc.cfHostnameStatus = live.cfHostnameStatus;
+      if (live.cfSslStatus) doc.cfSslStatus = live.cfSslStatus;
+    }
     // Sticky ownership: once proven, stays proven (matches frontend).
-    if (live.cname && live.txt) doc.isVerified = true;
+    // Per-field clicks combine: a live TXT plus an already-stored routing
+    // pass (or vice versa) completes verification.
+    if (cnameValid && txtVerified) doc.isVerified = true;
     // Coverage can lapse independently of DNS: drop dead discounts and
     // demote before deciding activation below.
     refreshCoverage(doc);
@@ -1646,8 +1787,10 @@ const actions = {
     await s.setJSON(`domain/${doc.domain}`, doc);
     return ok({
       success: true,
+      field,
+      ...(stale ? { stale: true } : {}),
       isVerified: doc.isVerified,
-      checks: { cname: !!live.cname, txt: !!live.txt, ssl: !!doc.dnsVerification.sslVerified, routable, routingMethod: live.routingMethod || null },
+      checks: { cname: cnameValid, txt: txtVerified, ssl: !!doc.dnsVerification.sslVerified, routable, routingMethod: doc.dnsVerification.routingMethod || null },
       cfHostnameStatus: doc.cfHostnameStatus || live.cfHostnameStatus || null,
       cfSslStatus: doc.cfSslStatus || live.cfSslStatus || null,
       status: doc.status,

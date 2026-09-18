@@ -421,6 +421,11 @@
           <!-- Fallback pairing (IP safety net): hidden until the yellow banner opens it, or the doc is already paired -->
           <div id="apexRedirectCard"
             style="display: none; padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); flex-direction: column;">
+            <div style="display: flex; justify-content: flex-end; margin-bottom: 4px;">
+              <button id="exitFallbackBtn" onclick="exitFallbackMode()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();exitFallbackMode();}"
+                style="background: transparent; border: none; color: var(--text-muted); font-family: 'DM Sans', sans-serif; font-size: 0.75rem; font-weight: 600; cursor: pointer; padding: 2px 4px; text-decoration: underline; text-underline-offset: 2px;"
+                title="Go back to the recommended DNS setup">← Use recommended DNS instead</button>
+            </div>
             <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Apex Redirect</label>
             <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 8px;">Makes <span id="apexDomainName" style="font-family: monospace; color: var(--text);">example.com</span> forward to your www links (path-preserving). Add these records at your apex (@).</div>
             <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">A record @ (apex):</div>
