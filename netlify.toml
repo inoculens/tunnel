@@ -14,9 +14,11 @@
 #   (all verified via visible CNAME or live A/AAAA equality, IPv4 or IPv6)
 #     <custom> -> customers.inoculens.com
 #              TXT verification.<custom> -> <token> (ownership)
-#   Fallback pairing (IP safety net for providers without ALIAS): one www doc
-#   covers apex+www via apex A/AAAA -> 65.21.184.101 / 2a01:4f9:c012:a304::1
-#   (redirect edge, DNS-only) + www routing as above; single payment.
+#   Fallback pairing (IP safety net, uniform rule): for ANY entered host X, one
+#   doc serves short links from the canonical www.X while X itself 301s to it
+#   via A/AAAA -> 65.21.184.101 / 2a01:4f9:c012:a304::1 (redirect edge, proven
+#   live to map any Host -> www.Host path-preserving over v4+v6) + www.X
+#   routing as above; single payment. Only names derived from X are touched.
 #   Certificates use HTTP validation (automatic, no _acme-challenge record).
 #
 # DOMAINS on this Netlify site (Site settings → Domains, DNS-only in Cloudflare):

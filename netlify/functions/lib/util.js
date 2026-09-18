@@ -619,12 +619,13 @@ export function systemShortHost() {
   return (process.env.SITE_URL || "s.inoculens.com").toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
 }
 
-// Apex (naked) domains like example.com cannot take a CNAME, so short links
-// are served from the www canonical (www.example.com, normal SaaS CNAME flow)
-// while the apex 301-redirects to www via a free redirect edge (apextowww.com,
-// path-preserving). Subdomain flow (go.example.com etc.) is unchanged.
-// Only inputs detected as apex take the apex->www branch; everything else
-// follows the exact pre-existing path.
+// Uniform fallback pairing: fallback(X) serves short links from the canonical
+// www.X (normal SaaS CNAME flow) while X itself 301-redirects to www.X via the
+// redirect edge — for ANY entered X (apex, www, or deeper). Proven live: the
+// edge maps any Host -> www.Host, path-preserving, over IPv4 and IPv6, so the
+// pairing never touches names outside what the user entered (no zone-apex
+// hijacking). The entered host is always the display label + identity anchor;
+// the canonical only ever appears inside the routing DNS instructions.
 export const APEX_REDIRECT_IPV4 = "65.21.184.101";
 export const APEX_REDIRECT_IPV6 = "2a01:4f9:c012:a304::1";
 
@@ -632,17 +633,27 @@ export function apexRedirectTargets() {
   return { ipv4: APEX_REDIRECT_IPV4, ipv6: APEX_REDIRECT_IPV6 };
 }
 
+// Canonical for a fallback redirect host (X -> www.X), whatever X looks like —
+// including hosts that already start with www. (www.apex.com -> www.www.apex.com).
+// Length-guarded: over-long inputs yield null instead of an invalid hostname.
+export function fallbackCanonicalFor(host) {
+  const d = cleanDomain(host);
+  if (!d || d.length + 4 > 253) return null;
+  return `www.${d}`;
+}
+
 // Derive the www canonical for an apex (example.com -> www.example.com).
-// Blind prefixer (returns null only for empty/www. inputs) — callers guard
-// with isApexDomain first, so non-apex hosts never reach it.
+// Blind prefixer (returns null only for empty/www. inputs) — legacy pairing
+// path only; new code uses fallbackCanonicalFor above.
 export function wwwForApex(apex) {
   const d = cleanDomain(apex);
   if (!d || d.startsWith("www.")) return null;
   return `www.${d}`;
 }
 
-// Derive the apex for a www canonical (www.example.com -> example.com).
-// Returns null for non-www hosts (go.example.com etc. have no apex redirect).
+// Inverse of the uniform pairing: strip one www. level to recover the redirect
+// host (www.example.com -> example.com, www.www.apex.com -> www.apex.com).
+// Legacy name kept to avoid churning every call site.
 export function apexForWww(wwwDomain) {
   const d = cleanDomain(wwwDomain);
   if (!d || !d.startsWith("www.")) return null;
@@ -650,8 +661,8 @@ export function apexForWww(wwwDomain) {
   return apex && apex.includes(".") ? apex : null;
 }
 
-// Advisory DNS read (never writes): does the apex A/AAAA point at the
-// free redirect edge? Fail-open: lookup errors yield null (unknown).
+// Advisory DNS read (never writes): does the fallback redirect host's A/AAAA
+// point at the redirect edge? Fail-open: lookup errors yield null (unknown).
 // Callers decide gating (first-time Continue + claim transfer require it).
 export async function verifyApexRedirect(apex) {
   const d = cleanDomain(apex);

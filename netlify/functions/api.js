@@ -26,7 +26,6 @@ import {
   dcvDelegationSuffix,
   isApexDomain,
   isPublicSuffix,
-  registrableRoot,
   sslDelegationTarget,
   cfConfig,
   cfGetCustomHostname,
@@ -65,6 +64,7 @@ import {
   apexRedirectTargets,
   wwwForApex,
   apexForWww,
+  fallbackCanonicalFor,
   verifyApexRedirect as verifyApexRedirectDns,
 } from "./lib/util.js";
 // Static import (not dynamic): node_bundler="nft" traces static imports for
@@ -215,6 +215,93 @@ async function ensureSaaSHostname(doc) {
   }
 }
 
+// Convert a touched primary (redirect host X) into its fallback pair on the
+// canonical www.X — the explicit user-confirmed alternative to refusing with
+// 409. Everything of value moves so NO new payment is ever charged:
+// coverage + payment state, current/retired quotes (in-flight money still
+// credits), settled-address guards (funds can never double-trigger), promo
+// grant, consent record, root-routing target, and every link with its click
+// rows and count shards (slugs resolve on www.X; old X/… URLs keep working
+// through the path-preserving redirect). Caller guarantees: same session,
+// no pendingClaim, no www.X doc, explicit p.convert === true.
+// Non-atomic by design (batched writes); the hourly watcher window is
+// negligible and moved lastPaymentAt/paidAt guards keep it consistent.
+async function migratePrimaryToFallback(s, p, srcDoc, host, redirect, display) {
+  const delegation = sslDelegationTarget();
+  const now = Date.now();
+  const dest = {
+    domain: host,
+    displayName: display || redirect,
+    sessionId: p.sessionId,
+    status: "pending_verification",
+    paymentStatus: srcDoc.paymentStatus === "paid" ? "paid" : "unpaid",
+    coverageExpiresAt: srcDoc.coverageExpiresAt || null,
+    coverageLifetime: srcDoc.coverageLifetime === true,
+    lastPaymentAt: srcDoc.lastPaymentAt || null,
+    paidAddress: srcDoc.paidAddress || null,
+    paidAmount: srcDoc.paidAmount || null,
+    ignoredAddresses: Array.isArray(srcDoc.ignoredAddresses) ? [...srcDoc.ignoredAddresses] : [],
+    quote: srcDoc.quote || null,
+    quoteHistory: Array.isArray(srcDoc.quoteHistory) ? [...srcDoc.quoteHistory] : [],
+    discount: srcDoc.discount || null,
+    withdrawalConsent: srcDoc.withdrawalConsent || null,
+    apexTarget: (typeof srcDoc.apexTarget === "string" && srcDoc.apexTarget) ? srcDoc.apexTarget : null,
+    apexUpdatedAt: srcDoc.apexUpdatedAt || null,
+    isVerified: false,
+    verificationToken: newToken(32),
+    sslTarget: delegation || `automatic via Cloudflare (${routingTarget()})`,
+    dnsVerification: { cnameValid: false, txtVerified: false, sslVerified: false },
+    cfHostnameId: null,
+    cfHostnameStatus: null,
+    cfSslStatus: null,
+    createdAt: now,
+    isApexFlow: true,
+    apexSource: redirect,
+  };
+  await s.setJSON(`domain/${host}`, dest);
+  // Links move host (short URLs rewritten to the canonical); bodies keep
+  // tokens, labels, counts, and quarantine flags. Write-new-then-delete.
+  const linkBlobs = await listAll(s, "link/");
+  const doomedLinks = linkBlobs.filter((b) => String(b.key || "").startsWith(`link/${redirect}/`));
+  await mapWithConcurrency(doomedLinks, 12, async (b) => {
+    const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
+    if (!l || !l.code) return;
+    const nl = { ...l, domain: host };
+    try {
+      const u = new URL(l.short);
+      u.hostname = host;
+      nl.short = u.toString();
+    } catch { nl.short = `https://${host}/${l.code}`; }
+    await s.setJSON(linkKey(host, l.code), nl);
+    await s.delete(b.key);
+  });
+  // Click detail rows carry no host field — re-key only.
+  const clickBlobs = await listAll(s, `clicks/${redirect}/`);
+  await mapWithConcurrency(clickBlobs, 12, async (b) => {
+    const key = String(b.key || "");
+    const rest = key.slice(`clicks/${redirect}/`.length);
+    if (!rest || rest.includes("..")) return;
+    const c = await freshGet(s, key, { type: "json" }).catch(() => null);
+    if (c) await s.setJSON(`clicks/${host}/${rest}`, c);
+    await s.delete(key);
+  });
+  // Count shards + day aggs: counts/<h>/<code>/… — swap the host segment.
+  const countBlobs = await listAll(s, `counts/${redirect}/`);
+  await mapWithConcurrency(countBlobs, 12, async (b) => {
+    const parts = String(b.key || "").split("/");
+    if (parts.length < 4 || parts[0] !== "counts") return;
+    parts[1] = host;
+    const c = await freshGet(s, b.key, { type: "json" }).catch(() => null);
+    if (c) await s.setJSON(parts.join("/"), c);
+    await s.delete(b.key);
+  });
+  try {
+    if (cfConfig()) await cfDeleteCustomHostname(redirect).catch(() => null);
+  } catch { /* best effort: redirect serves 301s, never links */ }
+  await s.delete(`domain/${redirect}`);
+  return dest;
+}
+
 // ---------- small data-access helpers ----------
 // Blobs edge reads lag writes by a few seconds in practice: a session or
 // link created moments ago can still read back as missing on the next call
@@ -353,11 +440,13 @@ async function domainInfo(doc, viewerSessionId = null) {
   // pending token via the pendingClaim branch). TXT is public DNS anyway,
   // but no reason to hand it to anyone who knows the domain name.
   const ownerToken = isOwner ? doc.verificationToken : null;
-  // Fallback pairing (additive): docs with apexSource/isApexFlow cover
-  // apex+www via one www doc + apex redirect. Primary docs (including apex
-  // primaries like example.com) have neither — they verify/serve alone.
+  // Uniform fallback pairing: a paired doc (apexSource/isApexFlow) serves short
+  // links from its canonical host while its redirect host X 301-redirects to
+  // it (X = whatever was entered: apex, www, or deeper). Unpaired primaries
+  // have no pairing context — fallback is entered per host from the UI, which
+  // derives www.X locally, so no zone guessing happens here.
   // displayName is what the user originally typed (write-once); legacy docs
-  // without it fall back to apexSource (entered via apex) or canonical.
+  // without it fall back to the redirect host or canonical.
   const apexTargets = apexRedirectTargets();
   const storedApex = typeof doc.apexSource === "string" && doc.apexSource ? doc.apexSource : null;
   const derivedApex = apexForWww(doc.domain);
@@ -365,27 +454,9 @@ async function domainInfo(doc, viewerSessionId = null) {
   const displayName =
     (typeof doc.displayName === "string" && doc.displayName ? doc.displayName : null) ||
     (doc.isApexFlow === true && apexHost ? apexHost : doc.domain);
-  // Fallback card context for ANY host: paired apex/www when known, else the
-  // zone's apex/www so users without ALIAS support still have a path. The
-  // card is display-only here; gating still uses isApexFlow + live DNS.
-  // Roots come from the public-suffix list (registrableRoot) — never from a
-  // naive last-two-labels slice, which mis-derives multi-label suffix zones
-  // (go.example.co.uk is example.co.uk, not co.uk).
-  let fallbackApex = apexHost;
-  if (!fallbackApex) {
-    try {
-      if (await isApexDomain(doc.domain)) fallbackApex = cleanDomain(doc.domain);
-      else {
-        const a = apexForWww(doc.domain);
-        if (a && (await isApexDomain(a).catch(() => false))) fallbackApex = a;
-        else {
-          const root = await registrableRoot(doc.domain).catch(() => null);
-          if (root && root !== cleanDomain(doc.domain) && (await isApexDomain(root).catch(() => false))) fallbackApex = root;
-        }
-      }
-    } catch { /* keep null */ }
-  }
-  const fallbackWww = fallbackApex ? wwwForApex(fallbackApex) : (doc.domain && doc.domain.startsWith("www.") ? doc.domain : null);
+  // Paired docs only: the canonical IS this doc's host by construction.
+  const fallbackApex = apexHost;
+  const fallbackWww = fallbackApex ? doc.domain : null;
   return {
     domain: doc.domain,
     id: doc.domain,
@@ -1180,11 +1251,19 @@ const actions = {
     let isApexFlow = false;
     const fallbackRequested =
       p.fallback === true || p.mode === "fallback" || p.useFallback === true;
-    // Explicit apexSource pairing (legacy + new UI): valid only when it is a
-    // real registrable apex whose www canonical equals the host. The same rule
-    // covers fallback entered from the www side (apexSource=apex, host=www).
-    // Bare public suffixes (co.uk, …) fail isApexDomain and never pair.
+    // Explicit redirect intent (new UI sends the typed host as apexSource):
+    // valid when it pairs exactly with the host under the uniform rule
+    // (host === www.redirect). Legacy apex sources keep working through the
+    // same check whenever psl agrees they are registrable apexes.
     const paramApex = cleanDomain(p.apexSource);
+    let redirectPairsHost = false;
+    try {
+      if (paramApex && fallbackCanonicalFor(paramApex) === host) {
+        redirectPairsHost = true;
+      }
+    } catch { /* pairing ignored */ }
+    // Legacy apex validated the old way (kept for old callers sending
+    // apexSource without a fallback flag).
     let paramApexValid = false;
     try {
       if (paramApex && (await isApexDomain(paramApex).catch(() => false)) && wwwForApex(paramApex) === host) {
@@ -1192,44 +1271,30 @@ const actions = {
       }
     } catch { /* pairing ignored */ }
     if (fallbackRequested) {
-      // Normalize to the www canonical so one doc covers both names.
-      // Accepts apex input (example.com -> www.example.com), www input
-      // (stays www.example.com, apex derived), or explicit apexSource.
+      // Uniform rule: pair (X, www.X) for whatever X was entered. The redirect
+      // host X takes A/AAAA to the redirect edge; the canonical www.X takes
+      // the routing record. Only names derived from the entered host are ever
+      // touched — never another zone's apex.
       try {
-        if (paramApexValid && paramApex) {
+        if (redirectPairsHost) {
           apexSource = paramApex;
-          host = wwwForApex(paramApex) || host;
-          // Record what the user actually typed: apex entry shows apex, www
-          // entry shows www. The optional p.display is constrained to the two
-          // hosts of this pairing (never trusted blindly); legacy callers
-          // without it keep the long-standing apex display.
+          // Record what the user actually typed: X entry shows X, www entry
+          // shows www. The optional p.display is constrained to the two hosts
+          // of this pairing (never trusted blindly); callers without it keep
+          // the redirect host as display.
           const wantDisplay = cleanDomain(p.display);
           displayName = (wantDisplay && (wantDisplay === host || wantDisplay === paramApex))
             ? wantDisplay
             : paramApex;
           isApexFlow = true;
-        } else if (await isApexDomain(host).catch(() => false)) {
-          const canonical = wwwForApex(host);
-          if (canonical) {
-            apexSource = host;
-            displayName = rawHost;
-            host = canonical;
-            isApexFlow = true;
-          }
         } else {
-          // www input stays www (apex derived). Other subdomains
-          // (go./s./etc.) have no apex/www pair for THIS host: never mark
-          // them as fallback (that would wrongly gate payment on an apex
-          // redirect). The fallback card context for their zone is supplied
-          // read-only via domainInfo().fallback, and switching to
-          // www.<root> is an explicit, confirmed new domain client-side.
-          const derivedApex = apexForWww(host);
-          // The stripped remainder must itself be a registrable apex —
-          // www.co.uk strips to a bare public suffix, which must not pair.
-          if (derivedApex && (await isApexDomain(derivedApex).catch(() => false))) {
-            apexSource = derivedApex;
-            isApexFlow = true;
-          }
+          const X = rawHost;
+          const canonical = fallbackCanonicalFor(X);
+          if (!canonical) return fail(400, "invalid-argument", "Invalid domain name.");
+          apexSource = X;
+          displayName = rawHost;
+          host = canonical;
+          isApexFlow = true;
         }
       } catch { /* fail-open to host as typed */ }
     } else if (paramApexValid && paramApex) {
@@ -1265,28 +1330,28 @@ const actions = {
     // Manage never lists two identical entries. Strictly fail-closed: anything
     // touched (verified, paid, quoted, discounted, claimed, linked) is kept —
     // the user then owns two genuinely independent setups by design.
-    const retirePristineApexPrimary = async (apexHost) => {
+    const retirePristinePrimary = async (primaryHost) => {
       try {
-        if (!apexHost || apexHost === host) return;
-        const apexDoc = await freshGet(s, `domain/${apexHost}`, { type: "json" });
+        if (!primaryHost || primaryHost === host) return;
+        const primaryDoc = await freshGet(s, `domain/${primaryHost}`, { type: "json" });
         const pristine =
-          apexDoc &&
-          apexDoc.sessionId === p.sessionId &&
-          apexDoc.paymentStatus !== "paid" &&
-          apexDoc.isVerified !== true &&
-          apexDoc.status === "pending_verification" &&
-          !apexDoc.pendingClaim &&
-          !apexDoc.discount &&
-          !apexDoc.quote?.address &&
-          !(Array.isArray(apexDoc.quoteHistory) && apexDoc.quoteHistory.length) &&
-          !coverageValid(apexDoc);
+          primaryDoc &&
+          primaryDoc.sessionId === p.sessionId &&
+          primaryDoc.paymentStatus !== "paid" &&
+          primaryDoc.isVerified !== true &&
+          primaryDoc.status === "pending_verification" &&
+          !primaryDoc.pendingClaim &&
+          !primaryDoc.discount &&
+          !primaryDoc.quote?.address &&
+          !(Array.isArray(primaryDoc.quoteHistory) && primaryDoc.quoteHistory.length) &&
+          !coverageValid(primaryDoc);
         if (!pristine) return;
         let hasLinks = false;
         try {
           const blobs = await listAll(s, "link/");
           for (const b of blobs) {
             const k = String(b.key || "");
-            if (k.startsWith(`link/${apexHost}/`)) {
+            if (k.startsWith(`link/${primaryHost}/`)) {
               const l = await freshGet(s, k, { type: "json" }).catch(() => null);
               if (l) { hasLinks = true; break; }
             }
@@ -1294,20 +1359,69 @@ const actions = {
         } catch { hasLinks = true; /* fail-closed: keep on read error */ }
         if (hasLinks) return;
         try {
-          if (cfConfig()) await cfDeleteCustomHostname(apexHost).catch(() => null);
+          if (cfConfig()) await cfDeleteCustomHostname(primaryHost).catch(() => null);
         } catch { /* best effort */ }
-        await s.delete(`domain/${apexHost}`);
+        await s.delete(`domain/${primaryHost}`);
       } catch { /* dedupe best-effort, never blocks */ }
     };
-    if (isApexFlow && apexSource) await retirePristineApexPrimary(apexSource);
+    if (isApexFlow && apexSource) await retirePristinePrimary(apexSource);
     const existing = await freshGet(s, `domain/${host}`, { type: "json" });
-    // Stamp fallback pairing onto docs missing it — owner sessions ONLY.
+    // Twin state: same-session primary on the redirect host carrying value.
+    // Pairing must never implicitly take over such a setup (its DNS serves
+    // live links) — stamping skips it, creation refuses it, conversion moves
+    // it only on explicit user confirmation. Computed once, reused below.
+    let twinDoc = null;
+    let twinTouched = false;
+    if (isApexFlow && apexSource && host !== apexSource) {
+      const d = await freshGet(s, `domain/${apexSource}`, { type: "json" }).catch(() => null);
+      if (d && d.sessionId === p.sessionId) {
+        twinDoc = d;
+        twinTouched = d.isVerified === true || d.paymentStatus === "paid" ||
+          !!d.quote?.address || (Array.isArray(d.quoteHistory) && d.quoteHistory.length > 0) ||
+          !!d.discount || !!d.pendingClaim || coverageValid(d);
+        if (!twinTouched) {
+          try {
+            const blobs = await listAll(s, "link/");
+            for (const b of blobs) {
+              if (String(b.key || "").startsWith(`link/${apexSource}/`)) {
+                const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
+                if (l) { twinTouched = true; break; }
+              }
+            }
+          } catch { twinTouched = true; /* fail-closed */ }
+        }
+      }
+    }
+    // Convert: explicit user-confirmed migration of the touched primary into
+    // the pair (no new payment, links/stats/coverage move). Only when the
+    // canonical is free; a pending claim must resolve first; an owned
+    // canonical setup can never be merged into.
+    if (p.convert === true && fallbackRequested && isApexFlow && apexSource && host !== apexSource && twinDoc) {
+      if (existing && existing.sessionId === p.sessionId) {
+        const samePair = existing.isApexFlow === true && (existing.apexSource || "").toLowerCase() === apexSource.toLowerCase();
+        if (samePair) return ok(await domainInfo(existing, p.sessionId)); // nothing to convert
+        return fail(409, "already-exists", `${host} is already set up on its own — delete one of the two setups first.`);
+      }
+      if (!existing) {
+        if (twinDoc.pendingClaim) {
+          return fail(409, "failed-precondition", `A takeover claim is pending on ${apexSource} — resolve it first.`);
+        }
+        if (twinTouched) {
+          const dest = await migratePrimaryToFallback(s, p, twinDoc, host, apexSource, displayName || apexSource);
+          return ok({ ...(await domainInfo(dest, p.sessionId)), converted: true });
+        }
+        // Pristine → fall through (dedupe retired it; normal create below).
+      }
+      // Foreign canonical → fall through to pendingClaim handling below.
+    }
+    // Stamp fallback pairing onto docs missing it — owner sessions ONLY, and
+    // never over a touched twin (that would hijack its live DNS config).
     // A stranger's fallback input must never mutate another session's doc (no
     // card flips, no new payment gates for the owner). Claimants stamp at
     // transfer time instead (see verifyClaimedDomainDns), once proven.
     // displayName is write-once (first entry wins) so the list always shows
     // what the user originally typed.
-    if (existing && isApexFlow && !existing.isApexFlow && apexSource && existing.sessionId === p.sessionId) {
+    if (existing && isApexFlow && !existing.isApexFlow && apexSource && existing.sessionId === p.sessionId && !twinTouched) {
       existing.isApexFlow = true;
       existing.apexSource = apexSource;
       if (!existing.displayName) existing.displayName = displayName || host;
@@ -1327,7 +1441,7 @@ const actions = {
     // pristine apex primary left behind by an earlier fallback entry, so the
     // list converges back to one entry without the user deleting anything.
     if (existing && existing.isApexFlow && existing.sessionId === p.sessionId) {
-      await retirePristineApexPrimary(existing.apexSource || apexSource || null);
+      await retirePristinePrimary(existing.apexSource || apexSource || null);
     }
     if (existing) {
       if (existing.sessionId !== p.sessionId) {
@@ -1374,30 +1488,11 @@ const actions = {
         d.domain || ""
       ).toLowerCase();
     };
-    if (isApexFlow && apexSource && host !== apexSource) {
-      // Fallback entry from an apex whose recommended setup already carries
-      // value (verified, paid, quoted, discounted, covered, or linked): refuse
-      // instead of twinning the label. Pristine primaries were retired above.
-      const apexDoc = await freshGet(s, `domain/${apexSource}`, { type: "json" }).catch(() => null);
-      if (apexDoc && apexDoc.sessionId === p.sessionId) {
-        let twinTouched = apexDoc.isVerified === true || apexDoc.paymentStatus === "paid" ||
-          !!apexDoc.quote?.address || (Array.isArray(apexDoc.quoteHistory) && apexDoc.quoteHistory.length > 0) ||
-          !!apexDoc.discount || !!apexDoc.pendingClaim || coverageValid(apexDoc);
-        if (!twinTouched) {
-          try {
-            const blobs = await listAll(s, "link/");
-            for (const b of blobs) {
-              if (String(b.key || "").startsWith(`link/${apexSource}/`)) {
-                const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
-                if (l) { twinTouched = true; break; }
-              }
-            }
-          } catch { twinTouched = true; /* fail-closed */ }
-        }
-        if (twinTouched) {
-          return fail(409, "already-exists", `${apexSource} is already set up with recommended DNS — open its setup instead of adding it twice. To use the fallback for it, delete that setup first.`);
-        }
-      }
+    // Creation guard (no canonical doc exists at this point): a touched twin
+    // refuses instead of twinning the label — the UI offers Convert for this
+    // case, which migrates instead of deleting.
+    if (isApexFlow && apexSource && host !== apexSource && twinDoc && twinTouched) {
+      return fail(409, "already-exists", `${apexSource} is already set up with recommended DNS — open its setup instead of adding it twice. To use the fallback for it, convert that setup (no new payment) or delete it first.`);
     }
     if (!isApexFlow) {
       // Primary entry displaying an already-taken label: hand back the owned
@@ -1451,10 +1546,13 @@ const actions = {
       e.code = "resource-exhausted";
       throw e;
     }
-    // Throws 400/404/403 unless the caller owns this www doc.
+    // Throws 400/404/403 unless the caller owns this doc. Only paired docs
+    // have a redirect host (stored at pairing time) — unpaired docs, including
+    // plain www hosts, have nothing to check and are rejected outright.
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    if (doc.isApexFlow !== true) return fail(400, "invalid-argument", "Redirect check applies to fallback-paired setups only.");
     const apex = (typeof doc.apexSource === "string" && doc.apexSource) || apexForWww(doc.domain);
-    if (!apex) return fail(400, "invalid-argument", "Apex redirect applies to www domains only.");
+    if (!apex) return fail(400, "invalid-argument", "Redirect check applies to fallback-paired setups only.");
     const wwwHost = doc.domain;
     const cacheKey = `apexcheck/${apex}`;
     let r = null;
@@ -1653,29 +1751,13 @@ const actions = {
     const live = await verifyDns(doc.domain, doc.pendingClaim.token).catch(() => ({
       cname: false, txt: false, ssl: false, routable: null, routingMethod: null, alias: false,
     }));
-    // Claimant fallback intent (validated): an apex-typed input for this www
-    // canonical, or explicit fallback flag. Computed before any check so every
-    // response below can name the full requirement set. Never mutates pre-proof.
-    // Primary claims (exact host, routing via CNAME/ALIAS/ANAME/flattened +
-    // TXT) skip the apex gate entirely.
-    let claimApexByInput = null;
-    const claimParamApex = cleanDomain(p.apexSource);
-    if (claimParamApex && claimParamApex !== doc.domain) {
-      try {
-        if ((await isApexDomain(claimParamApex)) && wwwForApex(claimParamApex) === doc.domain) {
-          claimApexByInput = claimParamApex;
-        }
-      } catch { /* claimant apex ignored */ }
-    }
-    const claimFallbackFlag = p.fallback === true || p.mode === "fallback" || p.useFallback === true;
-    let claimFallbackApex = claimApexByInput;
-    if (!claimFallbackApex && claimFallbackFlag) {
-      try {
-        claimFallbackApex = (typeof doc.apexSource === "string" && doc.apexSource) || apexForWww(doc.domain) || null;
-      } catch { /* ignore */ }
-    }
-    const claimApexFlow = doc.isApexFlow === true || !!claimApexByInput || claimFallbackFlag;
-    const claimApexHost = (typeof doc.apexSource === "string" && doc.apexSource) || claimApexByInput || claimFallbackApex || apexForWww(doc.domain);
+    // Pairing is doc-driven under the uniform rule: an already-paired doc
+    // requires its stored redirect host too; unpaired docs need routing +
+    // TXT only. Claimant intent params can no longer add a pairing (that
+    // would bind a foreign zone apex) — they are accepted but ignored.
+    const claimApexFlow = doc.isApexFlow === true;
+    const claimApexHost = (typeof doc.apexSource === "string" && doc.apexSource) ||
+      (claimApexFlow ? apexForWww(doc.domain) : null);
     if (!(live.cname && live.txt)) {
       return ok({
         success: false,
@@ -1686,9 +1768,9 @@ const actions = {
         status: doc.status,
       });
     }
-    // Fallback gate for transfers: required when the doc is fallback-paired
-    // (prior onboarding) OR the claimant explicitly chose fallback. Primary
-    // claims skip entirely — routing via CNAME/ALIAS/ANAME/flattened is enough.
+    // Fallback gate for transfers: required only when the doc itself is
+    // fallback-paired. Unpaired claims skip it entirely — routing via
+    // CNAME/ALIAS/ANAME/flattened plus TXT is enough.
     if (claimApexFlow) {
       if (claimApexHost) {
         const ar = await verifyApexRedirectDns(claimApexHost).catch(() => null);
@@ -1711,17 +1793,7 @@ const actions = {
     doc.verificationToken = doc.pendingClaim.token;
     doc.pendingClaim = null;
     doc.isVerified = true;
-    // Stamp fallback pairing at transfer when the claimant proved fallback
-    // intent (explicit flag or apex input): ownership just moved, so this
-    // write is legitimate (unlike pre-proof stamping, which is owner-only).
     // displayName is preserved (first entry wins) so lists never flicker.
-    if ((claimApexByInput || claimFallbackFlag) && !doc.isApexFlow) {
-      const stampApex = claimApexByInput || claimFallbackApex || apexForWww(doc.domain);
-      if (stampApex) {
-        doc.isApexFlow = true;
-        doc.apexSource = stampApex;
-      }
-    }
     if (!doc.displayName) doc.displayName = doc.domain;
     doc.dnsVerification = {
       cnameValid: true,
