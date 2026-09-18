@@ -907,6 +907,49 @@
         renderDomainOptions();
       }
 
+      // Reconcile shortening + history selections after an operation retires a
+      // host (exit/convert/migrate delete one doc and create another). Without
+      // this, a selection left pointing at the retired host mints into a 403
+      // ("Domain Not Active") and the history filter shows an empty list while
+      // the moved links sit under the new host. Selections pointing at live
+      // hosts are never touched.
+      function reconcileSelections(canon) {
+        if (!canon) return;
+        try {
+          const known = new Set(['s.inoculens.com']);
+          (userCustomDomains || []).forEach((d) => {
+            if (d && d.domain) known.add(String(d.domain).toLowerCase());
+          });
+          const selHost = String(selectedDomain || '').replace(/\/$/, '').toLowerCase();
+          if (selHost && !known.has(selHost)) {
+            try { selectDomain(canon + '/'); } catch (e) {}
+          }
+          const filtHost = String(selectedHistoryDomain || '').replace(/\/$/, '').toLowerCase();
+          if (selectedHistoryDomain !== 'all' && filtHost && !known.has(filtHost)) {
+            try { selectHistoryFilter(canon + '/', displayHost(canon) + '/'); } catch (e) {}
+          }
+        } catch (e) {}
+      }
+      function reconcileAfterHostChange(resultDomain) {
+        const canon = String(resultDomain || '').toLowerCase();
+        if (!canon) return;
+        reconcileSelections(canon);
+        try { renderHistory(currentLinks); } catch (e) {}
+        // One delayed pass to outlast Blobs tombstone lag: a just-deleted doc
+        // can otherwise ghost back into the list for a few seconds and leave
+        // the selections dangling again.
+        try {
+          setTimeout(() => {
+            try {
+              Promise.resolve(loadUserDomains()).catch(() => {}).then(() => {
+                try { reconcileSelections(canon); } catch (e) {}
+                try { renderHistory(currentLinks); } catch (e) {}
+              });
+            } catch (e) {}
+          }, 5000);
+        } catch (e) {}
+      }
+
       function renderDomainOptions() {
         const dropdown = document.getElementById('domainDropdown');
         const historyFilterDropdown = document.getElementById('historyFilterDropdown');
@@ -917,6 +960,21 @@
         // Update creation dropdown
         const existingOptions = dropdown.querySelectorAll('.domain-option:not(.add-new)');
         existingOptions.forEach(opt => opt.remove());
+
+        // Twin warning (legacy/residual rows predating the creation guards):
+        // two setups sharing one label render identically and links may land
+        // on either. Non-interactive; points at Manage (which routes each row
+        // by its canonical host) so one of them can be deleted.
+        try {
+          const twins = window._domainTwins || [];
+          if (Array.isArray(twins) && twins.length) {
+            const warnOpt = document.createElement('div');
+            warnOpt.className = 'domain-option';
+            warnOpt.style.cursor = 'default';
+            warnOpt.innerHTML = `<span style="white-space: normal; font-size: 0.75rem; color: #fbd665;">⚠️ ${escapeHTML(twins.slice(0, 3).join(', '))}${twins.length > 3 ? ` (+${twins.length - 3} more)` : ''} appears more than once — open each via Manage and delete the setup you don't need.</span>`;
+            dropdown.insertBefore(warnOpt, document.getElementById('dropdownAddNew'));
+          }
+        } catch (e) {}
 
         const systemOpt = document.createElement('div');
         systemOpt.className = `domain-option ${selectedDomain === 's.inoculens.com/' ? 'selected' : ''}`;
@@ -2398,6 +2456,7 @@
             fallback: data.fallback || null
           });
           showStep('verification');
+          try { reconcileAfterHostChange(data.domain || cur); } catch (e) {}
           if (data.restored === true) {
             showToast('Recommended DNS restored — add the routing and TXT records for this address.', 'success');
           } else if (data.relabeled === true) {
@@ -2518,6 +2577,7 @@
             fallback: data.fallback || null
           });
           showStep('verification');
+          try { reconcileAfterHostChange(data.domain || www); } catch (e) {}
           if (data.converted === true) {
             showToast('Converted — links, stats, and coverage moved over; no new payment needed.', 'success');
           }
@@ -2702,6 +2762,9 @@
           try {
             const response = await getDomainsFn({ sessionId: sid });
             userCustomDomains = response.data.domains || [];
+            // Twin labels flagged server-side (legacy/residual rows predating
+            // the creation guards): rendered as a warning, never auto-merged.
+            try { window._domainTwins = response.data.twins || []; } catch (e) { window._domainTwins = []; }
             window._domainsSettled = true;
             // Converge the boot paint: if live flags differ from the cached
             // map (or populate it first-run), repaint so www-first flickers
@@ -2867,13 +2930,28 @@
         const ready = info.status === 'active' && info.coverageValid === true;
         // Display form follows what the user originally typed (displayName);
         // the canonical d below still drives all actions + routing storage.
+        // Twin rows share one label: show the canonical host muted underneath
+        // so the two can be told apart when choosing which one to delete.
+        // (Single-doc fetch carries no twin flag — derive from the live list.)
         const menuDisp = info.displayName || d;
+        let twinHere = info.twin === true;
+        if (!twinHere) {
+          try {
+            const myLabel = String(info.displayName || d).toLowerCase();
+            twinHere = (userCustomDomains || []).some((x) => x &&
+              String(x.domain || '').toLowerCase() !== String(d).toLowerCase() &&
+              String(displayHost(x.domain)).toLowerCase() === myLabel);
+          } catch (e) {}
+        }
+        const twinSub = twinHere
+          ? `<div style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">serves as <span style="font-family: monospace;">${escapeHTML(d)}</span></div>`
+          : '';
         const apexRow = ready
           ? `<button class="modal-btn modal-btn-ok" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('apex', ${escapeJS(d)})">Configure APEX routing</button>`
           : `<div style="margin-top: 12px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); font-size: 0.8rem; color: var(--text-muted); text-align: center;">APEX routing unlocks once the domain is paid and active.</div>`;
         showCustomModal({
           title: menuDisp,
-          message: `<div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 4px;">What would you like to manage?</div>
+          message: `<div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 4px;">What would you like to manage?</div>${twinSub}
             <button class="modal-btn modal-btn-cancel" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('dns', ${escapeJS(d)})">Configure DNS</button>
             ${apexRow}
             <button class="modal-btn modal-btn-danger" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('delete', ${escapeJS(d)})">Delete Domain</button>`,

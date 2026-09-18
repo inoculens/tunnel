@@ -1195,7 +1195,32 @@ const actions = {
       if (refreshCoverage(d)) await s.setJSON(`domain/${d.domain}`, d);
       return domainInfo(d, p.sessionId);
     });
-    return ok({ domains: out });
+    // Twin surfacing: two own setups sharing one display label (legacy or
+    // residual rows predating the creation guards) would otherwise render as
+    // two identical rows with no way to tell them apart. Flag them so the UI
+    // can explain and offer per-row Manage (which routes by canonical host).
+    // Never auto-merge: touched twins may hold distinct links/value.
+    try {
+      const seen = new Map();
+      for (const info of out) {
+        const label = String(info.displayName || info.domain || "").toLowerCase();
+        if (!label) continue;
+        const canon = String(info.domain || "").toLowerCase();
+        if (!seen.has(label)) seen.set(label, new Set());
+        seen.get(label).add(canon);
+      }
+      const twinLabels = new Set([...seen.entries()].filter(([, v]) => v.size > 1).map(([k]) => k));
+      if (twinLabels.size) {
+        for (const info of out) {
+          if (twinLabels.has(String(info.displayName || info.domain || "").toLowerCase())) {
+            info.twin = true;
+          }
+        }
+      }
+      return ok({ domains: out, twins: [...twinLabels] });
+    } catch {
+      return ok({ domains: out });
+    }
   },
 
   async getPublicConfig() {
@@ -1651,52 +1676,12 @@ const actions = {
     if (!apex || !cleanDomain(apex) || reservedExit.has(apex.toLowerCase()) || (await isPublicSuffix(apex).catch(() => false))) {
       return fail(400, "invalid-argument", "That address can no longer be restored — delete the domain and re-add it instead.");
     }
-    const pristine =
-      doc.paymentStatus !== "paid" &&
-      doc.isVerified !== true &&
-      doc.status === "pending_verification" &&
-      !doc.discount &&
-      !doc.quote?.address &&
-      !(Array.isArray(doc.quoteHistory) && doc.quoteHistory.length) &&
-      !coverageValid(doc);
-    let hasLinks = false;
-    try {
-      const blobs = await listAll(s, "link/");
-      for (const b of blobs) {
-        if (String(b.key || "").startsWith(`link/${doc.domain}/`)) {
-          const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
-          if (l) { hasLinks = true; break; }
-        }
-      }
-    } catch { hasLinks = true; /* fail-closed: keep on read error */ }
-    if (!pristine || hasLinks) {
-      const dest = await migrateDomainSetup(s, p, doc, doc.domain, apex, { display: apex, paired: false, redirect: null });
-      return ok({ ...(await domainInfo(dest, p.sessionId)), restored: true });
-    }
-    try {
-      if (cfConfig()) await cfDeleteCustomHostname(doc.domain).catch(() => null);
-    } catch { /* best effort */ }
-    await s.delete(`domain/${doc.domain}`);
-    const delegation = sslDelegationTarget();
-    const fresh = {
-      domain: apex,
-      displayName: apex,
-      sessionId: p.sessionId,
-      status: "pending_verification",
-      paymentStatus: "unpaid",
-      isVerified: false,
-      verificationToken: newToken(32),
-      sslTarget: delegation || `automatic via Cloudflare (${routingTarget()})`,
-      dnsVerification: { cnameValid: false, txtVerified: false, sslVerified: false },
-      cfHostnameId: null,
-      cfHostnameStatus: null,
-      cfSslStatus: null,
-      discount: null,
-      quote: null,
-      createdAt: Date.now(),
-    };
-    await s.setJSON(`domain/${apex}`, fresh);
-    return ok({ ...(await domainInfo(fresh, p.sessionId)), restored: true });
+    // Restore via migration in all cases (pristine or touched): whatever the
+    // scan finds on the retired host moves along, so links can never be
+    // orphaned there by a stale read — the failure mode behind history rows
+    // flipping to a host the user never picked.
+    const dest = await migrateDomainSetup(s, p, doc, doc.domain, apex, { display: apex, paired: false, redirect: null });
+    return ok({ ...(await domainInfo(dest, p.sessionId)), restored: true });
   },
 
   async getDomainVerificationInfo(s, p) {
