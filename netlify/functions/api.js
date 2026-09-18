@@ -1015,6 +1015,13 @@ const actions = {
     needToken(link, p.deleteToken);
     await s.delete(linkKey(host, link.code));
     await deleteClickKeys(s, host, link.code);
+    // Count shards must go too: totals are key-counted, so orphaned shards
+    // would inflate a later link re-created under the same slug. Same bound
+    // as deleteAllClicks (remainder ages out with no link to attribute to).
+    try {
+      const counts = await listAll(s, `counts/${(host || "").toLowerCase()}/${link.code}/`);
+      await mapWithConcurrency(counts.slice(0, 500), 12, (b) => s.delete(b.key).catch(() => null));
+    } catch { /* best effort */ }
     await bumpSessionLinkCount(s, link.sessionId, -1);
     return ok({});
   },
@@ -1444,6 +1451,20 @@ const actions = {
     // exists, painting ghost rows that 404 on click.
     let retiredHost = null;
     if (isApexFlow && apexSource && (await retirePristinePrimary(apexSource))) retiredHost = apexSource;
+    // Effective display label, shared by the twin guards below and the
+    // display-based claim routing. Mirrors domainInfo exactly (stored name,
+    // else apex for paired docs incl. legacy rows, else canonical).
+    const docDisplay = (displayName || host).toLowerCase();
+    const twinLabelOf = (d) => {
+      if (!d) return "";
+      const storedApex = (typeof d.apexSource === "string" && d.apexSource) ? d.apexSource : null;
+      const pairedApex = storedApex || (d.isApexFlow === true ? apexForWww(d.domain) : null);
+      return String(
+        ((typeof d.displayName === "string" && d.displayName) ? d.displayName : null) ||
+        ((d.isApexFlow === true && pairedApex) ? pairedApex : null) ||
+        d.domain || ""
+      ).toLowerCase();
+    };
     const existing = await freshGet(s, `domain/${host}`, { type: "json" });
     // Twin state: same-session primary on the redirect host carrying value.
     // Pairing must never implicitly take over such a setup (its DNS serves
@@ -1564,21 +1585,48 @@ const actions = {
       // Idempotent re-entry (a retire may still have happened above).
       return ok({ ...(await domainInfo(existing, p.sessionId)), ...(retiredHost ? { retired: retiredHost } : {}) });
     }
+    // Display-based claim routing: no doc on the typed host, but a foreign
+    // setup displays exactly the typed label (e.g. typed apex.com, paired
+    // www.apex.com displaying it). Route the claim there — payment, coverage,
+    // and links move with the setup on transfer — instead of forking an empty
+    // primary that must be paid for again. Own docs are excluded (exact path
+    // + clash guard own that case). Last-wins across sessions, stable per
+    // session, exactly like exact-host claims.
+    try {
+      const blobs = await listAll(s, "domain/");
+      const docs = await mapWithConcurrency(blobs, 12, (b) =>
+        freshGet(s, b.key, { type: "json" }).catch(() => null)
+      );
+      const foreign = docs.find((d) =>
+        d && d.sessionId !== p.sessionId && twinLabelOf(d) === docDisplay);
+      if (foreign) {
+        if (!foreign.pendingClaim || foreign.pendingClaim.sessionId !== p.sessionId) {
+          foreign.pendingClaim = {
+            sessionId: p.sessionId,
+            token: newToken(32),
+            at: new Date().toISOString(),
+          };
+          await s.setJSON(`domain/${foreign.domain}`, foreign);
+        }
+        const route = routingTarget();
+        return ok({
+          ...(await domainInfo(foreign, p.sessionId)),
+          pendingClaim: true,
+          ...(retiredHost ? { retired: retiredHost } : {}),
+          pendingToken: foreign.pendingClaim.token,
+          instructions: {
+            cnameTarget: route,
+            recordName: foreign.domain,
+            txtHost: `verification.${foreign.domain}`,
+            txt: foreign.pendingClaim.token,
+            routingTarget: route,
+          },
+        });
+      }
+    } catch { /* fail-open to creation below */ }
     // Same-label twin guards: one display label per session, so the UI (which
-    // shows exactly what was typed) can never list a name twice. The label
-    // rule mirrors domainInfo exactly (stored name, else apex for paired
-    // docs incl. legacy rows without the stored field, else canonical).
-    const docDisplay = (displayName || host).toLowerCase();
-    const twinLabelOf = (d) => {
-      if (!d) return "";
-      const storedApex = (typeof d.apexSource === "string" && d.apexSource) ? d.apexSource : null;
-      const pairedApex = storedApex || (d.isApexFlow === true ? apexForWww(d.domain) : null);
-      return String(
-        ((typeof d.displayName === "string" && d.displayName) ? d.displayName : null) ||
-        ((d.isApexFlow === true && pairedApex) ? pairedApex : null) ||
-        d.domain || ""
-      ).toLowerCase();
-    };
+    // shows exactly what was typed) can never list a name twice (docDisplay /
+    // twinLabelOf are hoisted above for the display-claim scan too).
     // Creation guard (no canonical doc exists at this point): a touched twin
     // refuses instead of twinning the label — the UI offers Convert for this
     // case, which migrates instead of deleting.
@@ -2244,6 +2292,27 @@ const actions = {
       }
     }
     await mapWithConcurrency(doomed, 12, (d) => s.delete(d.key));
+    // Cascade click rows + count shards for this host: deleting the domain
+    // must not leave visitor IPs (clicks/) or statistics (counts/) behind —
+    // the terms promise permanent removal. Clicks go in full (privacy);
+    // counts are capped per call with a loud log so a viral domain can't
+    // time the function out (remainder ages out of reads with its links).
+    try {
+      const clickKeys = await listAll(s, `clicks/${target}/`);
+      await mapWithConcurrency(clickKeys, 12, (b) => s.delete(b.key).catch(() => null));
+    } catch (e) {
+      console.error(`deleteCustomDomain(${doc.domain}) click sweep failed:`, e?.message || e);
+    }
+    try {
+      const countKeys = await listAll(s, `counts/${target}/`);
+      const capped = countKeys.slice(0, 2000);
+      if (countKeys.length > capped.length) {
+        console.error(`deleteCustomDomain(${doc.domain}) count sweep truncated: ${countKeys.length - capped.length} shards left behind`);
+      }
+      await mapWithConcurrency(capped, 12, (b) => s.delete(b.key).catch(() => null));
+    } catch (e) {
+      console.error(`deleteCustomDomain(${doc.domain}) count sweep failed:`, e?.message || e);
+    }
     try {
       const uniqCodes = new Set(doomed.map((d) => d.link.code));
       await bumpSessionLinkCount(s, p.sessionId, -uniqCodes.size);
