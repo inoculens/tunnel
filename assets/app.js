@@ -2082,11 +2082,14 @@
         } catch (e) {}
 
 
-        // Initialize status from database (persistent state)
+        // Initialize status from database (persistent state). Only a stored
+        // pass paints green — anything else starts unchecked (Pending), never
+        // Failed: the orange pill appears solely as the result of pressing its
+        // Verify button in this dialogue (same rule as the takeover modal).
         const dns = domainDoc.dnsVerification || {};
         verificationState = {
-          cname: dns.cnameValid || false,
-          txt: dns.txtVerified || false,
+          cname: dns.cnameValid === true ? true : null,
+          txt: dns.txtVerified === true ? true : null,
           // false = definitively unroutable (no edge address); null = ok/unknown.
           routable: (dns.routable === false) ? false : null,
           // Redirect check has no server-side sticky state: every fresh
@@ -2153,9 +2156,10 @@
           expiresAt: domainData.coverageExpiresAt || null
         };
 
-        // Update badges - badges now always show current DNS state
-        updateStatusUI('cname', !!dns.cnameValid);
-        updateStatusUI('txt', !!dns.txtVerified);
+        // Update badges - stored passes stay green; anything else starts at
+        // Pending (Failed appears only from pressing Verify in this dialogue).
+        updateStatusUI('cname', dns.cnameValid === true ? true : null);
+        updateStatusUI('txt', dns.txtVerified === true ? true : null);
         updateRoutingUI((dns.routable === false) ? false : null);
 
         // Fallback card visibility: paired docs show it; primaries show it
