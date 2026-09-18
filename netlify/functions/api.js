@@ -1950,16 +1950,22 @@ const actions = {
       return ok({
         success: false,
         isVerified: false,
-        // Carry fallback context so the UI names the full requirement set.
-        ...(claimApexFlow && claimApexHost ? { isApexFlow: true, apex: claimApexHost } : {}),
+        // Carry fallback context only when the redirect was actually required
+        // (opt-in above) so the UI names the true requirement set.
+        ...(claimApexFlow && claimApexHost && (p.fallback === true || useIntent) ? { isApexFlow: true, apex: claimApexHost } : {}),
         checks: { cname: !!live.cname, txt: !!live.txt, routable: live.routable ?? null, routingMethod: live.routingMethod || null },
         status: doc.status,
       });
     }
-    // Fallback gate for transfers: required only when the doc itself is
-    // fallback-paired. Unpaired claims skip it entirely — routing via
+    // Fallback gate for transfers: the redirect proof applies only when the
+    // claimant opted into the fallback UI (fallback flag / valid intent).
+    // An already-paired doc otherwise transfers on routing + TXT alone —
+    // transfer changes store ownership, not DNS (records persist globally),
+    // and A/AAAA rows at our own IPs carry no ownership signal. Forcing them
+    // gave paired claims no recommended-first choice (same as first-time
+    // add). Unpaired claims skip the gate entirely — routing via
     // CNAME/ALIAS/ANAME/flattened plus TXT is enough.
-    if (claimApexFlow) {
+    if (claimApexFlow && (p.fallback === true || useIntent)) {
       if (claimApexHost) {
         const ar = await verifyApexRedirectDns(claimApexHost).catch(() => null);
         const apexOk = !!ar && ar.aValid === true && ar.aaaaValid === true;

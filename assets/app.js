@@ -1767,6 +1767,15 @@
         // Intent starts ON only for the fallback-entry path (explicit literal).
         // Never derived from main-flow _apexFlow/_apexName (stale-host risk).
         window._claimFallback = (data && data.fallback === true) ? true : false;
+        // Tracks the effective routing host so the routing badge resets only
+        // when a fallback toggle actually moves it (unpaired X ⇄ www.X).
+        window._claimRouteHost = null;
+        // Paired setups display a redirect label (apex.com) while routing on
+        // the canonical (www.apex.com): name both so the record rows make sense.
+        const claimSetupLabel = String((data && data.displayName) || '');
+        const claimSetupNote = (claimSetupLabel && claimSetupLabel.toLowerCase() !== String(claimHost || '').toLowerCase())
+          ? `<div style="font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-top: 8px;">Setup for <strong>${escapeHTML(claimSetupLabel)}</strong> — its routing record lives on <strong>${escapeHTML(claimHost)}</strong>.</div>`
+          : '';
         window._claimApexSource = (data && data.apex) || null;
         // Redirect host for this claim: the paired doc's stored host, else the
         // claimed host itself (uniform rule: fallback on X redirects X).
@@ -1785,11 +1794,11 @@
           + `<button id="${btnId}" class="btn-verify" onclick="verifyClaimField('${field}')">${label}</button>`
           + `<span id="${statusId}" class="domain-status status-pending" style="font-size: 0.7rem; font-weight: 600;">PENDING</span></div>`;
         // Redirect card is always rendered (hidden until needed) so the
-        // fallback toggle never rebuilds the modal: paired docs show it
-        // straight away, unpaired docs reveal it via the yellow banner.
+        // fallback toggle never rebuilds the modal: both paired and unpaired
+        // claims reveal it via the yellow banner (recommended first).
         const apexCard = (claimApex && String(claimApex).indexOf('.') !== -1)
           ? `<div id="claimBackLink" style="display: none; text-align: left; margin-bottom: 4px;">`
-          + `<button type="button" onclick="claimToggleFallback(false)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();claimToggleFallback(false);}" style="background:transparent;border:none;color:var(--text-muted);font-family:'DM Sans',sans-serif;font-size:0.75rem;font-weight:600;cursor:pointer;padding:2px 4px;text-decoration:underline;text-underline-offset:2px;" title="Back to the recommended DNS setup">← Use recommended DNS instead</button></div>`
+          + `<button type="button" onclick="claimToggleFallback(false)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();claimToggleFallback(false);}" style="background:transparent;border:none;color:var(--text-muted);font-family:'DM Sans',sans-serif;font-size:0.75rem;font-weight:600;cursor:pointer;padding:2px 4px;text-decoration:underline;text-underline-offset:2px;" title="${pairedClaim ? 'Skip the redirect records' : 'Back to the recommended DNS setup'}">${pairedClaim ? '← Skip the redirect records' : '← Use recommended DNS instead'}</button></div>`
           + `<div id="claimApexWrap" style="display: none; padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); flex-direction: column;">`
           + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Redirect</label>`
           + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px;">Makes <strong id="claimApexDomainName">${escapeHTML(claimApex)}</strong> forward to your links (path-preserving). Add these records for that exact host (DNS-only):</div>`
@@ -1801,7 +1810,7 @@
         showCustomModal({
           title: "Domain held by another session",
           wide: true,
-          message: `This name is attached to a different session. To reclaim it (plus its links + stats), prove DNS control:`
+          message: `This name is attached to a different session. To reclaim it (plus its links + stats), prove DNS control:${claimSetupNote}`
             + `<div style="margin: 16px 0; display: flex; flex-direction: column; gap: 8px; text-align: left;">`
             + apexCard
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
@@ -1811,7 +1820,7 @@
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to:</div>${copyRow('claimCnameTarget', cname)}`
             + verifyRow('claimVerifyRoutingBtn', 'claimRoutingStatus', 'cname', 'Verify routing')
             + `</div>`
-            + `<div id="claimFallbackBanner" style="display: none; padding: 10px 12px; background: rgba(245,166,35,0.12); border: 1px solid rgba(245,166,35,0.45); border-radius: 8px; font-size: 0.8rem; color: #fbd665; text-align: center;">⚠️ Can you not add any of the above? <u style="cursor: pointer; text-decoration: underline; text-underline-offset: 2px;" onclick="claimToggleFallback(true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();claimToggleFallback(true);}" tabindex="0" role="button" aria-label="Try the fallback">Try the fallback</u></div>`
+            + `<div id="claimFallbackBanner" style="display: none; padding: 10px 12px; background: rgba(245,166,35,0.12); border: 1px solid rgba(245,166,35,0.45); border-radius: 8px; font-size: 0.8rem; color: #fbd665; text-align: center;">⚠️ ${pairedClaim ? `Want <strong>${escapeHTML(claimApex)}</strong> itself to forward to your links too?` : 'Can you not add any of the above?'} <u style="cursor: pointer; text-decoration: underline; text-underline-offset: 2px;" onclick="claimToggleFallback(true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();claimToggleFallback(true);}" tabindex="0" role="button" aria-label="Try the fallback">${pairedClaim ? 'Show the redirect records' : 'Try the fallback'}</u></div>`
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
             + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">TXT Record (Ownership)</label>`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>${copyRow('claimTxtHost', claimTxtHost)}`
@@ -1874,7 +1883,10 @@
         try {
           const data = window._claimData || {};
           const paired = data.isApexFlow === true;
-          const intent = !paired && window._claimFallback === true;
+          // Recommended first for paired claims too (same as first-time
+          // add): the redirect card stays hidden behind the banner until the
+          // user asks for it, and Verify Claim gates on visible pills only.
+          const intent = window._claimFallback === true;
           const redirectHost = data.apex || String(pendingDomain || '');
           const banner = document.getElementById('claimFallbackBanner');
           const wrap = document.getElementById('claimApexWrap');
@@ -1886,7 +1898,12 @@
           if (back) back.style.display = intent ? 'block' : 'none';
           if (recName) recName.textContent = (intent && window._claimCanonical) || String((data && data.domain) || pendingDomain || '');
           if (apexName && redirectHost) apexName.textContent = redirectHost;
-          if (intent) claimStatusUI('cname', null);
+          // A routing badge earned for the other host is stale once the toggle
+          // moves it (unpaired X ⇄ www.X); paired claims route on the same
+          // host either way, so their badge survives the toggle.
+          const routeHostNow = String((!paired && intent && window._claimCanonical) || (data && data.domain) || pendingDomain || '');
+          if (window._claimRouteHost && window._claimRouteHost !== routeHostNow) claimStatusUI('cname', null);
+          window._claimRouteHost = routeHostNow;
           updateClaimConfirm();
         } catch (e) {}
       }
@@ -1897,12 +1914,18 @@
             showToast('Fallback pairing is not available for that address.', 'error');
             return;
           }
-          const w = `www.${h}`;
-          if (w.length > 253) {
-            showToast('Fallback pairing is not available for that address.', 'error');
-            return;
+          // Paired claims already sit on the www canonical — revealing the
+          // redirect card must not prepend a second www.
+          if (window._claimData && window._claimData.isApexFlow === true) {
+            window._claimCanonical = h;
+          } else {
+            const w = `www.${h}`;
+            if (w.length > 253) {
+              showToast('Fallback pairing is not available for that address.', 'error');
+              return;
+            }
+            window._claimCanonical = w;
           }
-          window._claimCanonical = w;
           window._claimFallback = true;
         } else {
           window._claimFallback = false;
