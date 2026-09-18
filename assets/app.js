@@ -1068,6 +1068,10 @@
 
         // Add pending domains to creation dropdown only
         pendingDomains.forEach(domainObj => {
+            // Takeover claims in flight are foreign docs: pill + Manage route
+            // to the claim modal (showDomainManager), never to the owner-only
+            // Manage menu (which would 403).
+            const isClaimRow = domainObj.claimPending === true;
             let statusText = 'Pending';
             let statusClass = 'status-pending';
             const isPermanentlyVerified = domainObj.isVerified === true;
@@ -1075,7 +1079,9 @@
             const coverageLapsed = domainObj.paymentStatus === 'paid'
               && domainObj.coverageLifetime !== true && domainObj.coverageValid !== true;
 
-            if (coverageLapsed) {
+            if (isClaimRow) {
+              statusText = 'Claim pending';
+            } else if (coverageLapsed) {
               statusText = 'Expired';
             } else if (isPermanentlyVerified) {
               statusText = 'Verified';
@@ -1088,7 +1094,7 @@
             opt.className = 'domain-option';
             opt.innerHTML = `
               <div class="domain-actions-group">
-                <button onclick="event.stopPropagation(); showDomainMenu(${escapeJS(domainObj.domain)})"
+                <button onclick="event.stopPropagation(); ${isClaimRow ? `showDomainManager(${escapeJS(domainObj.domain)})` : `showDomainMenu(${escapeJS(domainObj.domain)})`}"
                   style="background: rgba(62, 166, 255, 0.12); border: 1px solid rgba(62, 166, 255, 0.3);
                          color: var(--accent); padding: 2px 6px; border-radius: 999px; font-size: 0.65rem; cursor: pointer;">
                   Manage
@@ -1097,7 +1103,7 @@
               </div>
               <span style="flex: 1; white-space: nowrap;">${escapeHTML(displayHost(domainObj.domain))}/</span>
             `;
-            opt.onclick = () => showDomainMenu(domainObj.domain);
+            opt.onclick = () => { isClaimRow ? showDomainManager(domainObj.domain) : showDomainMenu(domainObj.domain); };
             dropdown.insertBefore(opt, document.getElementById('dropdownAddNew'));
           });
       }
@@ -1711,14 +1717,20 @@
       // with unified pills (PENDING → FAILED, TRY AGAIN / VERIFIED), each
       // checking only its own record via check-only claim field mode.
       function showPendingClaimModal(data) {
+        // Anchor everything to the claimed host (the doc holding the pending
+        // token), NOT the typed value: in the fallback-entry path the user
+        // typed X but the claim lives on www.X, and showing X's record names
+        // with www.X's token made TXT verification deterministically impossible.
+        const claimHost = String((data && data.domain) || pendingDomain || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+        if (claimHost) { pendingDomain = claimHost; currentDomain = claimHost; }
         const txt = (data.instructions && data.instructions.txt) || data.pendingToken || '';
         const cname = (data.instructions && data.instructions.cnameTarget) || 'customers.inoculens.com';
-        const claimCnameName = String(pendingDomain || '');
-        const claimTxtHost = `verification.${String(pendingDomain || '')}`;
+        const claimCnameName = String(claimHost || pendingDomain || '');
+        const claimTxtHost = `verification.${String(claimHost || pendingDomain || '')}`;
         // Fresh badge state per open; redirect intent (if any) for check-only use.
         window._claimChecks = { cname: null, txt: null, apex: null };
         window._claimData = data || null;
-        window._claimCanonical = null;
+        window._claimCanonical = (data && data.canonical) || null;
         // Intent starts ON only for the fallback-entry path (explicit literal).
         // Never derived from main-flow _apexFlow/_apexName (stale-host risk).
         window._claimFallback = (data && data.fallback === true) ? true : false;
@@ -1773,7 +1785,8 @@
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Value:</div>${copyRow('claimTxtValue', txt)}`
             + verifyRow('claimVerifyTxtBtn', 'claimTxtStatus', 'txt', 'Verify TXT')
             + `</div></div>`
-            + `<div style="font-size: 0.8rem; color: var(--text-muted); text-align: center;">Old owner keeps full rights until you verify. <strong>s.inoculens.com</strong> links never move.</div>`,
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); text-align: center;">Old owner keeps full rights until you verify. <strong>s.inoculens.com</strong> links never move.</div>`
+            + `<div style="text-align: center; margin-top: 8px;"><button type="button" onclick="abandonPendingClaim()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();abandonPendingClaim();}" style="background:transparent;border:none;color:var(--text-muted);font-size:0.75rem;cursor:pointer;padding:2px 4px;text-decoration:underline;text-underline-offset:2px;" title="Drop this takeover claim">Abandon this claim</button></div>`,
           showCancel: true,
           confirmText: "Verify Claim",
           cancelText: "Cancel"
@@ -1782,6 +1795,7 @@
           else {
             window._claimFallback = false;
             window._claimCanonical = null;
+            try { showStep(1); } catch (e) {}
           }
         });
         paintClaimFallback();
@@ -1805,7 +1819,7 @@
           if (banner) banner.style.display = (!paired && !intent) ? 'block' : 'none';
           if (wrap) wrap.style.display = (paired || intent) ? 'flex' : 'none';
           if (back) back.style.display = intent ? 'block' : 'none';
-          if (recName) recName.textContent = (intent && window._claimCanonical) || String(pendingDomain || '');
+          if (recName) recName.textContent = (intent && window._claimCanonical) || String((data && data.domain) || pendingDomain || '');
           if (apexName && redirectHost) apexName.textContent = redirectHost;
           if (intent) claimStatusUI('cname', null);
         } catch (e) {}
@@ -1976,6 +1990,35 @@
         }
       }
 
+      // Drop only our own pending takeover claim (links, owner doc, and
+      // everyone else's claims are untouched). This is what finally rotates
+      // the recorded TXT token — it is otherwise stable per session.
+      async function abandonPendingClaim() {
+        if (!pendingDomain || !getSessionId()) {
+          showToast('Selection error: please re-open the domain manager.', 'error');
+          return;
+        }
+        const confirmed = await showCustomModal({
+          title: "Abandon claim?",
+          message: `Drop your pending takeover of <strong>${escapeHTML(displayHost(pendingDomain))}</strong>? The domain stays with its current owner; you can reclaim it later (with a fresh token).`,
+          showCancel: true,
+          confirmText: "Abandon",
+          cancelText: "Keep it"
+        });
+        if (!confirmed) return;
+        try {
+          const fn = functions.httpsCallable('abandonClaimedDomain');
+          await fn({ domain: pendingDomain, sessionId: getSessionId() });
+          window._claimFallback = false;
+          window._claimCanonical = null;
+          await loadUserDomains();
+          try { showStep(1); } catch (e) {}
+          showToast('Claim abandoned.', 'success');
+        } catch (e) {
+          console.error('abandonPendingClaim failed:', e);
+          showToast(e.message || 'Could not abandon the claim.', 'error');
+        }
+      }
       // Per-field verification functions
       let currentDomain = null;
       let currentSessionId = null;
@@ -2752,7 +2795,9 @@
           window._tsToken = undefined;
           const data = (res && res.data) || {};
           if (data.pendingClaim) {
-            showPendingClaimModal({ ...data, isApexFlow: true, apex: redirect, fallback: true });
+            // Claiming the canonical itself: carry it so the modal's routing
+            // record-name points at the claimed host, not the typed one.
+            showPendingClaimModal({ ...data, isApexFlow: true, apex: redirect, fallback: true, canonical: www });
             return;
           }
           if (data.domain) { pendingDomain = data.domain; currentDomain = data.domain; }
@@ -3087,6 +3132,13 @@
           if (data.isApexFlow === true) window._apexFlow = true;
           if (data.apex) window._apexName = data.apex;
           if (data.domain) { pendingDomain = data.domain; currentDomain = data.domain; }
+          // Foreign claim rows land here via showDomainManager: open the claim
+          // modal (stable pending token) instead of painting the verification
+          // screen with redacted foreign data.
+          if (data.pendingClaim) {
+            showPendingClaimModal(data);
+            return;
+          }
 
           setVerificationUI({
             domain: data.domain || domain,

@@ -1195,6 +1195,47 @@ const actions = {
       if (refreshCoverage(d)) await s.setJSON(`domain/${d.domain}`, d);
       return domainInfo(d, p.sessionId);
     });
+    // Pending takeovers in flight: foreign docs this session claimed but not
+    // yet verified must still show up (otherwise the claim is invisible and
+    // its TXT token undiscoverable after a refresh). Slim view only — owner
+    // payment/coverage state is none of the claimant's business, while the
+    // pending token is the claimant's own and must persist verbatim.
+    for (const d of docs) {
+      if (!d || d.sessionId === p.sessionId || !d.pendingClaim || d.pendingClaim.sessionId !== p.sessionId) continue;
+      out.push({
+        domain: d.domain,
+        id: d.domain,
+        displayName: d.domain,
+        mode: "claim",
+        status: "pending_verification",
+        paymentStatus: "unpaid",
+        isVerified: false,
+        coverageExpiresAt: null,
+        coverageLifetime: false,
+        coverageValid: false,
+        apexTarget: null,
+        isApexFlow: d.isApexFlow === true,
+        apex: (typeof d.apexSource === "string" && d.apexSource) ? d.apexSource : null,
+        apexInstructions: null,
+        fallback: null,
+        dnsVerification: d.dnsVerification || null,
+        dnsVerificationToken: null,
+        verificationToken: null,
+        pendingClaim: { byYou: true, at: (d.pendingClaim && d.pendingClaim.at) || null },
+        pendingToken: d.pendingClaim.token,
+        claimPending: true,
+        sslVerification: { status: "pending", hostnameStatus: null },
+        cloudflare: { configured: !!cfConfig(), hostnameId: null, hostnameStatus: null, sslStatus: null },
+        instructions: {
+          cnameTarget: routingTarget(),
+          recordName: d.domain,
+          isApex: await isApexDomain(d.domain),
+          txtHost: `verification.${d.domain}`,
+          txt: d.pendingClaim.token,
+          routingTarget: routingTarget(),
+        },
+      });
+    }
     // Twin surfacing: two own setups sharing one display label (legacy or
     // residual rows predating the creation guards) would otherwise render as
     // two identical rows with no way to tell them apart. Flag them so the UI
@@ -1486,17 +1527,25 @@ const actions = {
     if (existing) {
       if (existing.sessionId !== p.sessionId) {
         // Secure reclaim: ownership NEVER transfers here. A pending claim is
-        // recorded (last claim wins) with its own TXT token. Old owner keeps
-        // full rights (mint/delete/manage) until claimant proves DNS via
-        // verifyClaimedDomainDns. Claimant gets zero destructive rights until
-        // then — no delete, no mint, no payment. Links move only on verified
-        // transfer (with stats, since clicks/ are host/code keyed).
-        existing.pendingClaim = {
-          sessionId: p.sessionId,
-          token: newToken(32),
-          at: new Date().toISOString(),
-        };
-        await s.setJSON(`domain/${host}`, existing);
+        // recorded (last claim wins across sessions) with its own TXT token.
+        // Stable per session: re-entering (reopen, pricing Continue, Manage)
+        // reuses the claimant's existing token instead of rotating it — every
+        // rotation voids the TXT the user may already have added, making
+        // verification deterministically impossible. The token changes only
+        // when a different session claims or the claimant abandons it.
+        // Old owner keeps full rights (mint/delete/manage) until claimant
+        // proves DNS via verifyClaimedDomainDns. Claimant gets zero
+        // destructive rights until then — no delete, no mint, no payment.
+        // Links move only on verified transfer (with stats, since clicks/ are
+        // host/code keyed).
+        if (!existing.pendingClaim || existing.pendingClaim.sessionId !== p.sessionId) {
+          existing.pendingClaim = {
+            sessionId: p.sessionId,
+            token: newToken(32),
+            at: new Date().toISOString(),
+          };
+          await s.setJSON(`domain/${host}`, existing);
+        }
         const route = routingTarget();
         return ok({
           ...(await domainInfo(existing, p.sessionId)),
@@ -2185,6 +2234,30 @@ const actions = {
       await bumpSessionLinkCount(s, p.sessionId, -uniqCodes.size);
     } catch { /* best effort */ }
     return ok({ deletedUrls: doomed.length });
+  },
+
+  // Abandon a pending takeover claim on a foreign domain. Removes ONLY the
+  // claimant's own pendingClaim (links, owner doc, and everyone else's claims
+  // are untouched). This is how a recorded TXT token finally changes: stable
+  // per session until here, a rival claim, or a verified transfer.
+  async abandonClaimedDomain(s, p, event) {
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "abandon", ip, 10))) {
+      const e = new Error("Too many attempts, wait a moment.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
+    if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
+    const host = cleanDomain(p.domain);
+    if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
+    const doc = await getWithRetry(s, `domain/${host}`, { type: "json" }, { attempts: 3, delayMs: 350 });
+    if (!doc || !doc.pendingClaim || doc.pendingClaim.sessionId !== p.sessionId) {
+      return fail(404, "not-found", "No pending claim for this session.");
+    }
+    doc.pendingClaim = null;
+    await s.setJSON(`domain/${host}`, doc);
+    return ok({ abandoned: host });
   },
 
   // ----- apex (root) routing -----
