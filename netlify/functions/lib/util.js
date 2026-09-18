@@ -798,8 +798,14 @@ export async function cfDeleteCustomHostname(domain) {
 export async function verifyDns(domain, token) {
   const target = routingTarget().toLowerCase().replace(/\.$/, "");
   // Only the live SaaS target is accepted.
+  // Routing is valid via ANY of: standard CNAME, ALIAS, ANAME, or flattened
+  // CNAME — all point the hostname at the SaaS target. ALIAS/ANAME/flattened
+  // never appear as a wire type (authoritative servers synthesize A/AAAA),
+  // so they are proven by address equality with the live target (see below).
+  // `checks.cname` stays the routing-valid flag for backward compat; the
+  // specific mechanism travels in `checks.routingMethod` + `checks.alias`.
   const acceptedTargets = new Set([target]);
-  const checks = { cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null, cfSslStatus: null };
+  const checks = { cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null, cfSslStatus: null, routingMethod: null, alias: false };
 
   // Authoritative CNAME check via the Cloudflare API when the hostname has
   // a record there (grey or proxied): public DoH HIDES the CNAME of proxied
@@ -815,9 +821,14 @@ export async function verifyDns(domain, token) {
       const cnameRec = arr.find((r) => String(r.type || "").toUpperCase() === "CNAME");
       if (cnameRec) {
         apiCheckedCname = true;
-        checks.cname = acceptedTargets.has(String(cnameRec.content || "").toLowerCase().replace(/\.$/, ""));
+        const apiOk = acceptedTargets.has(String(cnameRec.content || "").toLowerCase().replace(/\.$/, ""));
+        checks.cname = apiOk;
+        if (apiOk) checks.routingMethod = "cname";
       } else if (arr.length) {
-        // A/AAAA directly on the name (not the documented CNAME setup).
+        // A/AAAA directly on the name inside our own zone (not the documented
+        // CNAME setup). Do NOT finalize false here: an ALIAS-style setup still
+        // proves via address equality below. Mark checked so the visible-CNAME
+        // DoH lookup is skipped, but the alias fallback still runs.
         apiCheckedCname = true;
         checks.cname = false;
       }
@@ -829,22 +840,44 @@ export async function verifyDns(domain, token) {
   if (!apiCheckedCname) {
     try {
       const cname = await doh(domain, "CNAME");
-      checks.cname = cname.some((v) => acceptedTargets.has(v.toLowerCase().replace(/\.$/, "")));
-      // Apex / flattened setups: some providers return A instead of CNAME.
-      // If no CNAME match, accept when the domain resolves to the same edge as the SaaS target.
-      if (!checks.cname) {
-        try {
-          const [aDomain, aTarget] = await Promise.all([
-            doh(domain, "A").catch(() => []),
-            doh(target, "A").catch(() => []),
-          ]);
-          const targetIps = new Set(aTarget.map(String));
-          if (targetIps.size && aDomain.some((ip) => targetIps.has(String(ip)))) checks.cname = true;
-        } catch { /* keep false */ }
-      }
+      const cnameOk = cname.some((v) => acceptedTargets.has(v.toLowerCase().replace(/\.$/, "")));
+      checks.cname = cnameOk;
+      if (cnameOk) checks.routingMethod = "cname";
     } catch {
       checks.cname = false;
     }
+  }
+
+  // ALIAS / ANAME / flattened-CNAME path (apex AND subdomains): these record
+  // types resolve server-side and present as plain A/AAAA on the wire, so a
+  // visible-CNAME lookup can never see them. If no CNAME matched above, accept
+  // when the hostname resolves to the same live edge addresses as the SaaS
+  // target (IPv4 OR IPv6 overlap). Queries run together; target + domain are
+  // read at the same moment so edge rotation cannot false-negative across
+  // sequential lookups. TXT ownership is still required separately, so pointing
+  // at the shared edge alone never proves ownership.
+  if (!checks.cname) {
+    try {
+      const [aDomain, aaaaDomain, aTarget, aaaaTarget] = await Promise.all([
+        doh(domain, "A").catch(() => []),
+        doh(domain, "AAAA").catch(() => []),
+        doh(target, "A").catch(() => []),
+        doh(target, "AAAA").catch(() => []),
+      ]);
+      const normV4 = (v) => String(v || "").trim();
+      const normV6 = (v) => String(v || "").trim().toLowerCase().replace(/\.$/, "");
+      const targetV4 = new Set((Array.isArray(aTarget) ? aTarget : []).map(normV4).filter(Boolean));
+      const targetV6 = new Set((Array.isArray(aaaaTarget) ? aaaaTarget : []).map(normV6).filter(Boolean));
+      const domV4 = Array.isArray(aDomain) ? aDomain.map(normV4) : [];
+      const domV6 = Array.isArray(aaaaDomain) ? aaaaDomain.map(normV6) : [];
+      const v4Hit = targetV4.size > 0 && domV4.some((ip) => targetV4.has(ip));
+      const v6Hit = targetV6.size > 0 && domV6.some((ip) => targetV6.has(ip));
+      if (v4Hit || v6Hit) {
+        checks.cname = true;
+        checks.alias = true;
+        checks.routingMethod = "alias";
+      }
+    } catch { /* keep false */ }
   }
 
   try {

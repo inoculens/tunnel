@@ -418,7 +418,7 @@
 
         <!-- Per-field verification buttons -->
         <div style="margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px;">
-          <!-- Apex redirect (shown ONLY for apex->www flow; hidden for plain subdomains) -->
+          <!-- Fallback pairing (IP safety net): hidden until the yellow banner opens it, or the doc is already paired -->
           <div id="apexRedirectCard"
             style="display: none; padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); flex-direction: column;">
             <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Apex Redirect</label>
@@ -457,7 +457,8 @@
 
           <div
             style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">
-            <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">CNAME Record (Routing)</label>
+            <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Routing Record (CNAME / ALIAS / ANAME)</label>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 8px;">Any one works — CNAME, ALIAS, ANAME, or flattened CNAME pointing at the target below. Apex domains: use your provider's ALIAS/ANAME/flattened option.</div>
             <div id="apexNote" style="display: none; font-size: 0.75rem; color: #f5a623; margin-bottom: 8px;"></div>
             <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Record name (create at your DNS provider):</div>
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
@@ -471,11 +472,11 @@
                 </svg>
               </button>
             </div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to (CNAME target):</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to (target hostname):</div>
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
               <div id="cnameRecordHost"
                 style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">customers.inoculens.com</div>
-              <button class="copy-btn" onclick="copyTextFromElement('cnameRecordHost')" title="Copy CNAME"
+              <button class="copy-btn" onclick="copyTextFromElement('cnameRecordHost')" title="Copy target"
                 style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
@@ -484,10 +485,11 @@
               </button>
             </div>
             <div style="display: flex; align-items: center; justify-content: flex-start; gap: 8px;">
-              <button id="verifyCnameBtn" class="btn-verify" onclick="verifyCnameOnly()">Verify CNAME</button>
+              <button id="verifyCnameBtn" class="btn-verify" onclick="verifyCnameOnly()">Verify routing</button>
               <span id="cnameStatus" class="domain-status status-pending"
                 style="font-size: 0.7rem; font-weight: 600;">PENDING</span>
             </div>
+            <div id="fallbackBanner" style="display: block; margin-top: 12px; padding: 10px 12px; background: rgba(245,166,35,0.12); border: 1px solid rgba(245,166,35,0.45); border-radius: 8px; font-size: 0.8rem; color: #fbd665; text-align: center;">⚠️ You cannot add any of the above? <u style="cursor: pointer; text-decoration: underline; text-underline-offset: 2px;" onclick="openFallbackFromBanner()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openFallbackFromBanner();}" tabindex="0" role="button" aria-label="Try the fallback">Try the fallback</u></div>
           </div>
 
           <div
@@ -538,7 +540,7 @@
         <div id="coverageStatus" style="display: none; margin-bottom: 16px;">
         </div>
 
-        <div id="routingNote" style="display: none; margin-bottom: 16px; padding: 12px; border-radius: 8px; font-size: 0.85rem; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #f28b82; text-align: center;">⚠️ This domain doesn't resolve to Tunnel edge (no usable address) — browsers can't reach it as configured. If you just created the record, wait a few minutes and Re-verify; otherwise fix the CNAME target.</div>
+        <div id="routingNote" style="display: none; margin-bottom: 16px; padding: 12px; border-radius: 8px; font-size: 0.85rem; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #f28b82; text-align: center;">⚠️ This domain doesn't resolve to Tunnel edge (no usable address) — browsers can't reach it as configured. If you just created the record, wait a few minutes and Re-verify; otherwise fix the routing target.</div>
 
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 16px; text-align: center;">
           DNS changes can take a few minutes. Click Verify again after propagation.

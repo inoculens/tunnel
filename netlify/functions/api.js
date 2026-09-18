@@ -351,16 +351,41 @@ async function domainInfo(doc, viewerSessionId = null) {
   // pending token via the pendingClaim branch). TXT is public DNS anyway,
   // but no reason to hand it to anyone who knows the domain name.
   const ownerToken = isOwner ? doc.verificationToken : null;
-  // Apex->www branch (additive): docs created via an apex input carry
-  // apexSource/isApexFlow. Plain subdomain docs have neither — frontend hides
-  // the apex redirect card for them, preserving the exact old flow.
+  // Fallback pairing (additive): docs with apexSource/isApexFlow cover
+  // apex+www via one www doc + apex redirect. Primary docs (including apex
+  // primaries like example.com) have neither — they verify/serve alone.
+  // displayName is what the user originally typed (write-once); legacy docs
+  // without it fall back to apexSource (entered via apex) or canonical.
   const apexTargets = apexRedirectTargets();
   const storedApex = typeof doc.apexSource === "string" && doc.apexSource ? doc.apexSource : null;
   const derivedApex = apexForWww(doc.domain);
   const apexHost = storedApex || (doc.isApexFlow === true ? derivedApex : null);
+  const displayName =
+    (typeof doc.displayName === "string" && doc.displayName ? doc.displayName : null) ||
+    (doc.isApexFlow === true && apexHost ? apexHost : doc.domain);
+  // Fallback card context for ANY host: paired apex/www when known, else the
+  // zone's apex/www so users without ALIAS support still have a path. The
+  // card is display-only here; gating still uses isApexFlow + live DNS.
+  let fallbackApex = apexHost;
+  if (!fallbackApex) {
+    try {
+      if (await isApexDomain(doc.domain)) fallbackApex = cleanDomain(doc.domain);
+      else {
+        const a = apexForWww(doc.domain);
+        if (a) fallbackApex = a;
+        else {
+          const root = String(doc.domain || "").split(".").slice(-2).join(".");
+          if (root && (await isApexDomain(root).catch(() => false))) fallbackApex = root;
+        }
+      }
+    } catch { /* keep null */ }
+  }
+  const fallbackWww = fallbackApex ? wwwForApex(fallbackApex) : (doc.domain && doc.domain.startsWith("www.") ? doc.domain : null);
   return {
     domain: doc.domain,
     id: doc.domain,
+    displayName,
+    mode: doc.isApexFlow === true ? "fallback" : "primary",
     status: doc.status,
     paymentStatus: doc.paymentStatus,
     isVerified: doc.isVerified,
@@ -372,6 +397,9 @@ async function domainInfo(doc, viewerSessionId = null) {
     apex: apexHost,
     apexInstructions: apexHost
       ? { apex: apexHost, a: apexTargets.ipv4, aaaa: apexTargets.ipv6 }
+      : null,
+    fallback: fallbackApex
+      ? { apex: fallbackApex, www: fallbackWww || doc.domain, a: apexTargets.ipv4, aaaa: apexTargets.ipv6, paired: doc.isApexFlow === true }
       : null,
     dnsVerification: doc.dnsVerification,
     dnsVerificationToken: ownerToken,
@@ -1130,52 +1158,110 @@ const actions = {
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
     try { await bumpKindCounter(s, "domain-add", clientIp(event)); } catch { /* ignore */ }
     await requireTurnstile(s, p, event, "domain");
-    let host = cleanDomain(p.domain);
-    if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
-    // Apex-only branch: an apex input (example.com) is served via the www
-    // canonical (www.example.com). Normalize here too so direct API calls
-    // behave like the UI. Non-apex inputs fall through untouched.
+    const rawHost = cleanDomain(p.domain);
+    if (!rawHost) return fail(400, "invalid-argument", "Invalid domain name.");
+    // Primary vs fallback (paired) modes:
+    // - Primary (default): every hostname is independent. example.com and
+    //   www.example.com are separate docs with separate payments/link spaces.
+    //   ALIAS/ANAME/flattened CNAME all satisfy routing (see verifyDns).
+    // - Fallback (paired, IP safety net): a single www doc covers apex+www via
+    //   apex A/AAAA redirect + www CNAME. Entered explicitly via
+    //   p.fallback===true / p.mode==='fallback', or via the legacy apexSource
+    //   pairing param (old UI sent it for apex inputs). displayName preserves
+    //   exactly what the user typed on the first screen.
+    let host = rawHost;
+    let displayName = rawHost;
     let apexSource = null;
     let isApexFlow = false;
-    try {
-      if (await isApexDomain(host)) {
-        const canonical = wwwForApex(host);
-        if (!canonical) return fail(400, "invalid-argument", "Invalid domain name.");
-        apexSource = host;
-        host = canonical;
-        isApexFlow = true;
-      }
-    } catch { /* fail-open to normal path */ }
-    // Explicit apexSource param (sent by the UI apex branch) wins when the
-    // normalized host is its www canonical — lets reopened flows reassert.
-    // Guarded by isApexDomain so non-apex callers can't force the apex card.
+    const fallbackRequested =
+      p.fallback === true || p.mode === "fallback" || p.useFallback === true;
+    // Explicit apexSource pairing (legacy + new UI): valid only when it is a
+    // real apex whose www canonical equals the (possibly canonicalized) host.
     const paramApex = cleanDomain(p.apexSource);
-    if (paramApex && (await isApexDomain(paramApex).catch(() => false)) && wwwForApex(paramApex) === host) {
+    let paramApexValid = false;
+    try {
+      if (paramApex && (await isApexDomain(paramApex).catch(() => false)) && wwwForApex(paramApex) === host) {
+        paramApexValid = true;
+      } else if (paramApex && fallbackRequested) {
+        // Fallback entered from the www side sends apexSource=apex while host
+        // is already www — same pairing, accepted here too.
+        paramApexValid = true;
+      }
+    } catch { /* pairing ignored */ }
+    if (fallbackRequested) {
+      // Normalize to the www canonical so one doc covers both names.
+      // Accepts apex input (example.com -> www.example.com), www input
+      // (stays www.example.com, apex derived), or explicit apexSource.
+      try {
+        if (paramApexValid && paramApex) {
+          apexSource = paramApex;
+          host = wwwForApex(paramApex) || host;
+          isApexFlow = true;
+        } else if (await isApexDomain(host).catch(() => false)) {
+          const canonical = wwwForApex(host);
+          if (canonical) {
+            apexSource = host;
+            displayName = rawHost;
+            host = canonical;
+            isApexFlow = true;
+          }
+        } else {
+          // www input stays www (apex derived). Other subdomains
+          // (go./s./etc.) have no apex/www pair for THIS host: never mark
+          // them as fallback (that would wrongly gate payment on an apex
+          // redirect). The fallback card context for their zone is supplied
+          // read-only via domainInfo().fallback, and switching to
+          // www.<root> is an explicit, confirmed new domain client-side.
+          const derivedApex = apexForWww(host);
+          if (derivedApex) {
+            apexSource = derivedApex;
+            isApexFlow = true;
+          }
+        }
+      } catch { /* fail-open to host as typed */ }
+    } else if (paramApexValid && paramApex) {
+      // Legacy apex branch without explicit fallback flag (old UI): preserve
+      // the paired behavior so existing flows never break.
       apexSource = paramApex;
+      host = wwwForApex(paramApex) || host;
+      displayName = rawHost;
       isApexFlow = true;
     }
     // Only tunnel. (app) and s. (short links) are system hosts, plus the SaaS
-    // infrastructure names and the apex itself. Everything else is a customer
-    // domain — including other *.inoculens.com names, which route and validate
-    // exactly like external domains (proxied CNAME to the SaaS target).
+    // infrastructure names. Everything else is a customer domain — including
+    // other *.inoculens.com names, which route and validate exactly like
+    // external domains (CNAME/ALIAS/ANAME/flattened to the SaaS target).
+    // Apex and www are independent primaries: each needs its own doc/payment.
     const reserved = new Set([systemShortHost(), routingTarget(), "tunnel.inoculens.com", "customers.inoculens.com", "proxy-fallback.inoculens.com", "inoculens.com", "www.inoculens.com"]);
-    if (reserved.has(host) || (apexSource && reserved.has(apexSource))) return fail(400, "invalid-argument", "This domain is reserved for INOCULENS infrastructure.");
-    // NOTE: former authoritative apex block removed — apex inputs normalize to
-    // www above and follow the standard www flow (CNAME+TXT gating, payment).
-    // The apex A/AAAA redirect is additionally required before payment
-    // (enforced client-side via verifyApexRedirect + Continue gating).
+    if (reserved.has(host) || (apexSource && reserved.has(apexSource)) || reserved.has(displayName)) return fail(400, "invalid-argument", "This domain is reserved for INOCULENS infrastructure.");
+    // Primary apex docs (example.com as its own host) follow the standard flow
+    // (routing + TXT gating, payment). Fallback pairing additionally requires
+    // the apex A/AAAA redirect before payment (client-side Continue gating).
     if (!(await getSession(s, p.sessionId))) {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
     const existing = await freshGet(s, `domain/${host}`, { type: "json" });
-    // Stamp apex flow onto docs missing it — owner sessions ONLY. A stranger's
-    // apex input must never mutate another session's doc (no card flips, no
-    // new payment gates for the owner). Claimants stamp at transfer time
-    // instead (see verifyClaimedDomainDns), once ownership is proven.
+    // Stamp fallback pairing onto docs missing it — owner sessions ONLY.
+    // A stranger's fallback input must never mutate another session's doc (no
+    // card flips, no new payment gates for the owner). Claimants stamp at
+    // transfer time instead (see verifyClaimedDomainDns), once proven.
+    // displayName is write-once (first entry wins) so the list always shows
+    // what the user originally typed.
     if (existing && isApexFlow && !existing.isApexFlow && apexSource && existing.sessionId === p.sessionId) {
       existing.isApexFlow = true;
       existing.apexSource = apexSource;
+      if (!existing.displayName) existing.displayName = displayName || host;
       try { await s.setJSON(`domain/${host}`, existing); } catch { /* ignore */ }
+    }
+    if (existing && !existing.displayName) {
+      // Self-heal legacy docs: fallback docs entered via apex show the apex,
+      // primaries show their canonical host. Owner-only write, best effort.
+      if (existing.sessionId === p.sessionId) {
+        try {
+          existing.displayName = (existing.isApexFlow && existing.apexSource) ? existing.apexSource : existing.domain;
+          await s.setJSON(`domain/${host}`, existing);
+        } catch { /* display-only, ignore */ }
+      }
     }
     if (existing) {
       if (existing.sessionId !== p.sessionId) {
@@ -1210,6 +1296,7 @@ const actions = {
     const delegation = sslDelegationTarget();
     const doc = {
       domain: host,
+      displayName: displayName || host,
       sessionId: p.sessionId,
       status: "pending_verification",
       paymentStatus: "unpaid",
@@ -1286,7 +1373,8 @@ const actions = {
   },
 
   // Pending-claim status for the claimant (not owner): returns pending TXT
-  // instructions without leaking payment/quote state.
+  // instructions without leaking payment/quote state. Mirrors the add-flow:
+  // routing accepts CNAME/ALIAS/ANAME/flattened, fallback pairing via apex.
   async getClaimVerificationInfo(s, p) {
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
     const host = cleanDomain(p.domain);
@@ -1296,8 +1384,14 @@ const actions = {
       return fail(404, "not-found", "No pending claim for this session.");
     }
     const route = routingTarget();
+    const info = await domainInfo(doc, p.sessionId);
     return ok({
       domain: doc.domain,
+      displayName: info.displayName || doc.domain,
+      isApexFlow: info.isApexFlow === true,
+      apex: info.apex || null,
+      apexInstructions: info.apexInstructions || null,
+      fallback: info.fallback || null,
       pendingClaim: true,
       at: doc.pendingClaim.at || null,
       instructions: {
@@ -1327,11 +1421,13 @@ const actions = {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
     const live = await verifyDns(doc.domain, doc.pendingClaim.token).catch(() => ({
-      cname: false, txt: false, ssl: false, routable: null,
+      cname: false, txt: false, ssl: false, routable: null, routingMethod: null, alias: false,
     }));
-    // Claimant apex intent (validated): an apex-typed input for this www
-    // canonical. Computed before any check so every response below can name
-    // the full requirement set. Never mutates the doc pre-proof.
+    // Claimant fallback intent (validated): an apex-typed input for this www
+    // canonical, or explicit fallback flag. Computed before any check so every
+    // response below can name the full requirement set. Never mutates pre-proof.
+    // Primary claims (exact host, routing via CNAME/ALIAS/ANAME/flattened +
+    // TXT) skip the apex gate entirely.
     let claimApexByInput = null;
     const claimParamApex = cleanDomain(p.apexSource);
     if (claimParamApex && claimParamApex !== doc.domain) {
@@ -1341,21 +1437,28 @@ const actions = {
         }
       } catch { /* claimant apex ignored */ }
     }
-    const claimApexFlow = doc.isApexFlow === true || !!claimApexByInput;
-    const claimApexHost = (typeof doc.apexSource === "string" && doc.apexSource) || claimApexByInput || apexForWww(doc.domain);
+    const claimFallbackFlag = p.fallback === true || p.mode === "fallback" || p.useFallback === true;
+    let claimFallbackApex = claimApexByInput;
+    if (!claimFallbackApex && claimFallbackFlag) {
+      try {
+        claimFallbackApex = (typeof doc.apexSource === "string" && doc.apexSource) || apexForWww(doc.domain) || null;
+      } catch { /* ignore */ }
+    }
+    const claimApexFlow = doc.isApexFlow === true || !!claimApexByInput || claimFallbackFlag;
+    const claimApexHost = (typeof doc.apexSource === "string" && doc.apexSource) || claimApexByInput || claimFallbackApex || apexForWww(doc.domain);
     if (!(live.cname && live.txt)) {
       return ok({
         success: false,
         isVerified: false,
-        // Carry apex context so the UI names the full requirement set.
+        // Carry fallback context so the UI names the full requirement set.
         ...(claimApexFlow && claimApexHost ? { isApexFlow: true, apex: claimApexHost } : {}),
-        checks: { cname: !!live.cname, txt: !!live.txt, routable: live.routable ?? null },
+        checks: { cname: !!live.cname, txt: !!live.txt, routable: live.routable ?? null, routingMethod: live.routingMethod || null },
         status: doc.status,
       });
     }
-    // Apex gate for transfers: required when the doc is apex-flagged (prior
-    // apex onboarding) OR the claimant came via an apex input. Plain claims
-    // skip entirely.
+    // Fallback gate for transfers: required when the doc is fallback-paired
+    // (prior onboarding) OR the claimant explicitly chose fallback. Primary
+    // claims skip entirely — routing via CNAME/ALIAS/ANAME/flattened is enough.
     if (claimApexFlow) {
       if (claimApexHost) {
         const ar = await verifyApexRedirectDns(claimApexHost).catch(() => null);
@@ -1366,7 +1469,7 @@ const actions = {
             isVerified: false,
             isApexFlow: true,
             apex: claimApexHost,
-            checks: { cname: true, txt: true, apex: false, routable: live.routable ?? null },
+            checks: { cname: true, txt: true, apex: false, routable: live.routable ?? null, routingMethod: live.routingMethod || null },
             status: doc.status,
           });
         }
@@ -1378,13 +1481,18 @@ const actions = {
     doc.verificationToken = doc.pendingClaim.token;
     doc.pendingClaim = null;
     doc.isVerified = true;
-    // Stamp apex flags at transfer when the claimant proved apex intent:
-    // ownership just moved, so this write is legitimate (unlike pre-proof
-    // stamping in addCustomDomain, which is owner-only).
-    if (claimApexByInput && !doc.isApexFlow) {
-      doc.isApexFlow = true;
-      doc.apexSource = claimApexByInput;
+    // Stamp fallback pairing at transfer when the claimant proved fallback
+    // intent (explicit flag or apex input): ownership just moved, so this
+    // write is legitimate (unlike pre-proof stamping, which is owner-only).
+    // displayName is preserved (first entry wins) so lists never flicker.
+    if ((claimApexByInput || claimFallbackFlag) && !doc.isApexFlow) {
+      const stampApex = claimApexByInput || claimFallbackApex || apexForWww(doc.domain);
+      if (stampApex) {
+        doc.isApexFlow = true;
+        doc.apexSource = stampApex;
+      }
     }
+    if (!doc.displayName) doc.displayName = doc.domain;
     doc.dnsVerification = {
       cnameValid: true,
       txtVerified: true,
@@ -1445,15 +1553,18 @@ const actions = {
       routable: null,
       cfHostnameStatus: null,
       cfSslStatus: null,
+      routingMethod: null,
     }));
     // routable: true = resolves to edge, false = definitively unservable as
     // configured, null = unknown (fail-open, never blocks on lookup hiccups).
+    // Routing valid = CNAME OR ALIAS OR ANAME OR flattened CNAME (live.cname).
     const routable = live.routable === false ? false : live.routable === true ? true : null;
     doc.dnsVerification = {
       cnameValid: !!live.cname,
       txtVerified: !!live.txt,
       sslVerified: !!live.ssl,
       routable,
+      routingMethod: live.routingMethod || null,
     };
     if (live.cfHostnameStatus) doc.cfHostnameStatus = live.cfHostnameStatus;
     if (live.cfSslStatus) doc.cfSslStatus = live.cfSslStatus;
@@ -1488,7 +1599,7 @@ const actions = {
     return ok({
       success: true,
       isVerified: doc.isVerified,
-      checks: { cname: !!live.cname, txt: !!live.txt, ssl: !!doc.dnsVerification.sslVerified, routable },
+      checks: { cname: !!live.cname, txt: !!live.txt, ssl: !!doc.dnsVerification.sslVerified, routable, routingMethod: live.routingMethod || null },
       cfHostnameStatus: doc.cfHostnameStatus || live.cfHostnameStatus || null,
       cfSslStatus: doc.cfSslStatus || live.cfSslStatus || null,
       status: doc.status,

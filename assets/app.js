@@ -303,14 +303,20 @@
       }
       // Rebuild the cache from the live domain list. Returns true when the
       // map actually changed (callers re-render to converge the paint).
+      // Fallback docs map www canonical -> displayName (what the user typed:
+      // apex stays apex, www stays www). Primaries need no mapping.
       function syncApexCacheFromDomains() {
         let next = {};
         try {
           for (const d of (userCustomDomains || [])) {
-            if (d && d.isApexFlow === true && d.apex && d.domain) {
+            if (d && d.isApexFlow === true && d.domain) {
               const w = String(d.domain).toLowerCase();
-              const a = String(d.apex).toLowerCase();
-              if (w && a && w.length <= 253 && a.length <= 253 && !/\s/.test(w) && !/\s/.test(a)) next[w] = a;
+              const disp = String(d.displayName || d.apex || '').toLowerCase();
+              if (w && disp && w.length <= 253 && disp.length <= 253 && !/\s/.test(w) && !/\s/.test(disp) && disp !== w) next[w] = disp;
+              else if (w && d.apex) {
+                const a = String(d.apex).toLowerCase();
+                if (w && a && w.length <= 253 && a.length <= 253 && !/\s/.test(w) && !/\s/.test(a) && a !== w) next[w] = a;
+              }
             }
           }
         } catch (e) { return false; }
@@ -447,16 +453,21 @@
         return itemDomain(item) + '/' + (item ? item.code : '');
       }
 
-      // Apex display swap (presentation ONLY): links are stored, merged,
-      // filtered, resolved and deleted on the www canonical — but apex-flow
-      // domains present to the user as apex.com/SLUG. Anything not mapped
-      // (system host, plain subdomains) returns unchanged.
+      // Display swap (presentation ONLY): fallback-paired docs present as
+      // displayName (exactly what the user typed on the first screen: apex
+      // stays apex, www stays www) while links stay stored on the www
+      // canonical. Primaries (including apex primaries) present as-is.
+      // Anything unmapped returns unchanged.
       function apexDisplayFor(wwwHost) {
         const w = String(wwwHost || '').toLowerCase().replace(/\/$/, '');
         if (!w) return null;
         try {
-          const hit = (userCustomDomains || []).find(d => d && d.isApexFlow === true && d.apex && String(d.domain || '').toLowerCase() === w);
-          if (hit) return String(hit.apex).toLowerCase();
+          const hit = (userCustomDomains || []).find(d => d && String(d.domain || '').toLowerCase() === w);
+          if (hit) {
+            const disp = String(hit.displayName || '').toLowerCase();
+            if (disp && disp !== w) return disp;
+            if (hit.isApexFlow === true && hit.apex) return String(hit.apex).toLowerCase();
+          }
         } catch (e) {}
         // Boot cache: live list hasn't arrived yet (first paint) — the
         // persisted map keeps apex labels stable with zero network wait.
@@ -1090,9 +1101,12 @@
         if (input) input.value = '';
         const paymentInst = document.getElementById('paymentInstructions');
         if (paymentInst) paymentInst.style.display = 'none';
-        // Reset apex-only branch state (plain flow never sets it).
+        // Reset fallback state (primary is default; banner reopens it).
         window._apexFlow = false;
         window._apexName = '';
+        window._displayName = '';
+        window._fallbackOpen = false;
+        window._fallbackFor = '';
         const apexCard0 = document.getElementById('apexRedirectCard');
         if (apexCard0) apexCard0.style.display = 'none';
 
@@ -1115,6 +1129,9 @@
         pendingDomain = '';
         window._apexFlow = false;
         window._apexName = '';
+        window._displayName = '';
+        window._fallbackOpen = false;
+        window._fallbackFor = '';
         showStep('loading');
       }
 
@@ -1189,12 +1206,14 @@
           // Pass the result to syncVerificationUI to update badges
           syncVerificationUI({
             domain: data.domain || pendingDomain,
+            displayName: data.displayName || pendingDomain,
             isVerified: data.isVerified,
             dnsVerification: data.dnsVerification || {},
             status: data.status,
             isApexFlow: data.isApexFlow,
             apex: data.apex,
             apexInstructions: data.apexInstructions,
+            fallback: data.fallback || null,
             paymentStatus: data.paymentStatus,
             coverageValid: data.coverageValid,
             coverageLifetime: data.coverageLifetime,
@@ -1414,32 +1433,23 @@
         if (parts.length === 3 && APEX_DOUBLE_SUFFIX.has(parts.slice(1).join('.'))) return true;
         return false;
       }
-      // NOTE: no live apex hint on purpose — apex inputs silently
-      // canonicalize to www in proceedToAddDomain; the verification step
-      // shows the records. Nothing to warn about.
+      // Primary mode (default): every hostname is independent — apex and www
+      // are separate domains with separate payments. No auto-canonicalization:
+      // what the user types is what gets registered. The IP fallback (paired
+      // apex+www on one www doc) is explicit via the yellow banner below.
       async function proceedToAddDomain() {
         const input = document.getElementById('newDomainInput').value.trim();
         const btn = document.getElementById('addDomainProceedBtn');
         if (!input || btn.classList.contains('loading')) return;
 
-        let rawDomain = input.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
+        const rawDomain = input.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
 
-        // Apex-only branch: apex input canonicalizes to www (e.g. example.com
-        // -> www.example.com). Non-apex inputs fall through untouched.
+        // Fresh primary entry: clear any prior fallback state. Backend decides
+        // pairing authoritatively (legacy docs echo isApexFlow/apex).
         window._apexFlow = false;
         window._apexName = '';
-        if (isProbablyApex(rawDomain)) {
-          const canonical = wwwForApexInput(rawDomain);
-          if (canonical) {
-            window._apexFlow = true;
-            window._apexName = rawDomain;
-            pendingDomain = canonical;
-          } else {
-            pendingDomain = rawDomain;
-          }
-        } else {
-          pendingDomain = rawDomain;
-        }
+        window._fallbackOpen = false;
+        pendingDomain = rawDomain;
 
         try {
           btn.classList.add('loading');
@@ -1454,23 +1464,9 @@
           );
 
           if (domainExists) {
-            // Apex re-entry: www already owned (added before the apex branch
-            // existed). Open its verification so the free apex redirect card
-            // appears (backend stamps the flags on load). Plain duplicates
-            // keep the exact old message.
-            if (window._apexFlow && window._apexName) {
-              btn.classList.remove('loading');
-              btn.disabled = false;
-              showCustomModal({
-                title: "Already Added",
-                message: `Short links live on <strong>${escapeHTML(displayHost(pendingDomain))}</strong> (already in your account) — opening its setup so you can add the free apex redirect for <strong>${escapeHTML(window._apexName)}</strong>.`
-              });
-              try { await manageDomain(pendingDomain); } catch (e) {}
-              return;
-            }
             showCustomModal({
               title: "Domain Already Added",
-              message: `The domain <strong>${escapeHTML(pendingDomain)}</strong> is already in your account.`
+              message: `The domain <strong>${escapeHTML(displayHost(pendingDomain))}</strong> is already in your account.`
             });
             btn.classList.remove('loading');
             btn.disabled = false;
@@ -1480,15 +1476,17 @@
           // Claim the domain: own domains idempotent; names held by other
           // sessions become inert pending claims (no transfer until DNS proof
           // via verifyClaimedDomainDns, which also merges links+stats).
+          // Primary entry: no fallback flags — apex and www stay independent.
           const addFn = functions.httpsCallable('addCustomDomain');
           const tsToken0 = window._tsToken || undefined;
           window._tsToken = undefined;
-          const addRes = await addFn({ domain: pendingDomain, type: 'managed', sessionId: getSessionId(), ...(window._apexFlow && window._apexName ? { apexSource: window._apexName } : {}), ...(tsToken0 ? { turnstileToken: tsToken0 } : {}) });
-          // Adopt backend apex flags (authoritative): apex inputs normalize to
-          // www server-side too, so direct/reopened flows stay consistent.
+          const addRes = await addFn({ domain: pendingDomain, type: 'managed', sessionId: getSessionId(), ...(tsToken0 ? { turnstileToken: tsToken0 } : {}) });
+          // Adopt backend flags (authoritative): legacy fallback docs echo
+          // isApexFlow/apex/displayName; primaries echo themselves.
           if (addRes.data) {
             if (addRes.data.isApexFlow === true) window._apexFlow = true;
             if (addRes.data.apex) window._apexName = addRes.data.apex;
+            if (addRes.data.displayName) window._displayName = addRes.data.displayName;
             if (addRes.data.domain) pendingDomain = addRes.data.domain;
           }
           if (addRes.data && addRes.data.pendingClaim) {
@@ -1537,10 +1535,11 @@
 
           // Show verification step (domain already created in step 1)
           // Get the domain info from backend using addCustomDomain (which returns the info)
+          // Primary re-entry: preserve fallback state when already active.
           const addFn = functions.httpsCallable('addCustomDomain');
           const tsToken1 = window._tsToken || undefined;
           window._tsToken = undefined;
-          const res = await addFn({ sessionId: getSessionId(), domain: pendingDomain, ...(window._apexFlow && window._apexName ? { apexSource: window._apexName } : {}), ...(tsToken1 ? { turnstileToken: tsToken1 } : {}) });
+          const res = await addFn({ sessionId: getSessionId(), domain: pendingDomain, ...(window._apexFlow === true && window._apexName ? { apexSource: window._apexName, fallback: true } : {}), ...(tsToken1 ? { turnstileToken: tsToken1 } : {}) });
           const data = res.data || {};
           if (data.pendingClaim) {
             btn.classList.remove('loading');
@@ -1551,11 +1550,13 @@
           }
           if (data.isApexFlow === true) window._apexFlow = true;
           if (data.apex) window._apexName = data.apex;
+          if (data.displayName) window._displayName = data.displayName;
           if (data.domain) pendingDomain = data.domain;
 
           // Set up the verification UI with the returned data
           setVerificationUI({
             domain: data.domain || pendingDomain,
+            displayName: data.displayName || pendingDomain,
             verificationToken: data.dnsVerificationToken || data.verificationToken,
             sslVerification: data.sslVerification,
             status: data.status,
@@ -1563,7 +1564,8 @@
             dnsVerification: data.dnsVerification,
             isApexFlow: data.isApexFlow,
             apex: data.apex,
-            apexInstructions: data.apexInstructions
+            apexInstructions: data.apexInstructions,
+            fallback: data.fallback || null
           });
 
           showStep('verification');
@@ -1583,12 +1585,12 @@
         const cname = (data.instructions && data.instructions.cnameTarget) || 'customers.inoculens.com';
         const claimCnameName = String(pendingDomain || '');
         const claimTxtHost = `verification.${String(pendingDomain || '')}`;
-        // Apex-only branch: claimants who typed an apex prove the redirect too,
-        // mirroring the verification step order (Apex -> CNAME -> TXT).
-        // Plain subdomain claims render exactly as before.
+        // Fallback pairing on claims mirrors the add-flow: paired docs prove
+        // the apex redirect too; primaries prove routing (CNAME/ALIAS/ANAME)
+        // + TXT only. Same yellow fallback path is available via banner.
         const claimApexFlow = (data && data.isApexFlow === true) || window._apexFlow === true;
-        const claimApex = (data && data.apex) || window._apexName || null;
-        const claimAi = (data && data.apexInstructions) || {};
+        const claimApex = (data && data.apex) || window._apexName || (data && data.fallback && data.fallback.apex) || null;
+        const claimAi = (data && data.apexInstructions) || (data && data.fallback) || {};
         const claimA = claimAi.a || APEX_REDIRECT_IPV4;
         const claimAaaa = claimAi.aaaa || APEX_REDIRECT_IPV6;
         const copySvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
@@ -1608,7 +1610,8 @@
             + `<div style="margin: 16px 0; display: flex; flex-direction: column; gap: 8px; text-align: left;">`
             + apexCard
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
-            + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">CNAME Record (Routing)</label>`
+            + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Routing Record (CNAME / ALIAS / ANAME)</label>
+              <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 8px;">Any one works — CNAME, ALIAS, ANAME, or flattened CNAME pointing at the target below.</div>`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Record name:</div>${copyRow('claimCnameName', claimCnameName)}`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to:</div>${copyRow('claimCnameTarget', cname)}`
             + `</div>`
@@ -1632,20 +1635,20 @@
           const fn = functions.httpsCallable('verifyClaimedDomainDns');
           const tsToken2 = window._tsToken || undefined;
           window._tsToken = undefined;
-          const res = await fn({ domain: pendingDomain, sessionId: getSessionId(), ...(window._apexFlow && window._apexName ? { apexSource: window._apexName } : {}), ...(tsToken2 ? { turnstileToken: tsToken2 } : {}) });
+          const res = await fn({ domain: pendingDomain, sessionId: getSessionId(), ...(window._apexFlow === true && window._apexName ? { apexSource: window._apexName, fallback: true } : {}), ...(tsToken2 ? { turnstileToken: tsToken2 } : {}) });
           closeLoadingModal();
           if (res.data && res.data.success) {
             await loadUserDomains();
             await fetchAndRenderSession(getSessionId());
             showCustomModal({ title: "Reclaimed", message: `Domain <strong>${escapeHTML(displayHost(pendingDomain))}</strong> + its links moved here.` });
           } else {
-            // Name apex records only for apex flows (backend echoes
-            // isApexFlow on apex failures); plain claims keep the old text.
+            // Name apex records only for fallback flows (backend echoes
+            // isApexFlow on fallback failures); primaries keep routing text.
             const claimIsApex = window._apexFlow === true || (res.data && res.data.isApexFlow === true);
             const needApex = claimIsApex && res.data && res.data.checks && res.data.checks.apex === false;
             showCustomModal({ title: "Not yet", message: needApex
-              ? "DNS proof not found yet (Apex redirect + CNAME + TXT). Wait for propagation and try Verify Claim again."
-              : "DNS proof not found yet (CNAME + TXT). Wait for propagation and try Verify Claim again." });
+              ? "DNS proof not found yet (Apex redirect + routing + TXT). Wait for propagation and try Verify Claim again."
+              : "DNS proof not found yet (routing via CNAME/ALIAS/ANAME + TXT). Wait for propagation and try Verify Claim again." });
           }
         } catch (e) {
           closeLoadingModal();
@@ -1695,53 +1698,67 @@
         if (txtTokenEl) txtTokenEl.textContent = txtToken;
         if (txtHostEl) txtHostEl.textContent = txtHost;
 
-        // CNAME target (SaaS) — backend-driven, never hardcoded.
+        // Routing target (SaaS) — backend-driven, never hardcoded.
         // INOCULENS account: customers.inoculens.com (proxied SaaS target).
+        // Accepts CNAME, ALIAS, ANAME, or flattened CNAME — all verified via
+        // visible CNAME or address equality (see backend verifyDns).
         const cnameTarget = (domainDoc.instructions && (domainDoc.instructions.cnameTarget || domainDoc.instructions.routingTarget)) || 'customers.inoculens.com';
         const cnameHostEl = document.getElementById('cnameRecordHost');
         if (cnameHostEl) cnameHostEl.textContent = cnameTarget;
-        // Record name the user must create (source side of the CNAME).
+        // Record name the user must create (source side). Exact host typed —
+        // apex and www are independent primaries.
         const recordName = (domainDoc.instructions && domainDoc.instructions.recordName) || domainName;
         const recordNameEl = document.getElementById('cnameRecordName');
         if (recordNameEl) recordNameEl.textContent = recordName;
-        // Grandfathered apex docs (domain/<apex> created before the apex->www
-        // branch): keep the explanatory note. New apex inputs canonicalize to
-        // www and never create apex docs, so this only fires for legacy rows.
+        // Display name: exactly what the user typed on the first screen.
+        // Fallback docs keep it (apex stays apex, www stays www); primaries
+        // equal their canonical host. Legacy docs without it fall back below.
+        if (domainDoc.displayName) window._displayName = domainDoc.displayName;
+        else if (domainDoc.isApexFlow === true && domainDoc.apex) window._displayName = domainDoc.apex;
+        else window._displayName = domainName;
+        // Apex primaries are first-class (ALIAS/ANAME/flattened): never show
+        // the old "delete and re-add" note. Naked domains work directly.
         const apexNote = document.getElementById('apexNote');
-        const isApexDoc = domainDoc.instructions && domainDoc.instructions.isApex;
-        if (apexNote) {
-          if (isApexDoc) {
-            apexNote.innerHTML = `⚠️ <strong>${escapeHTML(domainName)}</strong> is a naked (apex) domain from an older setup. Delete it and re-add <strong>${escapeHTML(domainName)}</strong> above — it will set up <strong>www.${escapeHTML(domainName)}</strong> plus a free apex redirect automatically.`;
-            apexNote.style.display = 'block';
-          } else {
-            apexNote.style.display = 'none';
-          }
-        }
+        if (apexNote) apexNote.style.display = 'none';
 
-        // Apex->www branch (additive): show the apex redirect card only when
-        // this flow started from an apex input. Plain subdomain flows keep it
-        // hidden and behave exactly as before. In apex flows the redirect
-        // gates payment together with CNAME + TXT.
+        // Fallback pairing (IP safety net): one www doc covers apex+www via
+        // apex A/AAAA redirect + www routing. Shown when the doc is already
+        // paired (isApexFlow) or the user explicitly opened it via the yellow
+        // banner. Otherwise hidden — primary verifies routing + TXT alone.
         const apexFlow = domainDoc.isApexFlow === true || window._apexFlow === true;
-        const apexHost = domainDoc.apex || (apexFlow ? (window._apexName || null) : null);
+        const apexHost = domainDoc.apex || (apexFlow ? (window._apexName || null) : null) || (domainDoc.fallback && domainDoc.fallback.apex) || null;
         if (domainDoc.isApexFlow === true) window._apexFlow = true;
         if (domainDoc.apex) window._apexName = domainDoc.apex;
+        else if (domainDoc.fallback && domainDoc.fallback.apex && window._fallbackOpen === true && !window._apexName) window._apexName = domainDoc.fallback.apex;
         const apexCard = document.getElementById('apexRedirectCard');
         if (apexCard) {
-          if (apexFlow && apexHost) {
-            apexCard.style.display = 'flex';
-            const apexNameEl = document.getElementById('apexDomainName');
-            if (apexNameEl) apexNameEl.textContent = apexHost;
-            const aEl = document.getElementById('apexAValue');
-            const aaaaEl = document.getElementById('apexAaaaValue');
-            const ai = domainDoc.apexInstructions || {};
-            if (aEl) aEl.textContent = ai.a || APEX_REDIRECT_IPV4;
-            if (aaaaEl) aaaaEl.textContent = ai.aaaa || APEX_REDIRECT_IPV6;
-            updateApexStatusUI(null);
+          const showFallbackCard = (apexFlow && apexHost) || window._fallbackOpen === true;
+          if (showFallbackCard) {
+            const fb = domainDoc.fallback || null;
+            const effApex = apexHost || (fb && fb.apex) || window._apexName || null;
+            if (effApex) {
+              apexCard.style.display = 'flex';
+              const apexNameEl = document.getElementById('apexDomainName');
+              if (apexNameEl) apexNameEl.textContent = effApex;
+              const aEl = document.getElementById('apexAValue');
+              const aaaaEl = document.getElementById('apexAaaaValue');
+              const ai = domainDoc.apexInstructions || fb || {};
+              if (aEl) aEl.textContent = ai.a || APEX_REDIRECT_IPV4;
+              if (aaaaEl) aaaaEl.textContent = ai.aaaa || APEX_REDIRECT_IPV6;
+              updateApexStatusUI(null);
+            } else {
+              apexCard.style.display = 'none';
+            }
           } else {
             apexCard.style.display = 'none';
           }
         }
+        // Yellow fallback banner: always visible under the routing card (per
+        // product decision), including subdomains. Opens the paired flow.
+        try {
+          const fbBanner = document.getElementById('fallbackBanner');
+          if (fbBanner) fbBanner.style.display = 'block';
+        } catch (e) {}
 
 
         // Initialize status from database (persistent state)
@@ -1756,10 +1773,10 @@
           apex: null
         };
 
-        // Initialize button labels
+        // Initialize button labels (routing accepts CNAME/ALIAS/ANAME/flattened).
         const cnameBtn = document.getElementById('verifyCnameBtn');
         const txtBtn = document.getElementById('verifyTxtBtn');
-        if (cnameBtn) cnameBtn.textContent = 'Verify CNAME';
+        if (cnameBtn) cnameBtn.textContent = 'Verify routing';
         if (txtBtn) txtBtn.textContent = 'Verify TXT';
 
         // Update UI status using persistent values
@@ -1820,23 +1837,33 @@
         updateStatusUI('txt', !!dns.txtVerified);
         updateRoutingUI((dns.routable === false) ? false : null);
 
-        // Apex card visibility (additive): only for apex->www flows.
+        // Fallback card visibility: paired docs show it; primaries show it
+        // only after the yellow banner opens it. Banner itself always shows.
         if (domainData.isApexFlow === true) window._apexFlow = true;
         if (domainData.apex) window._apexName = domainData.apex;
+        if (domainData.displayName) window._displayName = domainData.displayName;
         const apexCardS = document.getElementById('apexRedirectCard');
         if (apexCardS) {
-          const showApex = window._apexFlow === true && !!(domainData.apex || window._apexName);
+          const paired = window._apexFlow === true && !!(domainData.apex || window._apexName);
+          const opened = window._fallbackOpen === true && !!((domainData.fallback && domainData.fallback.apex) || domainData.apex || window._apexName);
+          const showApex = paired || opened;
           apexCardS.style.display = showApex ? 'flex' : 'none';
           if (showApex) {
+            const fbS = domainData.fallback || null;
+            const effS = domainData.apex || window._apexName || (fbS && fbS.apex) || '';
             const nEl = document.getElementById('apexDomainName');
-            if (nEl) nEl.textContent = domainData.apex || window._apexName || '';
-            const aiS = domainData.apexInstructions || {};
+            if (nEl) nEl.textContent = effS;
+            const aiS = domainData.apexInstructions || fbS || {};
             const aElS = document.getElementById('apexAValue');
             const aaaaElS = document.getElementById('apexAaaaValue');
             if (aElS && aiS.a) aElS.textContent = aiS.a;
             if (aaaaElS && aiS.aaaa) aaaaElS.textContent = aiS.aaaa;
           }
         }
+        try {
+          const fbB = document.getElementById('fallbackBanner');
+          if (fbB) fbB.style.display = 'block';
+        } catch (e) {}
 
         // Show/hide verification status in modal - only show when both verified AND active/paid
         // (and never alongside the routing error — updateRoutingUI invariant).
@@ -1864,7 +1891,7 @@
         else if (field === 'txt') verificationState.txt = ok;
 
         const map = {
-          cname: { status: 'cnameStatus', btn: 'verifyCnameBtn', label: 'Verify CNAME' },
+          cname: { status: 'cnameStatus', btn: 'verifyCnameBtn', label: 'Verify routing' },
           txt: { status: 'txtStatus', btn: 'verifyTxtBtn', label: 'Verify TXT' }
         };
 
@@ -2042,7 +2069,7 @@
         // Routing: null/undefined = unknown (fail-open), false = unservable.
         if (checks.routable === false) {
           updateRoutingUI(false);
-          showToast('Domain does not resolve to Tunnel edge — fix the CNAME target or wait for propagation, then Re-verify.', 'error');
+          showToast('Domain does not resolve to Tunnel edge — fix the routing target (CNAME/ALIAS/ANAME) or wait for propagation, then Re-verify.', 'error');
         } else {
           updateRoutingUI(null);
         }
@@ -2051,6 +2078,9 @@
         refreshDiscountWindowState();
       }
 
+      // Routing verification: accepts CNAME, ALIAS, ANAME, or flattened
+      // CNAME (any record pointing the host at the SaaS target). Name kept
+      // for compat; button reads "Verify routing".
       async function verifyCnameOnly() {
         if (!currentDomain || !getSessionId()) {
           showToast('Selection error: please re-open the domain manager.', 'error');
@@ -2067,18 +2097,19 @@
           updateAllChecksFromResponse(res.data);
 
           if (res.data?.checks?.routable === false) {
-            console.warn('CNAME Verification: UNROUTABLE (no edge address)');
-            showToast('CNAME points at Tunnel, but the domain resolves nowhere usable — browsers cannot reach it. Fix the target or wait for propagation.', 'error');
+            console.warn('Routing verification: UNROUTABLE (no edge address)');
+            showToast('Routing points at Tunnel, but the domain resolves nowhere usable — browsers cannot reach it. Fix the target or wait for propagation.', 'error');
           } else if (res.data?.checks?.cname) {
-            showToast('CNAME verified!', 'success');
+            const m = res.data?.checks?.routingMethod;
+            showToast(m === 'alias' ? 'Routing verified (ALIAS/ANAME)!' : 'Routing verified!', 'success');
           } else {
-            console.warn('CNAME Verification: FAILED (Check DNS)');
-            showToast('CNAME verification failed. Check your DNS records.', 'error');
+            console.warn('Routing verification: FAILED (Check DNS)');
+            showToast('Routing verification failed. Check your CNAME / ALIAS / ANAME record.', 'error');
           }
         } catch (e) {
           console.error('verifyCnameOnly Exception:', e);
           updateStatusUI('cname', false, true);
-          showToast('Error verifying CNAME: ' + (e.message || 'Unknown error'), 'error');
+          showToast('Error verifying routing: ' + (e.message || 'Unknown error'), 'error');
         } finally {
           if (btn) btn.disabled = false;
         }
@@ -2154,7 +2185,7 @@
           const ok = res.data && res.data.ok === true;
           updateApexStatusUI(ok);
           if (ok) {
-            showToast('Apex redirect verified! example.com links will forward to www.', 'success');
+            showToast('Apex redirect verified! Apex links will forward to www.', 'success');
           } else {
             showToast('Apex redirect not detected yet. Check the A/AAAA at @ (DNS-only) and retry.', 'error');
           }
@@ -2164,6 +2195,120 @@
           showToast('Error verifying apex: ' + (e.message || 'Unknown error'), 'error');
         } finally {
           if (btn) btn.disabled = false;
+        }
+      }
+
+      // Fallback entry (yellow banner "Try the fallback"): pairs apex+www on
+      // one www doc via apex A/AAAA redirect + www routing. Non-destructive:
+      // never deletes the current primary doc. www hosts stamp in place;
+      // apex hosts create the www pair as a separate domain (separate $10);
+      // other subdomains ask to set up www.<root> as a new domain instead.
+      function fallbackPairFor(host) {
+        const h = String(host || '').toLowerCase();
+        if (!h) return null;
+        try {
+          if (h.startsWith('www.')) {
+            const apex = h.slice(4);
+            if (apex && apex.includes('.')) return { apex, www: h };
+            return null;
+          }
+          if (typeof isProbablyApex === 'function' && isProbablyApex(h) && typeof wwwForApexInput === 'function') {
+            const www = wwwForApexInput(h);
+            if (www) return { apex: h, www };
+          }
+        } catch (e) {}
+        return null;
+      }
+      function zoneRootFor(host) {
+        try {
+          const parts = String(host || '').toLowerCase().split('.').filter(Boolean);
+          if (parts.length >= 2) return parts.slice(-2).join('.');
+        } catch (e) {}
+        return null;
+      }
+      async function openFallbackFromBanner() {
+        const cur = currentDomain || pendingDomain || '';
+        if (!cur || !getSessionId()) {
+          showToast('Selection error: please re-open the domain manager.', 'error');
+          return;
+        }
+        const pair = fallbackPairFor(cur);
+        if (pair) {
+          await enterFallbackMode(pair.www, pair.apex);
+          return;
+        }
+        // Other subdomain (e.g. s.example.com): fallback pairing lives on
+        // www.<root> as a separate domain. Confirm the switch explicitly —
+        // the current subdomain setup stays untouched.
+        const root = zoneRootFor(cur);
+        if (!root) {
+          showToast('Fallback applies to apex/www pairs.', 'error');
+          return;
+        }
+        const wwwRoot = `www.${root}`;
+        if (wwwRoot === String(cur).toLowerCase()) return;
+        const ok = await showCustomModal({
+          title: 'Use the fallback?',
+          message: `The fallback pairs <strong>${escapeHTML(root)}</strong> with <strong>${escapeHTML(wwwRoot)}</strong> on one setup (single payment). Your current entry <strong>${escapeHTML(cur)}</strong> stays as-is — this opens <strong>${escapeHTML(wwwRoot)}</strong> as a separate setup. Continue?`,
+          showCancel: true,
+          confirmText: 'Continue',
+          cancelText: 'Stay here'
+        });
+        if (!ok) return;
+        window._apexFlow = false;
+        window._apexName = '';
+        window._fallbackOpen = false;
+        pendingDomain = wwwRoot;
+        currentDomain = wwwRoot;
+        try { await manageDomain(wwwRoot); } catch (e) {}
+        window._fallbackOpen = true;
+        try {
+          const card = document.getElementById('apexRedirectCard');
+          if (card) card.style.display = 'flex';
+        } catch (e) {}
+        await enterFallbackMode(wwwRoot, root, true);
+      }
+      async function enterFallbackMode(wwwHost, apexHost, skipConfirm) {
+        const www = String(wwwHost || '').toLowerCase();
+        const apex = String(apexHost || '').toLowerCase();
+        if (!www || !apex || !getSessionId()) return;
+        // If the www pair already exists in this session, just open it.
+        // Otherwise create/stamp it as fallback (same host = in-place stamp,
+        // apex entry = new www doc, both non-destructive to primaries).
+        window._fallbackOpen = true;
+        window._fallbackFor = www;
+        window._apexFlow = true;
+        window._apexName = apex;
+        try {
+          const addFn = functions.httpsCallable('addCustomDomain');
+          const res = await addFn({ domain: www, apexSource: apex, fallback: true, sessionId: getSessionId() });
+          const data = res.data || {};
+          if (data.pendingClaim) {
+            showPendingClaimModal({ ...data, isApexFlow: true, apex, fallback: true });
+            return;
+          }
+          if (data.domain) { pendingDomain = data.domain; currentDomain = data.domain; }
+          if (data.isApexFlow === true) window._apexFlow = true;
+          if (data.apex) window._apexName = data.apex;
+          if (data.displayName) window._displayName = data.displayName;
+          await loadUserDomains();
+          setVerificationUI({
+            domain: data.domain || www,
+            displayName: data.displayName || www,
+            verificationToken: data.dnsVerificationToken || data.verificationToken,
+            sslVerification: data.sslVerification,
+            status: data.status,
+            isVerified: data.isVerified,
+            dnsVerification: data.dnsVerification,
+            isApexFlow: true,
+            apex: data.apex || apex,
+            apexInstructions: data.apexInstructions || data.fallback || null,
+            fallback: data.fallback || null
+          });
+          showStep('verification');
+        } catch (e) {
+          console.error('enterFallbackMode failed:', e);
+          showToast(e.message || 'Could not open fallback.', 'error');
         }
       }
 
@@ -2370,17 +2515,22 @@
       async function manageDomain(domain) {
         pendingDomain = domain;
         currentDomain = domain;
-        // Reassert apex branch when reopening a www doc created via apex input.
-        // Plain subdomain docs carry no apex flags — card stays hidden.
-        // Keep flags when managing the flagged www canonical (apex re-entry);
-        // clear them when switching to any other domain so plain flows stay exact.
+        // Fallback state is authoritative from the backend doc (isApexFlow).
+        // Clear stale local flags when switching domains; reopening the same
+        // paired www keeps them. Never force fallback for primaries.
         try {
           const flaggedWww = window._apexName ? wwwForApexInput(window._apexName) : null;
           if (!window._apexFlow || flaggedWww !== String(domain || '').toLowerCase()) {
+            // Keep _fallbackOpen only when explicitly opened for this domain
+            // in this session; otherwise reset to backend truth below.
+            if ((window._fallbackFor || '') !== String(domain || '').toLowerCase()) {
+              window._fallbackOpen = false;
+              window._fallbackFor = '';
+            }
             window._apexFlow = false;
             window._apexName = '';
           }
-        } catch (e) { window._apexFlow = false; window._apexName = ''; }
+        } catch (e) { window._apexFlow = false; window._apexName = ''; window._fallbackOpen = false; }
 
         // Defensive: everything below paints into domainManagerOverlay, so
         // make sure it is visible (the showDomainManager entry flow normally
@@ -2398,16 +2548,20 @@
         updateContinueButton(true);
 
         // Fetch latest domain info and set up verification UI
+        // Idempotent re-entry: no fallback flags — backend truth decides.
+        // (Fallback pairing is only sent from the yellow banner flow.)
         try {
           const addFn = functions.httpsCallable('addCustomDomain');
-          const res = await addFn({ sessionId: getSessionId(), domain: domain, ...(window._apexFlow && window._apexName ? { apexSource: window._apexName } : {}) });
+          const res = await addFn({ sessionId: getSessionId(), domain: domain });
           const data = res.data || {};
           if (data.isApexFlow === true) window._apexFlow = true;
           if (data.apex) window._apexName = data.apex;
+          if (data.displayName) window._displayName = data.displayName;
           if (data.domain) { pendingDomain = data.domain; currentDomain = data.domain; }
 
           setVerificationUI({
             domain: data.domain || domain,
+            displayName: data.displayName || domain,
             dnsVerificationToken: data.dnsVerificationToken,
             sslVerification: data.sslVerification,
             status: data.status,
@@ -2415,7 +2569,8 @@
             dnsVerification: data.dnsVerification,
             isApexFlow: data.isApexFlow,
             apex: data.apex,
-            apexInstructions: data.apexInstructions
+            apexInstructions: data.apexInstructions,
+            fallback: data.fallback || null
           });
         } catch (err) {
           console.error('Error loading domain info:', err);
@@ -2449,9 +2604,9 @@
           return;
         }
         const ready = info.status === 'active' && info.coverageValid === true;
-        // Display form follows what the user added (apex input -> apex label);
+        // Display form follows what the user originally typed (displayName);
         // the canonical d below still drives all actions + routing storage.
-        const menuDisp = (info.isApexFlow === true && info.apex) ? info.apex : d;
+        const menuDisp = info.displayName || ((info.isApexFlow === true && info.apex) ? info.apex : d);
         const apexRow = ready
           ? `<button class="modal-btn modal-btn-ok" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('apex', ${escapeJS(d)})">Configure APEX routing</button>`
           : `<div style="margin-top: 12px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); font-size: 0.8rem; color: var(--text-muted); text-align: center;">APEX routing unlocks once the domain is paid and active.</div>`;
@@ -2720,6 +2875,7 @@
           // Use setVerificationUI for consistent updates
           setVerificationUI({
             domain: data.domain || domain,
+            displayName: data.displayName || domain,
             dnsVerificationToken: (data.instructions && data.instructions.txt) || data.dnsVerificationToken,
             sslVerification: data.sslVerification || (data.cloudflareValidationRecords && { records: data.cloudflareValidationRecords }),
             status: data.status,
@@ -2727,7 +2883,8 @@
             isVerified: data.isVerified,
             isApexFlow: data.isApexFlow,
             apex: data.apex,
-            apexInstructions: data.apexInstructions
+            apexInstructions: data.apexInstructions,
+            fallback: data.fallback || null
           });
 
         } catch (err) {
