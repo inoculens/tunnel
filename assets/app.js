@@ -495,23 +495,10 @@
           return u.toString();
         } catch (e) { return String(shortUrl); }
       }
-      // Twin-safe list label: an apex primary and a www fallback can share one
-      // displayName (both entered as example.com). The fallback twin then
-      // carries its canonical host so Manage/Delete can never be aimed at the
-      // wrong entry. Values, filtering, and link identity stay canonical —
-      // only this label changes, and only while twins coexist.
-      function uniqueDomainLabel(host) {
-        const base = displayHost(host);
-        try {
-          const w = String(host || '').toLowerCase();
-          const me = (userCustomDomains || []).find((d) => d && String(d.domain || '').toLowerCase() === w);
-          const clash = (userCustomDomains || []).some((d) =>
-            d && String(d.domain || '').toLowerCase() !== w &&
-            String(displayHost(d.domain)).toLowerCase() === String(base).toLowerCase());
-          if (clash && me && me.isApexFlow === true) return `${base} (${w})`;
-        } catch (e) {}
-        return base;
-      }
+      // List labels follow one rule: show exactly what the user typed
+      // (displayHost). Same-label twins are prevented at creation time
+      // instead of disambiguated here — see proceedToAddDomain,
+      // enterFallbackMode, and the backend display-clash guards.
       function findLinkIndex(code, domain) {
         if (!code) return -1;
         if (!domain) return currentLinks.findIndex(l => l && l.code === code);
@@ -910,10 +897,10 @@
 
       function selectDomain(domain) {
         selectedDomain = domain;
-        // Show the display form (twin-safe); the stored value stays canonical
+        // Show exactly what the user typed; the stored value stays canonical
         // (that's what the backend mints + resolves).
         try {
-          currentDomainSpan.textContent = uniqueDomainLabel(String(domain).replace(/\/$/, '')) + '/';
+          currentDomainSpan.textContent = displayHost(String(domain).replace(/\/$/, '')) + '/';
         } catch (e) {
           currentDomainSpan.textContent = domain;
         }
@@ -984,11 +971,12 @@
         `;
 
         // Sort domains alphabetically and add to dropdown
-        // (values stay canonical so filtering matches; labels are twin-safe).
+        // (values stay canonical so filtering matches; labels show exactly
+        // what the user typed).
         Array.from(historyDomains).sort().forEach(domainName => {
           const filterOpt = document.createElement('div');
           filterOpt.className = `filter-option ${currentFilter === domainName ? 'selected' : ''}`;
-          const filterLabel = uniqueDomainLabel(domainName.replace(/\/$/, '')) + '/';
+          const filterLabel = displayHost(domainName.replace(/\/$/, '')) + '/';
           filterOpt.innerHTML = `
             <span>${escapeHTML(filterLabel)}</span>
             ${currentFilter === domainName ? checkIcon : ''}
@@ -1014,7 +1002,7 @@
               </button>
               <span class="domain-status ${soon ? 'status-pending' : 'status-active'}">${soon ? 'Expiring soon' : 'Active'}</span>
             </div>
-            <span style="flex: 1; white-space: nowrap;">${escapeHTML(uniqueDomainLabel(domainObj.domain))}/</span>
+            <span style="flex: 1; white-space: nowrap;">${escapeHTML(displayHost(domainObj.domain))}/</span>
           `;
           opt.onclick = () => selectDomain(domainVal);
           dropdown.insertBefore(opt, document.getElementById('dropdownAddNew'));
@@ -1049,7 +1037,7 @@
                 </button>
                 <span class="domain-status ${statusClass}">${statusText}</span>
               </div>
-              <span style="flex: 1; white-space: nowrap;">${escapeHTML(uniqueDomainLabel(domainObj.domain))}/</span>
+              <span style="flex: 1; white-space: nowrap;">${escapeHTML(displayHost(domainObj.domain))}/</span>
             `;
             opt.onclick = () => showDomainMenu(domainObj.domain);
             dropdown.insertBefore(opt, document.getElementById('dropdownAddNew'));
@@ -1124,6 +1112,7 @@
         window._fallbackFor = '';
         const apexCard0 = document.getElementById('apexRedirectCard');
         if (apexCard0) apexCard0.style.display = 'none';
+        syncExitFallbackRow();
 
         // Load domains first before allowing any actions
         loadUserDomains().then(() => {
@@ -1487,6 +1476,24 @@
             return;
           }
 
+          // Same-label guard: another entry already displays exactly what was
+          // typed (e.g. typing apex.com while its www fallback shows apex.com).
+          // Opening that setup instead of creating a twin keeps every label
+          // unique — the backend enforces the same rule as backstop.
+          const labelTwin = userCustomDomains.find((d) =>
+            d && String(d.domain || '').toLowerCase() !== String(pendingDomain).toLowerCase() &&
+            String(displayHost(d.domain)).toLowerCase() === String(pendingDomain).toLowerCase());
+          if (labelTwin) {
+            btn.classList.remove('loading');
+            btn.disabled = false;
+            showCustomModal({
+              title: "Already Added",
+              message: `<strong>${escapeHTML(displayHost(labelTwin.domain))}</strong> is already in your account — opening its setup instead of adding it twice.`
+            });
+            try { await manageDomain(labelTwin.domain); } catch (e) {}
+            return;
+          }
+
           // Claim the domain: own domains idempotent; names held by other
           // sessions become inert pending claims (no transfer until DNS proof
           // via verifyClaimedDomainDns, which also merges links+stats).
@@ -1506,6 +1513,18 @@
             btn.classList.remove('loading');
             btn.disabled = false;
             showPendingClaimModal(addRes.data);
+            return;
+          }
+          // Backend display-clash backstop (stale list / race): the label is
+          // taken, so open that setup instead of continuing with a twin.
+          if (addRes.data && addRes.data.displayConflict) {
+            btn.classList.remove('loading');
+            btn.disabled = false;
+            showCustomModal({
+              title: "Already Added",
+              message: `<strong>${escapeHTML(displayHost(addRes.data.domain || pendingDomain))}</strong> is already in your account — opening its setup instead of adding it twice.`
+            });
+            try { await manageDomain(addRes.data.domain || pendingDomain); } catch (e) {}
             return;
           }
 
@@ -1528,7 +1547,10 @@
             if (token) { window._tsToken = token; await proceedToAddDomain(); }
             return;
           }
-          showCustomModal({ title: "Error", message: escapeHTML(err.message || 'Something went wrong') });
+          const friendlyAdd = isTurnstileRequiredError(err)
+            ? 'Quick human check needed — please wait a moment and try again.'
+            : (err.message || 'Something went wrong');
+          showCustomModal({ title: "Error", message: escapeHTML(friendlyAdd) });
         } finally {
           btn.classList.remove('loading');
           btn.disabled = false;
@@ -1549,10 +1571,25 @@
           // Show verification step (domain already created in step 1)
           // Get the domain info from backend using addCustomDomain (which returns the info)
           // Primary re-entry: preserve fallback state when already active.
+          // Turnstile retry mirrors the other entries: without it a fast loop
+          // surfaces the raw backend code and every retry click makes it worse
+          // (each attempt bumps the pace counter further).
           const addFn = functions.httpsCallable('addCustomDomain');
           const tsToken1 = window._tsToken || undefined;
           window._tsToken = undefined;
-          const res = await addFn({ sessionId: getSessionId(), domain: pendingDomain, ...(window._apexFlow === true && window._apexName ? { apexSource: window._apexName, fallback: true } : {}), ...(tsToken1 ? { turnstileToken: tsToken1 } : {}) });
+          const pricingBase = { sessionId: getSessionId(), domain: pendingDomain, ...(window._apexFlow === true && window._apexName ? { apexSource: window._apexName, fallback: true } : {}) };
+          let res;
+          try {
+            res = await addFn({ ...pricingBase, ...(tsToken1 ? { turnstileToken: tsToken1 } : {}) });
+          } catch (e) {
+            if (isTurnstileRequiredError(e) && !window._tsRetried) {
+              window._tsRetried = true;
+              const token = await showTurnstileChallenge();
+              window._tsRetried = false;
+              if (!token) throw e;
+              res = await addFn({ ...pricingBase, turnstileToken: token });
+            } else throw e;
+          }
           const data = res.data || {};
           if (data.pendingClaim) {
             btn.classList.remove('loading');
@@ -1582,8 +1619,15 @@
 
           showStep('verification');
         } catch (err) {
-          showCustomModal({ title: "Error", message: escapeHTML(err.message || 'Something went wrong') });
+          // Never surface raw backend codes (e.g. TURNSTILE_REQUIRED) — the
+          // challenge above already ran, so anything left is a real failure.
+          const raw = err.message || 'Something went wrong';
+          const friendly = isTurnstileRequiredError(err)
+            ? 'Quick human check needed — please wait a moment and try again.'
+            : raw;
+          showCustomModal({ title: "Error", message: escapeHTML(friendly) });
         } finally {
+          window._tsRetried = false;
           btn.classList.remove('loading');
           btn.disabled = false;
           btn.textContent = 'Continue';
@@ -1671,7 +1715,10 @@
             if (token) { window._tsToken = token; await verifyPendingClaim(); }
             return;
           }
-          showCustomModal({ title: "Error", message: escapeHTML(e.message || 'Verify failed') });
+          const friendlyClaim = isTurnstileRequiredError(e)
+            ? 'Quick human check needed — please wait a moment and try again.'
+            : (e.message || 'Verify failed');
+          showCustomModal({ title: "Error", message: escapeHTML(friendlyClaim) });
         }
       }
 
@@ -1762,6 +1809,7 @@
             apexCard.style.display = 'none';
           }
         }
+        syncExitFallbackRow();
         // Yellow fallback banner: visible on primary setups only. Once the
         // fallback card itself is showing (paired doc or explicitly opened),
         // the banner hides — it must never appear twice on the same screen.
@@ -1877,6 +1925,7 @@
             if (aaaaElS && aiS.aaaa) aaaaElS.textContent = aiS.aaaa;
           }
         }
+        syncExitFallbackRow();
         try {
           const fbB = document.getElementById('fallbackBanner');
           if (fbB) {
@@ -2042,33 +2091,17 @@
         const t = new Date(d.coverageExpiresAt).getTime();
         return Number.isFinite(t) && t - Date.now() < COVERAGE_EXPIRY_SOON_MS;
       }
+      // Coverage info box removed by design: the verification step keeps only
+      // the SSL line. Callers stay untouched; coverage state still lives in
+      // window.domainCoverage and still drives the Continue button label
+      // ("Renew — $10/year") and the dropdown "Expiring soon" badge.
       function renderCoverageStatus() {
-        const el = document.getElementById('coverageStatus');
-        if (!el) return;
-        const cov = window.domainCoverage;
-        if (!cov) { el.style.display = 'none'; el.innerHTML = ''; return; }
-        const box = (inner) => `<div style="background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); padding: 10px; border-radius: 8px; text-align: center; font-size: 0.85rem; color: var(--text-muted);">${inner}</div>`;
-        if (cov.lifetime === true) {
-          el.innerHTML = box('Lifetime coverage — no renewal needed.');
-        } else if (cov.valid === true && cov.expiresAt) {
-          let when = '';
-          try { when = new Date(cov.expiresAt).toLocaleDateString(); } catch (e) { when = ''; }
-          if (coverageExpiringSoon(cov)) {
-            el.innerHTML = box(`Coverage ends on <b style="color: #f5a623;">${escapeHTML(when)}</b> — renew anytime, remaining time carries over.`);
-          } else {
-            el.innerHTML = box(`Covered until <b style="color: var(--text);">${escapeHTML(when)}</b>.`);
-          }
-        } else if (window.domainDiscount && window.domainDiscount.hasDiscount) {
-          const pct = Number(window.domainDiscount.percent) || 0;
-          el.innerHTML = box(`<b>${pct}% promo code applied</b> — complete the remaining payment to activate.`);
-        } else if (window.domainPaymentStatus === 'paid') {
-          el.innerHTML = box('<b style="color: #f28b82;">Coverage expired</b> — renew below to reactivate your links.');
-        } else if (window.domainIsVerified === true) {
-          el.innerHTML = box('Domain verified — one step left: activate coverage with payment or a promo code.');
-        } else {
-          el.innerHTML = box('Verify ownership, then activate coverage with payment or a promo code.');
-        }
-        el.style.display = 'block';
+        try {
+          const el = document.getElementById('coverageStatus');
+          if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+          const vs = document.getElementById('verificationStatus');
+          if (vs) { vs.style.display = 'none'; vs.innerHTML = ''; }
+        } catch (e) {}
       }
 
       // Update ACME record status (for per-record verification)
@@ -2265,6 +2298,15 @@
         } catch (e) {}
         return null;
       }
+      // Exit-fallback row mirrors the Apex card: visible exactly when the card
+      // is, so the button never strands without its context (or vice versa).
+      function syncExitFallbackRow() {
+        try {
+          const card = document.getElementById('apexRedirectCard');
+          const row = document.getElementById('exitFallbackRow');
+          if (row) row.style.display = (card && card.style.display !== 'none') ? 'flex' : 'none';
+        } catch (e) {}
+      }
       async function openFallbackFromBanner() {
         const cur = currentDomain || pendingDomain || '';
         if (!cur || !getSessionId()) {
@@ -2400,6 +2442,31 @@
         const www = String(wwwHost || '').toLowerCase();
         const apex = String(apexHost || '').toLowerCase();
         if (!www || !apex || !getSessionId()) return;
+        // Same-label guard (apex entry only): a configured recommended setup
+        // already shows this name — creating the pair would list it twice.
+        // Open that setup instead; the backend refuses the twin as backstop.
+        // Pristine primaries pass through (retired server-side, single entry).
+        const enteredViaApex = String(currentDomain || pendingDomain || '').toLowerCase() === apex;
+        if (enteredViaApex) {
+          try {
+            const apexDoc = (userCustomDomains || []).find((d) => d && String(d.domain || '').toLowerCase() === apex);
+            const apexTouched = apexDoc && (apexDoc.isVerified === true || apexDoc.paymentStatus === 'paid' ||
+              apexDoc.coverageValid === true || (currentLinks || []).some((l) => {
+                try { return String(itemDomain(l)).toLowerCase() === apex; } catch (e) { return false; }
+              }));
+            if (apexTouched) {
+              const go = await showCustomModal({
+                title: "Already set up",
+                message: `<strong>${escapeHTML(apex)}</strong> is already set up with recommended DNS — adding the fallback would list the same name twice. Open its setup instead? (Delete that setup first if you really want the fallback.)`,
+                showCancel: true,
+                confirmText: "Open its setup",
+                cancelText: "Stay here"
+              });
+              if (go) { try { await manageDomain(apex); } catch (e) {} }
+              return;
+            }
+          } catch (e) { /* fail-open to the server call, backend guards too */ }
+        }
         // If the www pair already exists in this session, just open it.
         // Otherwise create/stamp it as fallback (same host = in-place stamp,
         // apex entry = new www doc; a pristine apex primary is retired
@@ -2788,10 +2855,9 @@
           return;
         }
         const ready = info.status === 'active' && info.coverageValid === true;
-        // Display form follows what the user originally typed (displayName),
-        // twin-suffixed when a same-named entry exists; the canonical d below
-        // still drives all actions + routing storage.
-        const menuDisp = uniqueDomainLabel(d);
+        // Display form follows what the user originally typed (displayName);
+        // the canonical d below still drives all actions + routing storage.
+        const menuDisp = info.displayName || d;
         const apexRow = ready
           ? `<button class="modal-btn modal-btn-ok" style="width: 100%; margin-top: 12px;" onclick="domainMenuPick('apex', ${escapeJS(d)})">Configure APEX routing</button>`
           : `<div style="margin-top: 12px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); font-size: 0.8rem; color: var(--text-muted); text-align: center;">APEX routing unlocks once the domain is paid and active.</div>`;

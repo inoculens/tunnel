@@ -1351,6 +1351,53 @@ const actions = {
       }
       return ok(await domainInfo(existing, p.sessionId)); // idempotent re-entry
     }
+    // Same-label twin guards: one display label per session, so the UI (which
+    // shows exactly what was typed) can never list a name twice.
+    const docDisplay = (displayName || host).toLowerCase();
+    const twinLabelOf = (d) => String(
+      (d && typeof d.displayName === "string" && d.displayName) ||
+      (d && d.isApexFlow === true && d.apexSource) ||
+      (d && d.domain) || ""
+    ).toLowerCase();
+    if (isApexFlow && apexSource && host !== apexSource) {
+      // Fallback entry from an apex whose recommended setup already carries
+      // value (verified, paid, quoted, discounted, covered, or linked): refuse
+      // instead of twinning the label. Pristine primaries were retired above.
+      const apexDoc = await freshGet(s, `domain/${apexSource}`, { type: "json" }).catch(() => null);
+      if (apexDoc && apexDoc.sessionId === p.sessionId) {
+        let twinTouched = apexDoc.isVerified === true || apexDoc.paymentStatus === "paid" ||
+          !!apexDoc.quote?.address || (Array.isArray(apexDoc.quoteHistory) && apexDoc.quoteHistory.length > 0) ||
+          !!apexDoc.discount || !!apexDoc.pendingClaim || coverageValid(apexDoc);
+        if (!twinTouched) {
+          try {
+            const blobs = await listAll(s, "link/");
+            for (const b of blobs) {
+              if (String(b.key || "").startsWith(`link/${apexSource}/`)) {
+                const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
+                if (l) { twinTouched = true; break; }
+              }
+            }
+          } catch { twinTouched = true; /* fail-closed */ }
+        }
+        if (twinTouched) {
+          return fail(409, "already-exists", `${apexSource} is already set up with recommended DNS — open its setup instead of adding it twice. To use the fallback for it, delete that setup first.`);
+        }
+      }
+    }
+    if (!isApexFlow) {
+      // Primary entry displaying an already-taken label: hand back the owned
+      // setup instead of creating a twin (stale lists, races, direct API).
+      try {
+        const blobs = await listAll(s, "domain/");
+        const docs = await mapWithConcurrency(blobs, 12, (b) =>
+          freshGet(s, b.key, { type: "json" }).catch(() => null)
+        );
+        const twin = docs.find((d) =>
+          d && d.sessionId === p.sessionId && String(d.domain || "").toLowerCase() !== host.toLowerCase() &&
+          twinLabelOf(d) === docDisplay);
+        if (twin) return ok({ ...(await domainInfo(twin, p.sessionId)), displayConflict: true });
+      } catch { /* fail-open: frontend guard already ran */ }
+    }
     const delegation = sslDelegationTarget();
     const doc = {
       domain: host,

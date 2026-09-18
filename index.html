@@ -418,14 +418,15 @@
 
         <!-- Per-field verification buttons -->
         <div style="margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px;">
+          <!-- Exit fallback: its own left-aligned row above the Apex card (never inside it) -->
+          <div id="exitFallbackRow" style="display: none; justify-content: flex-start; margin-bottom: -4px;">
+            <button id="exitFallbackBtn" onclick="exitFallbackMode()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();exitFallbackMode();}"
+              style="background: transparent; border: none; color: var(--text-muted); font-family: 'DM Sans', sans-serif; font-size: 0.75rem; font-weight: 600; cursor: pointer; padding: 2px 4px; text-decoration: underline; text-underline-offset: 2px;"
+              title="Go back to the recommended DNS setup">← Use recommended DNS instead</button>
+          </div>
           <!-- Fallback pairing (IP safety net): hidden until the yellow banner opens it, or the doc is already paired -->
           <div id="apexRedirectCard"
             style="display: none; padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); flex-direction: column;">
-            <div style="display: flex; justify-content: flex-end; margin-bottom: 4px;">
-              <button id="exitFallbackBtn" onclick="exitFallbackMode()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();exitFallbackMode();}"
-                style="background: transparent; border: none; color: var(--text-muted); font-family: 'DM Sans', sans-serif; font-size: 0.75rem; font-weight: 600; cursor: pointer; padding: 2px 4px; text-decoration: underline; text-underline-offset: 2px;"
-                title="Go back to the recommended DNS setup">← Use recommended DNS instead</button>
-            </div>
             <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Apex Redirect</label>
             <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 8px;">Makes <span id="apexDomainName" style="font-family: monospace; color: var(--text);">example.com</span> forward to your www links (path-preserving). Add these records at your apex (@).</div>
             <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">A record @ (apex):</div>
@@ -534,22 +535,10 @@
             </div>
           </div>
 
-          <div style="font-size: 0.78rem; color: var(--text-muted); text-align: center; padding: 4px 0 0;">🔒 SSL is automatic via Cloudflare and may take a while to become available after payment — no action needed.</div>
-        </div>
-
-
-
-        <div id="verificationStatus" style="display: none; margin-bottom: 16px;">
-        </div>
-
-        <div id="coverageStatus" style="display: none; margin-bottom: 16px;">
+          <div style="font-size: 0.78rem; color: var(--text-muted); text-align: center; padding: 4px 0 0;">🔒 SSL is automatic via Cloudflare and may take a while to become available.</div>
         </div>
 
         <div id="routingNote" style="display: none; margin-bottom: 16px; padding: 12px; border-radius: 8px; font-size: 0.85rem; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #f28b82; text-align: center;">⚠️ This domain doesn't resolve to Tunnel edge (no usable address) — browsers can't reach it as configured. If you just created the record, wait a few minutes and Re-verify; otherwise fix the routing target.</div>
-
-        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 16px; text-align: center;">
-          DNS changes can take a few minutes. Click Verify again after propagation.
-        </p>
 
         <div style="display: flex; gap: 12px;">
           <button class="modal-btn modal-btn-danger" id="deleteDomainBtn" onclick="deleteDomain()" style="flex: 1;">Delete Domain</button>
