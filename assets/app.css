@@ -468,12 +468,22 @@
     }
 
     .domain-actions-group > button {
-      flex: 1; /* Manage button takes the free space */
-      min-width: 0; /* Allow shrinking if needed */
+      flex: none;
+      width: 66px; /* Identical in every row (matches the original equal split) */
     }
 
     .domain-actions-group > span {
       flex-shrink: 0; /* Status pill always fits its text (ACTION NEEDED etc.) */
+    }
+
+    /* Domain name yields instead: it truncates with … so a wide status pill
+       never pushes the row past the dropdown edge (which would clip the pill
+       on narrow screens). Scoped to name spans following the actions group —
+       never the wrapping twin-warning row. */
+    .domain-option > div.domain-actions-group + span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .domain-option:last-child {
