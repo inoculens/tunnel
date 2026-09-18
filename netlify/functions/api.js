@@ -1893,7 +1893,12 @@ const actions = {
     const claimApexFlow = doc.isApexFlow === true;
     const claimApexHost = (typeof doc.apexSource === "string" && doc.apexSource) ||
       (claimApexFlow ? apexForWww(doc.domain) : null);
-    if (!(live.cname && live.txt)) {
+    // Plain-claim gate only. The migrate case below proves split hosts (TXT on
+    // X, routing on www.X) with its own checks — letting this full check on X
+    // alone reject first made green per-field badges fail transfer
+    // deterministically (X correctly carries A records, never a CNAME).
+    const isMigrateCase = useIntent && !pairedDoc && intentHost === doc.domain;
+    if (!isMigrateCase && !(live.cname && live.txt)) {
       return ok({
         success: false,
         isVerified: false,

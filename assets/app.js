@@ -1792,11 +1792,13 @@
           cancelText: "Cancel"
         }).then(async (ok) => {
           resetClaimConfirm();
+          // Cancel lands back on whatever sits behind the modal (add screen,
+          // manager step 1, or the already-painted verification step) — no
+          // forced navigation that would yank the user out of their context.
           if (ok) verifyPendingClaim();
           else {
             window._claimFallback = false;
             window._claimCanonical = null;
-            try { showStep(1); } catch (e) {}
           }
         });
         paintClaimFallback();
@@ -3168,6 +3170,10 @@
           // modal (stable pending token) instead of painting the verification
           // screen with redacted foreign data.
           if (data.pendingClaim) {
+            // Paint a sane step behind the modal: setVerificationUI never runs
+            // on this path, so without this the manager overlay sits on its
+            // loading screen forever once the claim modal closes.
+            try { showStep(1); } catch (e) {}
             showPendingClaimModal(data);
             return;
           }
