@@ -2471,6 +2471,9 @@
         // Otherwise create/stamp it as fallback (same host = in-place stamp,
         // apex entry = new www doc; a pristine apex primary is retired
         // server-side so the list never shows two identical entries).
+        // display tells the backend what the user typed (apex stays apex, www
+        // stays www) — the wire host is always the www canonical.
+        const enteredViaApexHere = String(currentDomain || pendingDomain || '').toLowerCase() === apex;
         window._fallbackOpen = true;
         window._fallbackFor = www;
         window._apexFlow = true;
@@ -2479,7 +2482,7 @@
         const attemptFallback = async (turnstileToken) => {
           const addFn = functions.httpsCallable('addCustomDomain');
           return addFn({
-            domain: www, apexSource: apex, fallback: true, sessionId: getSessionId(),
+            domain: www, apexSource: apex, fallback: true, display: enteredViaApexHere ? apex : www, sessionId: getSessionId(),
             ...(turnstileToken ? { turnstileToken } : (window._tsToken ? { turnstileToken: window._tsToken } : {})),
           });
         };

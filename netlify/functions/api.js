@@ -1199,6 +1199,14 @@ const actions = {
         if (paramApexValid && paramApex) {
           apexSource = paramApex;
           host = wwwForApex(paramApex) || host;
+          // Record what the user actually typed: apex entry shows apex, www
+          // entry shows www. The optional p.display is constrained to the two
+          // hosts of this pairing (never trusted blindly); legacy callers
+          // without it keep the long-standing apex display.
+          const wantDisplay = cleanDomain(p.display);
+          displayName = (wantDisplay && (wantDisplay === host || wantDisplay === paramApex))
+            ? wantDisplay
+            : paramApex;
           isApexFlow = true;
         } else if (await isApexDomain(host).catch(() => false)) {
           const canonical = wwwForApex(host);
@@ -1352,13 +1360,20 @@ const actions = {
       return ok(await domainInfo(existing, p.sessionId)); // idempotent re-entry
     }
     // Same-label twin guards: one display label per session, so the UI (which
-    // shows exactly what was typed) can never list a name twice.
+    // shows exactly what was typed) can never list a name twice. The label
+    // rule mirrors domainInfo exactly (stored name, else apex for paired
+    // docs incl. legacy rows without the stored field, else canonical).
     const docDisplay = (displayName || host).toLowerCase();
-    const twinLabelOf = (d) => String(
-      (d && typeof d.displayName === "string" && d.displayName) ||
-      (d && d.isApexFlow === true && d.apexSource) ||
-      (d && d.domain) || ""
-    ).toLowerCase();
+    const twinLabelOf = (d) => {
+      if (!d) return "";
+      const storedApex = (typeof d.apexSource === "string" && d.apexSource) ? d.apexSource : null;
+      const pairedApex = storedApex || (d.isApexFlow === true ? apexForWww(d.domain) : null);
+      return String(
+        ((typeof d.displayName === "string" && d.displayName) ? d.displayName : null) ||
+        ((d.isApexFlow === true && pairedApex) ? pairedApex : null) ||
+        d.domain || ""
+      ).toLowerCase();
+    };
     if (isApexFlow && apexSource && host !== apexSource) {
       // Fallback entry from an apex whose recommended setup already carries
       // value (verified, paid, quoted, discounted, covered, or linked): refuse
@@ -1485,8 +1500,13 @@ const actions = {
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
     if (doc.isApexFlow !== true) return ok(await domainInfo(doc, p.sessionId)); // already primary
     const apex = (typeof doc.apexSource === "string" && doc.apexSource) || apexForWww(doc.domain);
+    // Effective display (same rule as domainInfo): the stored name when set,
+    // else the apex for paired docs. Legacy paired docs predate the stored
+    // field, so reading the raw field alone would misroute them as www-entered.
+    const effDisplay = ((typeof doc.displayName === "string" && doc.displayName) ? doc.displayName : null) ||
+      (doc.isApexFlow === true && apex ? apex : doc.domain);
     const enteredViaApex = !!apex &&
-      (doc.displayName || "").toLowerCase() === apex.toLowerCase() &&
+      effDisplay.toLowerCase() === apex.toLowerCase() &&
       doc.domain.toLowerCase() !== apex.toLowerCase();
     let apexPrimary = null;
     if (apex && apex.toLowerCase() !== doc.domain.toLowerCase()) {
@@ -1497,7 +1517,7 @@ const actions = {
       doc.isApexFlow = false;
       delete doc.apexSource;
       // Avoid twin labels with the surviving apex entry.
-      if (ownApexPrimary && (doc.displayName || "").toLowerCase() === (apex || "").toLowerCase()) {
+      if (ownApexPrimary && effDisplay.toLowerCase() === (apex || "").toLowerCase()) {
         doc.displayName = doc.domain;
       }
       if (!doc.displayName) doc.displayName = doc.domain;
