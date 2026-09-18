@@ -1707,11 +1707,17 @@
 
       // Secure reclaim UI: pending claim needs DNS proof before transfer.
       // On success links+stats move as if created here (clicks/ keyed by host).
+      // Same verification logic as the main screen: per-field Verify buttons
+      // with unified pills (PENDING → FAILED, TRY AGAIN / VERIFIED), each
+      // checking only its own record via check-only claim field mode.
       function showPendingClaimModal(data) {
         const txt = (data.instructions && data.instructions.txt) || data.pendingToken || '';
         const cname = (data.instructions && data.instructions.cnameTarget) || 'customers.inoculens.com';
         const claimCnameName = String(pendingDomain || '');
         const claimTxtHost = `verification.${String(pendingDomain || '')}`;
+        // Fresh badge state per open; redirect intent (if any) for check-only use.
+        window._claimChecks = { cname: null, txt: null, apex: null };
+        window._claimApexSource = (data && data.apex) || null;
         // Fallback pairing on claims mirrors the add-flow: paired docs prove
         // the apex redirect too; primaries prove routing (CNAME/ALIAS/ANAME)
         // + TXT only. Same yellow fallback path is available via banner.
@@ -1723,12 +1729,16 @@
         const copySvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
         const copyBtnStyle = 'background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 30px; height: 30px;';
         const copyRow = (id, value) => `<div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;"><div id="${id}" style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;">${escapeHTML(value)}</div><button class="copy-btn" onclick="copyTextFromElement('${id}')" title="Copy" style="${copyBtnStyle}">${copySvg}</button></div>`;
+        const verifyRow = (btnId, statusId, field, label) => `<div style="display: flex; align-items: center; justify-content: flex-start; gap: 8px;">`
+          + `<button id="${btnId}" class="btn-verify" onclick="verifyClaimField('${field}')">${label}</button>`
+          + `<span id="${statusId}" class="domain-status status-pending" style="font-size: 0.7rem; font-weight: 600;">PENDING</span></div>`;
         const apexCard = (claimApexFlow && claimApex)
           ? `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
           + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Redirect</label>`
           + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px;">Makes <strong>${escapeHTML(claimApex)}</strong> forward to your links (path-preserving). Add these records for that exact host (DNS-only):</div>`
           + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">A record:</div>${copyRow('claimApexA', claimA)}`
           + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">AAAA record:</div>${copyRow('claimApexAaaa', claimAaaa)}`
+          + verifyRow('claimVerifyApexBtn', 'claimApexStatus', 'apex', 'Verify redirect')
           + `</div>`
           : '';
         showCustomModal({
@@ -1738,22 +1748,119 @@
             + apexCard
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
             + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Routing Record (CNAME / ALIAS / ANAME)</label>
-              <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 8px;">Any one works — CNAME, ALIAS, ANAME, or flattened CNAME pointing at the target below.</div>`
+              <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 8px;">Choose one of the following - CNAME, ALIAS, ANAME or flattened CNAME</div>`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Record name:</div>${copyRow('claimCnameName', claimCnameName)}`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to:</div>${copyRow('claimCnameTarget', cname)}`
+            + verifyRow('claimVerifyRoutingBtn', 'claimRoutingStatus', 'cname', 'Verify routing')
             + `</div>`
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
             + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">TXT Record (Ownership)</label>`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>${copyRow('claimTxtHost', claimTxtHost)}`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Value:</div>${copyRow('claimTxtValue', txt)}`
+            + verifyRow('claimVerifyTxtBtn', 'claimTxtStatus', 'txt', 'Verify TXT')
             + `</div></div>`
-            + `<div style="font-size: 0.8rem; color: var(--text-muted); text-align: center;">Old owner keeps full rights until you verify. <strong>s.inoculens.com</strong> links never move.<br>DNS changes can take a few minutes.</div>`,
+            + `<div style="font-size: 0.8rem; color: var(--text-muted); text-align: center;">Old owner keeps full rights until you verify. <strong>s.inoculens.com</strong> links never move.</div>`,
           showCancel: true,
           confirmText: "Verify Claim",
           cancelText: "Cancel"
         }).then(async (ok) => {
           if (ok) verifyPendingClaim();
         });
+      }
+      // Claim badge painter: identical lifecycle to the main verification
+      // screen (PENDING → FAILED, TRY AGAIN / VERIFIED). Each button repaints
+      // only its own badge.
+      function claimStatusUI(field, ok) {
+        if (!window._claimChecks) window._claimChecks = { cname: null, txt: null, apex: null };
+        if (field === 'cname') window._claimChecks.cname = ok;
+        else if (field === 'txt') window._claimChecks.txt = ok;
+        else if (field === 'apex') window._claimChecks.apex = ok;
+        const map = {
+          cname: { status: 'claimRoutingStatus', btn: 'claimVerifyRoutingBtn', label: 'Verify routing' },
+          txt: { status: 'claimTxtStatus', btn: 'claimVerifyTxtBtn', label: 'Verify TXT' },
+          apex: { status: 'claimApexStatus', btn: 'claimVerifyApexBtn', label: 'Verify redirect' }
+        };
+        const config = map[field];
+        if (!config) return;
+        const statusEl = document.getElementById(config.status);
+        const btnEl = document.getElementById(config.btn);
+        if (statusEl) {
+          if (ok === true) {
+            statusEl.className = 'domain-status status-active';
+            statusEl.textContent = 'Verified';
+            if (btnEl) btnEl.textContent = 'Re-verify entry';
+          } else if (ok === false) {
+            statusEl.className = 'domain-status status-pending';
+            statusEl.textContent = 'Failed, try again';
+          } else {
+            statusEl.className = 'domain-status status-pending';
+            statusEl.textContent = 'Pending';
+          }
+        }
+        if (btnEl && ok === false) {
+          btnEl.textContent = config.label;
+        }
+      }
+      // Per-record claim check (check-only: never transfers). Mirrors the main
+      // verify buttons; the modal's Verify Claim confirm still performs the
+      // full check + transfer and stays ungated (badges may be stale).
+      async function verifyClaimField(field) {
+        if (!pendingDomain || !getSessionId()) {
+          showToast('Selection error: please re-open the domain manager.', 'error');
+          return;
+        }
+        const btnIds = { cname: 'claimVerifyRoutingBtn', txt: 'claimVerifyTxtBtn', apex: 'claimVerifyApexBtn' };
+        const btn = document.getElementById(btnIds[field]);
+        if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
+        try {
+          const fn = functions.httpsCallable('verifyClaimedDomainDns');
+          const res = await fn({
+            domain: pendingDomain,
+            sessionId: getSessionId(),
+            field,
+            ...(field === 'apex' && window._claimApexSource ? { apexSource: window._claimApexSource } : {}),
+          });
+          const data = res.data || {};
+          const checks = data.checks || {};
+          if (data.stale === true) {
+            console.warn(`Claim ${field} verification: LOOKUP FAILED (badge unchanged)`);
+            showToast('DNS lookup hiccup — nothing changed, try again in a moment.', 'error');
+            if (btn) btn.textContent = field === 'apex' ? 'Verify redirect' : field === 'txt' ? 'Verify TXT' : 'Verify routing';
+            return;
+          }
+          if (field === 'cname') {
+            claimStatusUI('cname', !!checks.cname);
+            if (checks.cname) {
+              const m = checks.routingMethod;
+              showToast(m === 'alias' ? 'Routing verified (ALIAS/ANAME)!' : 'Routing verified!', 'success');
+            } else {
+              showToast('Routing verification failed. Check your CNAME / ALIAS / ANAME record.', 'error');
+            }
+          } else if (field === 'txt') {
+            claimStatusUI('txt', !!checks.txt);
+            if (checks.txt) {
+              showToast('Ownership TXT verified!', 'success');
+            } else {
+              showToast('TXT verification failed. Check your DNS records.', 'error');
+            }
+          } else if (field === 'apex') {
+            claimStatusUI('apex', !!checks.apex);
+            if (checks.apex) {
+              showToast('Redirect verified! That address will forward to your links.', 'success');
+            } else {
+              showToast('Redirect not detected yet. Check the A/AAAA records (DNS-only) and retry.', 'error');
+            }
+          }
+        } catch (e) {
+          console.error('verifyClaimField Exception:', e);
+          claimStatusUI(field, false);
+          const friendly = isTurnstileRequiredError(e)
+            ? 'Quick human check needed — please wait a moment and try again.'
+            : ('Error verifying: ' + (e.message || 'Unknown error'));
+          showToast(friendly, 'error');
+        } finally {
+          if (btn) btn.disabled = false;
+        }
       }
       async function verifyPendingClaim() {
         if (!pendingDomain || !getSessionId()) return;
@@ -2257,7 +2364,7 @@
           updateStatusUI('cname', false, true);
           showToast('Error verifying routing: ' + (e.message || 'Unknown error'), 'error');
         } finally {
-          if (btn) btn.disabled = false;
+          if (btn) { btn.disabled = false; if (btn.textContent === 'Verifying...') btn.textContent = 'Verify routing'; }
         }
       }
 
@@ -2290,7 +2397,7 @@
           updateStatusUI('txt', false, true);
           showToast('Error verifying TXT: ' + (e.message || 'Unknown error'), 'error');
         } finally {
-          if (btn) btn.disabled = false;
+          if (btn) { btn.disabled = false; if (btn.textContent === 'Verifying...') btn.textContent = 'Verify TXT'; }
         }
       }
 

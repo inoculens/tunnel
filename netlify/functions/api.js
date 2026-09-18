@@ -1748,7 +1748,6 @@ const actions = {
   // in the new session. s.* links never move (not a session merge).
   async verifyClaimedDomainDns(s, p, event) {
     try { await bumpKindCounter(s, "claim", clientIp(event)); } catch { /* ignore */ }
-    await requireTurnstile(s, p, event, "claim");
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
     const host = cleanDomain(p.domain);
     if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
@@ -1756,6 +1755,60 @@ const actions = {
     if (!doc || !doc.pendingClaim || doc.pendingClaim.sessionId !== p.sessionId) {
       return fail(404, "not-found", "No pending claim for this session.");
     }
+    // Per-field check mode (claim modal Verify buttons): reports ONLY the
+    // requested record live — same badge lifecycle as the main verification
+    // screen — and never transfers or mutates anything. Turnstile stays on
+    // the transfer path below (every click still feeds the pace counter
+    // above, so a burst still challenges at transfer). Checks are fixed to
+    // this doc's records (public DNS anyway), so no oracle is opened.
+    const claimField = p.field === "cname" || p.field === "txt" || p.field === "apex" ? p.field : null;
+    if (claimField) {
+      const pairedDoc = doc.isApexFlow === true;
+      const storedRedirect = (typeof doc.apexSource === "string" && doc.apexSource) || null;
+      if (claimField === "apex") {
+        let redirect = storedRedirect || (pairedDoc ? apexForWww(doc.domain) : null);
+        if (!redirect) {
+          const intent = cleanDomain(p.apexSource);
+          if (intent && fallbackCanonicalFor(intent) === doc.domain) redirect = intent;
+        }
+        if (!redirect) return fail(400, "invalid-argument", "Redirect check applies to fallback-paired setups only.");
+        const ar = await verifyApexRedirectDns(redirect).catch(() => null);
+        if (!ar) return fail(503, "unavailable", "DNS lookup failed, try again.");
+        return ok({
+          success: false,
+          field: "apex",
+          isVerified: false,
+          ...(pairedDoc ? { isApexFlow: true } : {}),
+          apex: redirect,
+          checks: { cname: null, txt: null, apex: ar.aValid === true && ar.aaaaValid === true },
+          status: doc.status,
+        });
+      }
+      const live = await verifyDns(doc.domain, doc.pendingClaim.token, claimField).catch(() => ({
+        cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null,
+        cfSslStatus: null, routingMethod: null, routingUnknown: true, txtUnknown: true,
+      }));
+      const stale =
+        (claimField === "cname" && live.routingUnknown === true) ||
+        (claimField === "txt" && live.txtUnknown === true);
+      const normRoutable = live.routable === false ? false : live.routable === true ? true : null;
+      return ok({
+        success: false,
+        field: claimField,
+        ...(stale ? { stale: true } : {}),
+        isVerified: false,
+        ...(pairedDoc ? { isApexFlow: true, apex: storedRedirect || apexForWww(doc.domain) } : {}),
+        checks: {
+          cname: claimField === "cname" ? !!live.cname : null,
+          txt: claimField === "txt" ? !!live.txt : null,
+          apex: null,
+          routable: claimField === "cname" ? normRoutable : null,
+          ...(claimField === "cname" ? { routingMethod: live.routingMethod || null } : {}),
+        },
+        status: doc.status,
+      });
+    }
+    await requireTurnstile(s, p, event, "claim");
     if (!(await getSession(s, p.sessionId))) {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
