@@ -1791,6 +1791,7 @@
           confirmText: "Verify Claim",
           cancelText: "Cancel"
         }).then(async (ok) => {
+          resetClaimConfirm();
           if (ok) verifyPendingClaim();
           else {
             window._claimFallback = false;
@@ -1799,6 +1800,35 @@
           }
         });
         paintClaimFallback();
+        updateClaimConfirm();
+      }
+      // Verify Claim stays disabled until every VISIBLE pill is green: routing
+      // + TXT always, plus redirect when its card shows (paired doc or
+      // fallback intent). Same rule as the main screen's Continue gating.
+      function updateClaimConfirm() {
+        try {
+          // Only while the claim modal content is actually showing — a slow
+          // verify response after navigating away must never toggle whatever
+          // dialog (e.g. abandon confirm) is open now.
+          if (!document.getElementById('claimRoutingStatus')) return;
+          const okBtn = document.getElementById('modalOkBtn');
+          if (!okBtn) return;
+          const c = window._claimChecks || {};
+          const wrap = document.getElementById('claimApexWrap');
+          const apexVisible = !!wrap && wrap.style.display !== 'none';
+          const ready = c.cname === true && c.txt === true && (!apexVisible || c.apex === true);
+          okBtn.disabled = !ready;
+          okBtn.style.opacity = ready ? '' : '0.5';
+          okBtn.style.cursor = ready ? '' : 'not-allowed';
+        } catch (e) {}
+      }
+      // Disabled + dimming are per-dialog state: always clear on close so a
+      // gated dialog can never strand the next generic modal half-dead.
+      function resetClaimConfirm() {
+        try {
+          const okBtn = document.getElementById('modalOkBtn');
+          if (okBtn) { okBtn.disabled = false; okBtn.style.opacity = ''; okBtn.style.cursor = ''; }
+        } catch (e) {}
       }
       // Fallback intent paint for the claim modal: banner ⇄ redirect card +
       // toggle-back link, and the routing record-name follows the intent
@@ -1822,6 +1852,7 @@
           if (recName) recName.textContent = (intent && window._claimCanonical) || String((data && data.domain) || pendingDomain || '');
           if (apexName && redirectHost) apexName.textContent = redirectHost;
           if (intent) claimStatusUI('cname', null);
+          updateClaimConfirm();
         } catch (e) {}
       }
       function claimToggleFallback(on) {
@@ -1877,10 +1908,11 @@
         if (btnEl && ok === false) {
           btnEl.textContent = config.label;
         }
+        updateClaimConfirm();
       }
       // Per-record claim check (check-only: never transfers). Mirrors the main
-      // verify buttons; the modal's Verify Claim confirm still performs the
-      // full check + transfer and stays ungated (badges may be stale).
+      // verify buttons; the modal's Verify Claim confirm performs the full
+      // check + transfer and is gated on green pills (see updateClaimConfirm).
       async function verifyClaimField(field) {
         if (!pendingDomain || !getSessionId()) {
           showToast('Selection error: please re-open the domain manager.', 'error');
@@ -7263,6 +7295,14 @@
           try {
             const card = titleEl.closest('.modal-card');
             if (card) card.classList.toggle('modal-card-wide', !!wide);
+          } catch (e) {}
+          // Confirm-button gating is per-dialog state (e.g. the takeover
+          // modal enables Verify Claim only on green pills): always start
+          // enabled so one gated dialog can never strand the next modal.
+          try {
+            okBtn.disabled = false;
+            okBtn.style.opacity = '';
+            okBtn.style.cursor = '';
           } catch (e) {}
           const peekWrap = document.getElementById('modalInputPeek');
           const peekBox = peekWrap ? peekWrap.parentElement : null;

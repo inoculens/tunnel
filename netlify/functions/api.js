@@ -1845,12 +1845,16 @@ const actions = {
       }
       // Routing host follows the intent: the www canonical when pairing a
       // fresh redirect host, else the claimed host itself (paired or plain).
+      // Ownership (TXT) is ALWAYS proven on the claimed host itself — the
+      // pending token lives on this doc, and the modal shows verification.X.
+      // Sharing one host for both checks made TXT under fallback intent
+      // deterministically unverifiable (checked verification.www.X instead).
       let routeHost = doc.domain;
       if (!pairedDoc && useIntent && intentHost === doc.domain) {
         routeHost = fallbackCanonicalFor(doc.domain);
         if (!routeHost) return fail(400, "invalid-argument", "Fallback pairing is not available for that address.");
       }
-      const live = await verifyDns(routeHost, doc.pendingClaim.token, claimField).catch(() => ({
+      const live = await verifyDns(claimField === "txt" ? doc.domain : routeHost, doc.pendingClaim.token, claimField).catch(() => ({
         cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null,
         cfSslStatus: null, routingMethod: null, routingUnknown: true, txtUnknown: true,
       }));
