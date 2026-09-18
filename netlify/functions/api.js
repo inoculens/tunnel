@@ -215,31 +215,53 @@ async function ensureSaaSHostname(doc) {
   }
 }
 
+// Effective display label, shared by add/display-claim routing and claim DNS
+// resolution: stored name, else apex for paired docs (incl. legacy rows),
+// else canonical. One rule everywhere so a typed label always finds its setup.
+function effectiveDisplayLabel(d) {
+  if (!d) return "";
+  const storedApex = (typeof d.apexSource === "string" && d.apexSource) ? d.apexSource : null;
+  const pairedApex = storedApex || (d.isApexFlow === true ? apexForWww(d.domain) : null);
+  return String(
+    ((typeof d.displayName === "string" && d.displayName) ? d.displayName : null) ||
+    ((d.isApexFlow === true && pairedApex) ? pairedApex : null) ||
+    d.domain || ""
+  ).toLowerCase();
+}
+
 // Convert a touched primary (redirect host X) into its fallback pair on the
 // canonical www.X — the explicit user-confirmed alternative to refusing with
-// 409. Everything of value moves so NO new payment is ever charged:
-// coverage + payment state, current/retired quotes (in-flight money still
-// credits), settled-address guards (funds can never double-trigger), promo
-// grant, consent record, root-routing target, and every link with its click
-// rows and count shards (slugs resolve on www.X; old X/… URLs keep working
-// through the path-preserving redirect). Caller guarantees: same session,
-// no pendingClaim, no www.X doc, explicit p.convert === true.
+// 409. Setup state moves so NO new payment is ever charged: coverage +
+// payment state, current/retired quotes (in-flight money still credits),
+// settled-address guards (funds can never double-trigger), promo grant,
+// consent record, and root-routing target. Links NEVER move host: a link's
+// host is set in stone at mint (what the user picked stays picked) — link,
+// click, and count rows stay exactly where they are, and the entry owns both
+// hosts' rows (delete sweeps the pair; transfers move both hosts' session).
+// The abandoned host keeps serving its links (old X/… URLs keep working,
+// including through the path-preserving redirect). Caller guarantees: same
+// session (or claimant session on claim-migrate), no pendingClaim, explicit
+// user intent. Destination host free except exit-restore paths, which check.
 // Non-atomic by design (batched writes); the hourly watcher window is
 // negligible and moved lastPaymentAt/paidAt guards keep it consistent.
-// Move a whole domain setup between hosts within one session — links (short
-// URLs rewritten), click rows, count shards, coverage/payment state, quotes,
-// promo grant, consent, and root-routing target all follow. Used both ways:
-// primary -> fallback pair on convert (no new payment) and pair -> primary on
-// exit (the entered host is fixed in stone: exit must never morph it into the
-// canonical). Fresh DNS state + fresh token on arrival (new names need new
-// records); SaaS hostname of the abandoned host is dropped best-effort.
-// Caller guarantees: same session, destination host free, explicit user intent.
+// Move a whole domain setup between hosts — coverage/payment state, quotes,
+// promo grant, consent, and root-routing target all follow; links, click
+// rows, and count shards stay in place (host set in stone). Used both ways:
+// primary -> fallback pair on convert (no new payment) and pair -> primary
+// on exit or recommended-claim of a pair (the entered host is fixed in
+// stone: exit must never morph it into the canonical). Fresh DNS state +
+// fresh token on arrival (new names need new records); SaaS hostname of the
+// abandoned host is dropped best-effort.
 async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, paired, redirect }) {
   const delegation = sslDelegationTarget();
   const now = Date.now();
   const dest = {
     domain: destHost,
     displayName: display || destHost,
+    // Stone-history pointer: links stay on srcHost, and this entry keeps
+    // owning that host's rows (delete sweeps it, transfers move it) until an
+    // independent setup occupies it.
+    movedFrom: srcHost,
     sessionId: p.sessionId,
     status: "pending_verification",
     paymentStatus: srcDoc.paymentStatus === "paid" ? "paid" : "unpaid",
@@ -266,41 +288,17 @@ async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, pa
     ...(paired ? { isApexFlow: true, apexSource: redirect } : {}),
   };
   await s.setJSON(`domain/${destHost}`, dest);
-  // Links move host (short URLs rewritten to the destination); bodies keep
-  // tokens, labels, counts, and quarantine flags. Write-new-then-delete.
+  // Links stay on their minted host (set in stone) — only the session moves,
+  // and only for cross-session callers (claim-migrate); same-session callers
+  // are a no-op write. Click rows and count shards are host/code keyed and
+  // follow their links with zero work.
   const linkBlobs = await listAll(s, "link/");
   const doomedLinks = linkBlobs.filter((b) => String(b.key || "").startsWith(`link/${srcHost}/`));
   await mapWithConcurrency(doomedLinks, 12, async (b) => {
     const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
     if (!l || !l.code) return;
-    const nl = { ...l, domain: destHost };
-    try {
-      const u = new URL(l.short);
-      u.hostname = destHost;
-      nl.short = u.toString();
-    } catch { nl.short = `https://${destHost}/${l.code}`; }
-    await s.setJSON(linkKey(destHost, l.code), nl);
-    await s.delete(b.key);
-  });
-  // Click detail rows carry no host field — re-key only.
-  const clickBlobs = await listAll(s, `clicks/${srcHost}/`);
-  await mapWithConcurrency(clickBlobs, 12, async (b) => {
-    const key = String(b.key || "");
-    const rest = key.slice(`clicks/${srcHost}/`.length);
-    if (!rest || rest.includes("..")) return;
-    const c = await freshGet(s, key, { type: "json" }).catch(() => null);
-    if (c) await s.setJSON(`clicks/${destHost}/${rest}`, c);
-    await s.delete(key);
-  });
-  // Count shards + day aggs: counts/<h>/<code>/… — swap the host segment.
-  const countBlobs = await listAll(s, `counts/${srcHost}/`);
-  await mapWithConcurrency(countBlobs, 12, async (b) => {
-    const parts = String(b.key || "").split("/");
-    if (parts.length < 4 || parts[0] !== "counts") return;
-    parts[1] = destHost;
-    const c = await freshGet(s, b.key, { type: "json" }).catch(() => null);
-    if (c) await s.setJSON(parts.join("/"), c);
-    await s.delete(b.key);
+    if (l.sessionId === p.sessionId) return;
+    await s.setJSON(b.key, { ...l, sessionId: p.sessionId });
   });
   try {
     if (cfConfig()) await cfDeleteCustomHostname(srcHost).catch(() => null);
@@ -1452,19 +1450,9 @@ const actions = {
     let retiredHost = null;
     if (isApexFlow && apexSource && (await retirePristinePrimary(apexSource))) retiredHost = apexSource;
     // Effective display label, shared by the twin guards below and the
-    // display-based claim routing. Mirrors domainInfo exactly (stored name,
-    // else apex for paired docs incl. legacy rows, else canonical).
+    // display-based claim routing (single rule: effectiveDisplayLabel).
     const docDisplay = (displayName || host).toLowerCase();
-    const twinLabelOf = (d) => {
-      if (!d) return "";
-      const storedApex = (typeof d.apexSource === "string" && d.apexSource) ? d.apexSource : null;
-      const pairedApex = storedApex || (d.isApexFlow === true ? apexForWww(d.domain) : null);
-      return String(
-        ((typeof d.displayName === "string" && d.displayName) ? d.displayName : null) ||
-        ((d.isApexFlow === true && pairedApex) ? pairedApex : null) ||
-        d.domain || ""
-      ).toLowerCase();
-    };
+    const twinLabelOf = (d) => effectiveDisplayLabel(d);
     const existing = await freshGet(s, `domain/${host}`, { type: "json" });
     // Twin state: same-session primary on the redirect host carrying value.
     // Pairing must never implicitly take over such a setup (its DNS serves
@@ -1762,11 +1750,12 @@ const actions = {
     }
     // Entered via the redirect host and no own primary exists there: restore
     // the entered host as a primary so the registered name never morphs into
-    // the canonical. Pristine setups swap (fresh primary, nothing to lose);
-    // touched setups reverse-migrate (links, stats, coverage, quotes all move
-    // back, no new payment). Either way the redirect host must be free — a
-    // foreign occupant can never be displaced, so exit then keeps this setup
-    // working under its canonical instead (function preserved, label bent).
+    // the canonical. Setup state reverse-migrates (coverage, quotes, no new
+    // payment); links stay on their minted host (set in stone) and keep
+    // working + listing under this entry either way. Either way the redirect
+    // host must be free — a foreign occupant can never be displaced, so exit
+    // then keeps this setup working under its canonical instead (function
+    // preserved, label bent).
     if (doc.pendingClaim) {
       return fail(409, "failed-precondition", "A takeover claim is pending on this setup — resolve it first.");
     }
@@ -1784,10 +1773,10 @@ const actions = {
     if (!apex || !cleanDomain(apex) || reservedExit.has(apex.toLowerCase()) || (await isPublicSuffix(apex).catch(() => false))) {
       return fail(400, "invalid-argument", "That address can no longer be restored — delete the domain and re-add it instead.");
     }
-    // Restore via migration in all cases (pristine or touched): whatever the
-    // scan finds on the retired host moves along, so links can never be
-    // orphaned there by a stale read — the failure mode behind history rows
-    // flipping to a host the user never picked.
+    // Restore via migration in all cases (pristine or touched): setup state
+    // moves to the entered host while links stay on their minted host (set
+    // in stone) — history rows can never flip to a host the user never
+    // picked, and nothing is orphaned (rows keep serving + listing).
     const dest = await migrateDomainSetup(s, p, doc, doc.domain, apex, { display: apex, paired: false, redirect: null });
     return ok({ ...(await domainInfo(dest, p.sessionId)), restored: true });
   },
@@ -1815,7 +1804,22 @@ const actions = {
     if (!validSessionId(p.sessionId)) return fail(400, "invalid-argument", "Invalid session.");
     const host = cleanDomain(p.domain);
     if (!host) return fail(400, "invalid-argument", "Invalid domain name.");
-    const doc = await freshGet(s, `domain/${host}`, { type: "json" });
+    let doc = await getWithRetry(s, `domain/${host}`, { type: "json" }, { attempts: 3, delayMs: 350 });
+    if (!doc || !doc.pendingClaim || doc.pendingClaim.sessionId !== p.sessionId) {
+      // Display resolution: the claim can live on a setup displaying the
+      // typed label (paired www doc) while the typed host itself holds no
+      // doc — the modal proves the typed label first, same as adding fresh.
+      try {
+        const blobs = await listAll(s, "domain/");
+        const docs = await mapWithConcurrency(blobs, 12, (b) =>
+          freshGet(s, b.key, { type: "json" }).catch(() => null)
+        );
+        const mine = docs.find((d) =>
+          d && d.pendingClaim && d.pendingClaim.sessionId === p.sessionId &&
+          effectiveDisplayLabel(d) === host);
+        if (mine) doc = mine;
+      } catch { /* fall through to 404 */ }
+    }
     if (!doc || !doc.pendingClaim || doc.pendingClaim.sessionId !== p.sessionId) {
       return fail(404, "not-found", "No pending claim for this session.");
     }
@@ -1892,17 +1896,38 @@ const actions = {
         });
       }
       // Routing host follows the intent: the www canonical when pairing a
-      // fresh redirect host, else the claimed host itself (paired or plain).
-      // Ownership (TXT) is ALWAYS proven on the claimed host itself — the
-      // pending token lives on this doc, and the modal shows verification.X.
-      // Sharing one host for both checks made TXT under fallback intent
-      // deterministically unverifiable (checked verification.www.X instead).
+      // fresh redirect host, a recommended pair proves its typed (redirect)
+      // host — same records as adding it fresh — else the claimed host.
+      // Ownership (TXT) follows the same host on paired setups; unpaired
+      // setups ALWAYS prove TXT on the claimed host itself (the migrate
+      // transfer checks TXT on X while routing on www.X — proving TXT on
+      // www.X instead made green badges fail transfer deterministically).
+      // An explicit check host from the modal (the row it actually shows) is
+      // honored when it belongs to this setup (canonical, redirect, or the
+      // www canonical derived from either); anything else falls back to the
+      // computed host. Check-only: no state changes here.
+      const redirectHost0 = storedRedirect || (pairedDoc ? apexForWww(doc.domain) : null);
+      const allowedChecks = new Set([doc.domain.toLowerCase()]);
+      if (redirectHost0) allowedChecks.add(redirectHost0.toLowerCase());
+      try {
+        const w1 = fallbackCanonicalFor(doc.domain);
+        if (w1) allowedChecks.add(w1.toLowerCase());
+        if (redirectHost0) {
+          const w2 = fallbackCanonicalFor(redirectHost0);
+          if (w2) allowedChecks.add(w2.toLowerCase());
+        }
+      } catch { /* computed hosts below */ }
+      const rawCheck = cleanDomain(p.checkHost);
+      const checkedHost = (rawCheck && allowedChecks.has(rawCheck.toLowerCase())) ? rawCheck.toLowerCase() : null;
       let routeHost = doc.domain;
       if (!pairedDoc && useIntent && intentHost === doc.domain) {
         routeHost = fallbackCanonicalFor(doc.domain);
         if (!routeHost) return fail(400, "invalid-argument", "Fallback pairing is not available for that address.");
+      } else if (pairedDoc && !useIntent && redirectHost0) {
+        routeHost = redirectHost0;
       }
-      const live = await verifyDns(claimField === "txt" ? doc.domain : routeHost, doc.pendingClaim.token, claimField).catch(() => ({
+      const txtHost = pairedDoc ? routeHost : doc.domain;
+      const live = await verifyDns(checkedHost || (claimField === "txt" ? txtHost : routeHost), doc.pendingClaim.token, claimField).catch(() => ({
         cname: false, txt: false, ssl: false, routable: null, cfHostnameStatus: null,
         cfSslStatus: null, routingMethod: null, routingUnknown: true, txtUnknown: true,
       }));
@@ -1931,7 +1956,14 @@ const actions = {
     if (!(await getSession(s, p.sessionId))) {
       await s.setJSON(`sessions/${p.sessionId}`, { createdAt: Date.now() });
     }
-    const live = await verifyDns(doc.domain, doc.pendingClaim.token).catch(() => ({
+    // Proof host: a recommended claim on a paired setup proves the typed
+    // (redirect) host itself — same records as adding it fresh — then the
+    // setup exit-migrates to a primary there (branch below). Fallback claims
+    // prove the doc host. Unpaired claims always prove the doc host.
+    const redirectHostFull = storedRedirect || (pairedDoc ? apexForWww(doc.domain) : null);
+    const recommendedPair = pairedDoc && !(p.fallback === true) && !useIntent && !!redirectHostFull;
+    const proofHost = recommendedPair ? redirectHostFull : doc.domain;
+    const live = await verifyDns(proofHost, doc.pendingClaim.token).catch(() => ({
       cname: false, txt: false, ssl: false, routable: null, routingMethod: null, alias: false,
     }));
     // Pairing is doc-driven under the uniform rule: an already-paired doc
@@ -2111,6 +2143,76 @@ const actions = {
         coverageValid: coverageValid(dest),
       });
     }
+    // Recommended takeover of a paired setup: the redirect host is proven
+    // (routing + TXT, same as adding it fresh), so the setup exit-migrates
+    // into a primary there — the entered name stays exactly what was typed.
+    // Links stay on their minted hosts (set in stone); payment, coverage,
+    // quotes, and history move with the setup (no new payment). Refuses when
+    // the redirect host is occupied (409, same as the migrate direction).
+    if (recommendedPair) {
+      const X = redirectHostFull;
+      const occupied = await freshGet(s, `domain/${X}`, { type: "json" }).catch(() => null);
+      if (occupied) {
+        return fail(409, "already-exists", `${X} is already set up — delete it or claim it first.`);
+      }
+      if (await ownLabelTaken(X)) {
+        return fail(409, "already-exists", `You already have ${X} — open its setup instead of adding it twice.`);
+      }
+      const token = doc.pendingClaim.token;
+      const fromSid = doc.sessionId;
+      // Count both hosts' rows for session bookkeeping before the move.
+      let movedCount = 0;
+      try {
+        const blobs = await listAll(s, "link/");
+        for (const b of blobs) {
+          const k = String(b.key || "");
+          if (!k.startsWith(`link/${doc.domain}/`) && !k.startsWith(`link/${X}/`)) continue;
+          const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
+          if (l && l.code) movedCount++;
+        }
+      } catch { /* best effort; bumps stay approximate */ }
+      const dest = await migrateDomainSetup(s, p, doc, doc.domain, X, { display: X, paired: false, redirect: null });
+      // Adopt stone leftover rows on the redirect host (migrate adopts the
+      // source host; these never change key — only session).
+      try {
+        const xBlobs = await listAll(s, `link/${X}/`);
+        await mapWithConcurrency(xBlobs, 12, async (b) => {
+          const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
+          if (!l || !l.code || l.sessionId === p.sessionId) return;
+          await s.setJSON(b.key, { ...l, sessionId: p.sessionId });
+        });
+      } catch { /* best effort; bumps stay approximate */ }
+      dest.verificationToken = token;
+      dest.isVerified = true;
+      dest.pendingClaim = null;
+      dest.dnsVerification = {
+        cnameValid: true,
+        txtVerified: true,
+        sslVerified: !!live.ssl,
+        routable: live.routable ?? null,
+        routingMethod: live.routingMethod || null,
+      };
+      refreshCoverage(dest);
+      if (dest.isVerified && dest.paymentStatus === "paid" && coverageValid(dest)) {
+        dest.status = "active";
+        await ensureSaaSHostname(dest);
+      }
+      await s.setJSON(`domain/${dest.domain}`, dest);
+      try {
+        await bumpSessionLinkCount(s, p.sessionId, movedCount);
+        if (fromSid) await bumpSessionLinkCount(s, fromSid, -movedCount);
+      } catch { /* best effort */ }
+      return ok({
+        success: true,
+        isVerified: true,
+        linksMoved: movedCount,
+        restored: true,
+        ...(await domainInfo(dest, p.sessionId)),
+        coverageExpiresAt: dest.coverageExpiresAt || null,
+        coverageLifetime: dest.coverageLifetime === true,
+        coverageValid: coverageValid(dest),
+      });
+    }
     // Transfer ownership.
     const fromSid = doc.sessionId;
     doc.sessionId = p.sessionId;
@@ -2136,19 +2238,38 @@ const actions = {
     }
     await s.setJSON(`domain/${doc.domain}`, doc);
     // Move links (history + stats follow: clicks/ keyed by host/code).
-    // The count is reported so the UI can say exactly what moved — a silent
-    // zero-move success is indistinguishable from a broken transfer otherwise.
+    // A paired entry owns both hosts' rows (links stay on their minted host —
+    // set in stone — only the session changes). The count is reported so the
+    // UI can say exactly what moved — a silent zero-move success is
+    // indistinguishable from a broken transfer otherwise.
     let movedLinks = 0;
     try {
       const blobs = await listAll(s, "link/");
       const docs = await mapWithConcurrency(blobs, 12, (b) =>
         freshGet(s, b.key, { type: "json" }).catch(() => null)
       );
+      const moveHosts = new Set([doc.domain.toLowerCase()]);
+      // A host joins the move only while no live doc occupies it — an
+      // independent setup's rows must never change session.
+      const maybeMove = async (h) => {
+        try {
+          const lh = String(h || "").toLowerCase();
+          if (!lh || moveHosts.has(lh)) return;
+          const occupant = await freshGet(s, `domain/${lh}`, { type: "json" }).catch(() => null);
+          if (!occupant) moveHosts.add(lh);
+        } catch { /* skip */ }
+      };
+      try {
+        const rh = (typeof doc.apexSource === "string" && doc.apexSource) ||
+          (doc.isApexFlow === true ? apexForWww(doc.domain) : null);
+        await maybeMove(rh);
+        await maybeMove(doc.movedFrom);
+      } catch { /* doc host only */ }
       const mine = docs.filter((l) => {
         if (!l) return false;
         const h = (l.domain || "").toLowerCase();
-        if (h === doc.domain) return true;
-        try { return new URL(l.short).hostname.toLowerCase() === doc.domain; } catch { return false; }
+        if (moveHosts.has(h)) return true;
+        try { return moveHosts.has(new URL(l.short).hostname.toLowerCase()); } catch { return false; }
       });
       await mapWithConcurrency(mine, 12, (l) => {
         l.sessionId = p.sessionId;
@@ -2279,14 +2400,37 @@ const actions = {
       freshGet(s, b.key, { type: "json" }).catch(() => null)
     );
     const target = doc.domain.toLowerCase();
+    // A paired entry owns both hosts' rows (links stay on their minted host —
+    // set in stone — so apex-host rows survive converts/exits under the pair).
+    // The redirect host is swept too, unless a live doc still occupies it (an
+    // independent setup there must never be touched).
+    const sweepHosts = new Set([target]);
+    // A host joins the sweep only while no live doc occupies it — an
+    // independent setup there must never be touched.
+    const maybeSweep = async (h) => {
+      try {
+        const lh = String(h || "").toLowerCase();
+        if (!lh || lh === target || sweepHosts.has(lh)) return;
+        const occupant = await freshGet(s, `domain/${lh}`, { type: "json" }).catch(() => null);
+        if (!occupant) sweepHosts.add(lh);
+      } catch { /* skip */ }
+    };
+    try {
+      const redirect = (typeof doc.apexSource === "string" && doc.apexSource)
+        ? doc.apexSource.toLowerCase()
+        : (doc.isApexFlow === true ? apexForWww(doc.domain) : null);
+      await maybeSweep(redirect);
+      await maybeSweep(doc.movedFrom);
+    } catch { /* target-only sweep */ }
     const doomed = [];
     const seen = new Set();
     for (const l of linkDocs) {
       if (!l || !l.code) continue;
       let match = false;
-      if ((l.domain || "").toLowerCase() === target) match = true;
+      const lh = (l.domain || "").toLowerCase();
+      if (sweepHosts.has(lh)) match = true;
       if (!match) {
-        try { if (new URL(l.short).hostname.toLowerCase() === target) match = true; } catch { /* no */ }
+        try { if (sweepHosts.has(new URL(l.short).hostname.toLowerCase())) match = true; } catch { /* no */ }
       }
       if (!match) continue;
       // Delete by both key derivations (domain field and short-URL host),
@@ -2298,26 +2442,29 @@ const actions = {
       }
     }
     await mapWithConcurrency(doomed, 12, (d) => s.delete(d.key));
-    // Cascade click rows + count shards for this host: deleting the domain
-    // must not leave visitor IPs (clicks/) or statistics (counts/) behind —
-    // the terms promise permanent removal. Clicks go in full (privacy);
-    // counts are capped per call with a loud log so a viral domain can't
-    // time the function out (remainder ages out of reads with its links).
-    try {
-      const clickKeys = await listAll(s, `clicks/${target}/`);
-      await mapWithConcurrency(clickKeys, 12, (b) => s.delete(b.key).catch(() => null));
-    } catch (e) {
-      console.error(`deleteCustomDomain(${doc.domain}) click sweep failed:`, e?.message || e);
-    }
-    try {
-      const countKeys = await listAll(s, `counts/${target}/`);
-      const capped = countKeys.slice(0, 2000);
-      if (countKeys.length > capped.length) {
-        console.error(`deleteCustomDomain(${doc.domain}) count sweep truncated: ${countKeys.length - capped.length} shards left behind`);
+    // Cascade click rows + count shards for every swept host: deleting the
+    // domain must not leave visitor IPs (clicks/) or statistics (counts/)
+    // behind — the terms promise permanent removal. Clicks go in full
+    // (privacy); counts are capped per call with a loud log so a viral
+    // domain can't time the function out (remainder ages out of reads with
+    // its links).
+    for (const h of sweepHosts) {
+      try {
+        const clickKeys = await listAll(s, `clicks/${h}/`);
+        await mapWithConcurrency(clickKeys, 12, (b) => s.delete(b.key).catch(() => null));
+      } catch (e) {
+        console.error(`deleteCustomDomain(${doc.domain}) click sweep failed for ${h}:`, e?.message || e);
       }
-      await mapWithConcurrency(capped, 12, (b) => s.delete(b.key).catch(() => null));
-    } catch (e) {
-      console.error(`deleteCustomDomain(${doc.domain}) count sweep failed:`, e?.message || e);
+      try {
+        const countKeys = await listAll(s, `counts/${h}/`);
+        const capped = countKeys.slice(0, 2000);
+        if (countKeys.length > capped.length) {
+          console.error(`deleteCustomDomain(${doc.domain}) count sweep truncated for ${h}: ${countKeys.length - capped.length} shards left behind`);
+        }
+        await mapWithConcurrency(capped, 12, (b) => s.delete(b.key).catch(() => null));
+      } catch (e) {
+        console.error(`deleteCustomDomain(${doc.domain}) count sweep failed for ${h}:`, e?.message || e);
+      }
     }
     try {
       const uniqCodes = new Set(doomed.map((d) => d.link.code));

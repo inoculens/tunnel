@@ -1563,6 +1563,9 @@
         window._apexName = '';
         window._fallbackOpen = false;
         pendingDomain = rawDomain;
+        // Typed label for the claim modal (set in stone): what the user
+        // entered is what the claim proves first, same as adding fresh.
+        window._claimTyped = rawDomain;
 
         try {
           btn.classList.add('loading');
@@ -1750,16 +1753,34 @@
       // with unified pills (PENDING → FAILED, TRY AGAIN / VERIFIED), each
       // checking only its own record via check-only claim field mode.
       function showPendingClaimModal(data) {
-        // Anchor everything to the claimed host (the doc holding the pending
-        // token), NOT the typed value: in the fallback-entry path the user
-        // typed X but the claim lives on www.X, and showing X's record names
-        // with www.X's token made TXT verification deterministically impossible.
+        // Lookup anchor is the claimed host (the doc holding the pending
+        // token). Record rows key on the TYPED label first — literally the
+        // first-time-add interface: routing + TXT on what was entered, with
+        // the yellow banner offering the fallback exactly like adding fresh.
+        // The typed label is constrained to this setup (canonical, redirect,
+        // or display name) so a stale value can never point rows at a
+        // stranger. The pending token is per-claim, so verification.<typed>
+        // always matches the token shown.
         const claimHost = String((data && data.domain) || pendingDomain || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
         if (claimHost) { pendingDomain = claimHost; currentDomain = claimHost; }
+        const claimCanonical = String(claimHost || pendingDomain || '');
+        const dataApex = String((data && data.apex) || '').toLowerCase();
+        const dataDisplay = String((data && data.displayName) || '').toLowerCase();
+        const typedClean = String(window._claimTyped || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+        let claimLabel = claimCanonical;
+        if (typedClean && (typedClean === claimCanonical || typedClean === dataApex || typedClean === dataDisplay)) {
+          claimLabel = typedClean;
+        } else if (dataDisplay && (dataDisplay === claimCanonical || dataDisplay === dataApex)) {
+          claimLabel = dataDisplay;
+        } else if (dataApex && claimCanonical !== dataApex) {
+          claimLabel = dataApex;
+        }
+        window._claimLabel = claimLabel;
+        const pairedClaim = data && data.isApexFlow === true;
         const txt = (data.instructions && data.instructions.txt) || data.pendingToken || '';
         const cname = (data.instructions && data.instructions.cnameTarget) || 'customers.inoculens.com';
-        const claimCnameName = String(claimHost || pendingDomain || '');
-        const claimTxtHost = `verification.${String(claimHost || pendingDomain || '')}`;
+        const claimCnameName = String(claimLabel || claimCanonical || '');
+        const claimTxtHost = `verification.${String(claimLabel || claimCanonical || '')}`;
         // Fresh badge state per open; redirect intent (if any) for check-only use.
         window._claimChecks = { cname: null, txt: null, apex: null };
         window._claimData = data || null;
@@ -1767,23 +1788,25 @@
         // Intent starts ON only for the fallback-entry path (explicit literal).
         // Never derived from main-flow _apexFlow/_apexName (stale-host risk).
         window._claimFallback = (data && data.fallback === true) ? true : false;
-        // Tracks the effective routing host so the routing badge resets only
-        // when a fallback toggle actually moves it (unpaired X ⇄ www.X).
+        // Typed the canonical of a pair (www.apex.com, not apex.com): that IS
+        // the fallback entry — open with the redirect card shown so the rows
+        // (routing + TXT on www, redirect on apex) match the transfer proofs.
+        // Skipping via the back-link proves the typed redirect host instead
+        // (exit-transfer), so both directions stay consistent.
+        if (pairedClaim && claimLabel === claimCanonical && dataApex && dataApex !== claimCanonical) {
+          window._claimFallback = true;
+          window._claimCanonical = claimCanonical;
+        }
+        // Track effective routing + TXT hosts so badges reset only when a
+        // fallback toggle actually moves them.
         window._claimRouteHost = null;
-        // Paired setups display a redirect label (apex.com) while routing on
-        // the canonical (www.apex.com): name both so the record rows make sense.
-        const claimSetupLabel = String((data && data.displayName) || '');
-        const claimSetupNote = (claimSetupLabel && claimSetupLabel.toLowerCase() !== String(claimHost || '').toLowerCase())
-          ? `<div style="font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-top: 8px;">Setup for <strong>${escapeHTML(claimSetupLabel)}</strong> — its routing record lives on <strong>${escapeHTML(claimHost)}</strong>.</div>`
-          : '';
+        window._claimTxtHost = null;
         window._claimApexSource = (data && data.apex) || null;
         // Redirect host for this claim: the paired doc's stored host, else the
         // claimed host itself (uniform rule: fallback on X redirects X).
         // Main-flow window._apexFlow/_apexName are NEVER read here — they can
         // be stale from an unrelated setup and would show the wrong host.
-        const pairedClaim = data && data.isApexFlow === true;
         const claimApex = (data && data.apex) || String(pendingDomain || '') || null;
-        const claimApexFlow = pairedClaim || window._claimFallback === true;
         const claimAi = (data && data.apexInstructions) || (data && data.fallback) || {};
         const claimA = claimAi.a || APEX_REDIRECT_IPV4;
         const claimAaaa = claimAi.aaaa || APEX_REDIRECT_IPV6;
@@ -1798,7 +1821,7 @@
         // claims reveal it via the yellow banner (recommended first).
         const apexCard = (claimApex && String(claimApex).indexOf('.') !== -1)
           ? `<div id="claimBackLink" style="display: none; text-align: left; margin-bottom: 4px;">`
-          + `<button type="button" onclick="claimToggleFallback(false)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();claimToggleFallback(false);}" style="background:transparent;border:none;color:var(--text-muted);font-family:'DM Sans',sans-serif;font-size:0.75rem;font-weight:600;cursor:pointer;padding:2px 4px;text-decoration:underline;text-underline-offset:2px;" title="${pairedClaim ? 'Skip the redirect records' : 'Back to the recommended DNS setup'}">${pairedClaim ? '← Skip the redirect records' : '← Use recommended DNS instead'}</button></div>`
+          + `<button type="button" onclick="claimToggleFallback(false)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();claimToggleFallback(false);}" style="background:transparent;border:none;color:var(--text-muted);font-family:'DM Sans',sans-serif;font-size:0.75rem;font-weight:600;cursor:pointer;padding:2px 4px;text-decoration:underline;text-underline-offset:2px;" title="Back to the recommended DNS setup">← Use recommended DNS instead</button></div>`
           + `<div id="claimApexWrap" style="display: none; padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); flex-direction: column;">`
           + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">Redirect</label>`
           + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px;">Makes <strong id="claimApexDomainName">${escapeHTML(claimApex)}</strong> forward to your links (path-preserving). Add these records for that exact host (DNS-only):</div>`
@@ -1810,7 +1833,7 @@
         showCustomModal({
           title: "Domain held by another session",
           wide: true,
-          message: `This name is attached to a different session. To reclaim it (plus its links + stats), prove DNS control:${claimSetupNote}`
+          message: `This name is attached to a different session. To reclaim it (plus its links + stats), prove DNS control:`
             + `<div style="margin: 16px 0; display: flex; flex-direction: column; gap: 8px; text-align: left;">`
             + apexCard
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
@@ -1820,7 +1843,7 @@
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Points to:</div>${copyRow('claimCnameTarget', cname)}`
             + verifyRow('claimVerifyRoutingBtn', 'claimRoutingStatus', 'cname', 'Verify routing')
             + `</div>`
-            + `<div id="claimFallbackBanner" style="display: none; padding: 10px 12px; background: rgba(245,166,35,0.12); border: 1px solid rgba(245,166,35,0.45); border-radius: 8px; font-size: 0.8rem; color: #fbd665; text-align: center;">⚠️ ${pairedClaim ? `Want <strong>${escapeHTML(claimApex)}</strong> itself to forward to your links too?` : 'Can you not add any of the above?'} <u style="cursor: pointer; text-decoration: underline; text-underline-offset: 2px;" onclick="claimToggleFallback(true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();claimToggleFallback(true);}" tabindex="0" role="button" aria-label="Try the fallback">${pairedClaim ? 'Show the redirect records' : 'Try the fallback'}</u></div>`
+            + `<div id="claimFallbackBanner" style="display: none; padding: 10px 12px; background: rgba(245,166,35,0.12); border: 1px solid rgba(245,166,35,0.45); border-radius: 8px; font-size: 0.8rem; color: #fbd665; text-align: center;">⚠️ Can you not add any of the above? <u style="cursor: pointer; text-decoration: underline; text-underline-offset: 2px;" onclick="claimToggleFallback(true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();claimToggleFallback(true);}" tabindex="0" role="button" aria-label="Try the fallback">Try the fallback</u></div>`
             + `<div style="padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column;">`
             + `<label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">TXT Record (Ownership)</label>`
             + `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>${copyRow('claimTxtHost', claimTxtHost)}`
@@ -1883,9 +1906,8 @@
         try {
           const data = window._claimData || {};
           const paired = data.isApexFlow === true;
-          // Recommended first for paired claims too (same as first-time
-          // add): the redirect card stays hidden behind the banner until the
-          // user asks for it, and Verify Claim gates on visible pills only.
+          // Recommended first for paired claims too: banner until the user
+          // asks for the redirect card (Verify Claim gates on visible pills).
           const intent = window._claimFallback === true;
           const redirectHost = data.apex || String(pendingDomain || '');
           const banner = document.getElementById('claimFallbackBanner');
@@ -1893,17 +1915,25 @@
           const back = document.getElementById('claimBackLink');
           const recName = document.getElementById('claimCnameName');
           const apexName = document.getElementById('claimApexDomainName');
-          if (banner) banner.style.display = (!paired && !intent) ? 'block' : 'none';
-          if (wrap) wrap.style.display = (paired || intent) ? 'flex' : 'none';
+          if (banner) banner.style.display = !intent ? 'block' : 'none';
+          if (wrap) wrap.style.display = intent ? 'flex' : 'none';
           if (back) back.style.display = intent ? 'block' : 'none';
-          if (recName) recName.textContent = (intent && window._claimCanonical) || String((data && data.domain) || pendingDomain || '');
+          // Effective hosts mirror the transfer proofs exactly: routing on the
+          // typed label first, the www canonical under fallback; TXT follows
+          // routing on paired setups but ALWAYS stays on the claimed host for
+          // unpaired ones (the migrate transfer checks TXT on X while routing
+          // on www.X). A badge earned for the other host resets on toggle.
+          const labelNow = String(window._claimLabel || (data && data.domain) || pendingDomain || '');
+          const routeHostNow = String((intent && window._claimCanonical) || labelNow);
+          const txtHostNow = `verification.${paired ? routeHostNow : labelNow}`;
+          if (recName) recName.textContent = routeHostNow;
+          const txtEl = document.getElementById('claimTxtHost');
+          if (txtEl) txtEl.textContent = txtHostNow;
           if (apexName && redirectHost) apexName.textContent = redirectHost;
-          // A routing badge earned for the other host is stale once the toggle
-          // moves it (unpaired X ⇄ www.X); paired claims route on the same
-          // host either way, so their badge survives the toggle.
-          const routeHostNow = String((!paired && intent && window._claimCanonical) || (data && data.domain) || pendingDomain || '');
           if (window._claimRouteHost && window._claimRouteHost !== routeHostNow) claimStatusUI('cname', null);
           window._claimRouteHost = routeHostNow;
+          if (window._claimTxtHost && window._claimTxtHost !== txtHostNow) claimStatusUI('txt', null);
+          window._claimTxtHost = txtHostNow;
           updateClaimConfirm();
         } catch (e) {}
       }
@@ -1930,6 +1960,16 @@
         } else {
           window._claimFallback = false;
           window._claimCanonical = null;
+          // Skipping the redirect on a canonical-typed pair claim drops back
+          // to proving the redirect host itself (exit-transfer) — point the
+          // rows there so they always match the transfer proofs.
+          try {
+            const cd = window._claimData || {};
+            const ax = String(cd.apex || '').toLowerCase();
+            if (cd.isApexFlow === true && ax && String(window._claimLabel || '') === String(pendingDomain || '').toLowerCase()) {
+              window._claimLabel = ax;
+            }
+          } catch (e) {}
         }
         paintClaimFallback();
       }
@@ -1981,12 +2021,22 @@
         if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
         try {
           const fn = functions.httpsCallable('verifyClaimedDomainDns');
+          // Prove exactly the row the modal shows (typed label first, www
+          // canonical under fallback); TXT stays on the typed label for
+          // unpaired setups. Backend constrains the host to this setup.
+          const pairedClaimCheck = !!(window._claimData && window._claimData.isApexFlow === true);
+          const routeEff = (window._claimFallback === true && window._claimCanonical)
+            ? String(window._claimCanonical)
+            : String(window._claimLabel || pendingDomain);
+          const effHost = field === 'apex' ? null
+            : (field === 'txt' && !pairedClaimCheck ? String(window._claimLabel || pendingDomain) : routeEff);
           const res = await fn({
             domain: pendingDomain,
             sessionId: getSessionId(),
             field,
+            ...(effHost ? { checkHost: effHost } : {}),
             ...(window._claimFallback === true
-              ? { fallback: true, apexSource: window._claimApexSource || pendingDomain }
+              ? { fallback: true, apexSource: window._claimApexSource || window._claimLabel || pendingDomain }
               : {}),
           });
           const data = res.data || {};
@@ -2038,7 +2088,7 @@
           const fn = functions.httpsCallable('verifyClaimedDomainDns');
           const tsToken2 = window._tsToken || undefined;
           window._tsToken = undefined;
-          const res = await fn({ domain: pendingDomain, sessionId: getSessionId(), ...(window._claimFallback === true ? { fallback: true, apexSource: window._claimApexSource || pendingDomain } : {}), ...(tsToken2 ? { turnstileToken: tsToken2 } : {}) });
+          const res = await fn({ domain: pendingDomain, sessionId: getSessionId(), ...(window._claimFallback === true ? { fallback: true, apexSource: window._claimApexSource || window._claimLabel || pendingDomain } : {}), ...(tsToken2 ? { turnstileToken: tsToken2 } : {}) });
           closeLoadingModal();
           if (res.data && res.data.success) {
             // Converted takeovers move hosts (X → www.X): follow the result so
@@ -3558,6 +3608,9 @@
           untrackJustCreatedDomain(domainToDelete);
           // Reload domains
           await loadUserDomains();
+          // Reload links too: the backend deleted this entry's rows (both
+          // hosts for paired setups), and stale rows must never linger.
+          try { await fetchAndRenderSession(getSessionId()); } catch (e) {}
 
           // Show success message
           let message = `Domain "${deleteDisp}" has been deleted.`;
