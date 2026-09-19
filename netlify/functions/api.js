@@ -31,6 +31,8 @@ import {
   cfGetCustomHostname,
   cfEnsureSaaS,
   cfNeedsTxt,
+  syncCfDoc,
+  checkTxtValue,
   cfDeleteCustomHostname,
   btcUsdPrice,
   quoteFor,
@@ -203,20 +205,11 @@ async function ensureSaaSHostname(doc) {
   if (!(doc.dnsVerification?.cnameValid && doc.dnsVerification?.txtVerified)) return null;
   if (doc.paymentStatus !== "paid") return null;
   // Single SaaS policy (see cfEnsureSaaS): http first, txt only when SaaS
-  // reports the CNAME problem. Orange/proxied CNAMEs classifying as alias on
-  // the wire keep working http with no extra TXT step.
+  // reports the CNAME problem on a non-Cloudflare zone. Orange/proxied
+  // CNAMEs classifying as alias on the wire keep working http.
   try {
     const cf = await cfEnsureSaaS(doc.domain, doc.dnsVerification?.routingMethod || null);
-    if (cf) {
-      doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
-      doc.cfHostnameStatus = cf.status || null;
-      doc.cfSslStatus = cf.ssl?.status || null;
-      doc.cfSslMethod = cf.ssl?.method || wantMethod;
-      const ov = cf.ownership_verification || null;
-      if (ov && ov.name && ov.value) {
-        doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
-      }
-    }
+    syncCfDoc(doc, cf);
     return cf;
   } catch (e) {
     console.error(`ensureSaaSHostname(${doc.domain}) failed:`, e?.message || e);
@@ -2267,15 +2260,8 @@ const actions = {
         dest.status = "active";
         await ensureSaaSHostname(dest);
         const cf = cfConfig() ? await cfGetCustomHostname(dest.domain) : null;
+        syncCfDoc(dest, cf);
         if (cf) {
-          dest.cfHostnameId = cf.id || dest.cfHostnameId || null;
-          dest.cfHostnameStatus = cf.status || null;
-          dest.cfSslStatus = cf.ssl?.status || null;
-          dest.cfSslMethod = cf.ssl?.method || dest.cfSslMethod || null;
-          const ov = cf.ownership_verification || null;
-          if (ov && ov.name && ov.value) {
-            dest.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
-          }
           dest.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : dest.dnsVerification.sslVerified;
         }
       }
@@ -2347,15 +2333,8 @@ const actions = {
         dest.status = "active";
         await ensureSaaSHostname(dest);
         const cf = cfConfig() ? await cfGetCustomHostname(dest.domain) : null;
+        syncCfDoc(dest, cf);
         if (cf) {
-          dest.cfHostnameId = cf.id || dest.cfHostnameId || null;
-          dest.cfHostnameStatus = cf.status || null;
-          dest.cfSslStatus = cf.ssl?.status || null;
-          dest.cfSslMethod = cf.ssl?.method || dest.cfSslMethod || null;
-          const ov = cf.ownership_verification || null;
-          if (ov && ov.name && ov.value) {
-            dest.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
-          }
           dest.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : dest.dnsVerification.sslVerified;
         }
       }
@@ -2395,15 +2374,8 @@ const actions = {
       doc.status = "active";
       await ensureSaaSHostname(doc);
       const cf = cfConfig() ? await cfGetCustomHostname(doc.domain) : null;
+      syncCfDoc(doc, cf);
       if (cf) {
-        doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
-        doc.cfHostnameStatus = cf.status || null;
-        doc.cfSslStatus = cf.ssl?.status || null;
-        doc.cfSslMethod = cf.ssl?.method || doc.cfSslMethod || null;
-        const ov = cf.ownership_verification || null;
-        if (ov && ov.name && ov.value) {
-          doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
-        }
         doc.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : doc.dnsVerification.sslVerified;
       }
     } else if (doc.status === "active" && !coverageValid(doc)) {
@@ -2554,15 +2526,8 @@ const actions = {
       await ensureSaaSHostname(doc);
       // Re-read live SaaS status after ensure (it may have just been created -> pending).
       const cf = cfConfig() ? await cfGetCustomHostname(doc.domain) : null;
+      syncCfDoc(doc, cf);
       if (cf) {
-        doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
-        doc.cfHostnameStatus = cf.status || null;
-        doc.cfSslStatus = cf.ssl?.status || null;
-        doc.cfSslMethod = cf.ssl?.method || doc.cfSslMethod || null;
-        const ov = cf.ownership_verification || null;
-        if (ov && ov.name && ov.value) {
-          doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
-        }
         doc.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : doc.dnsVerification.sslVerified;
       }
       // Active requires ownership + payment + live coverage. TLS (cfSslStatus active) is reported
@@ -2586,16 +2551,7 @@ const actions = {
         if (!cfLive && cnameValid && txtVerified) {
           cfLive = await cfEnsureSaaS(doc.domain, "alias").catch(() => null);
         }
-        if (cfLive) {
-          doc.cfHostnameId = cfLive.id || doc.cfHostnameId || null;
-          doc.cfHostnameStatus = cfLive.status || doc.cfHostnameStatus || null;
-          doc.cfSslStatus = cfLive.ssl?.status || doc.cfSslStatus || null;
-          doc.cfSslMethod = cfLive.ssl?.method || doc.cfSslMethod || null;
-          const ov = cfLive.ownership_verification || null;
-          if (ov && ov.name && ov.value) {
-            doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
-          }
-        }
+        syncCfDoc(doc, cfLive);
       } catch { /* display-only, never blocks verify */ }
     }
     await s.setJSON(`domain/${doc.domain}`, doc);
@@ -2615,6 +2571,50 @@ const actions = {
       coverageExpiresAt: doc.coverageExpiresAt || null,
       coverageLifetime: doc.coverageLifetime === true,
       coverageValid: coverageValid(doc),
+    });
+  },
+
+  async verifyCfOwnership(s, p) {
+    // Green pill for the _cf-custom-hostname TXT card (ALIAS/ANAME/flattened
+    // apex only): DoH-reads the shown TXT value. Card visibility itself is
+    // decided by stored/live SaaS state; this only paints the badge. Owner
+    // path (needOwnedDomain) — tokens stay owner-visible, like all DNS proofs.
+    const doc = await needOwnedDomain(s, p.domain, p.sessionId);
+    let ov = (doc.cfOwnershipVerification && doc.cfOwnershipVerification.name && doc.cfOwnershipVerification.value)
+      ? doc.cfOwnershipVerification
+      : null;
+    let cfStatus = doc.cfHostnameStatus || null;
+    if (cfConfig()) {
+      try {
+        const cf = await cfGetCustomHostname(doc.domain).catch(() => null);
+        if (cf) {
+          syncCfDoc(doc, cf);
+          cfStatus = doc.cfHostnameStatus || cfStatus;
+          if (doc.cfOwnershipVerification?.name && doc.cfOwnershipVerification?.value) {
+            ov = doc.cfOwnershipVerification;
+          }
+          await s.setJSON(`domain/${doc.domain}`, doc);
+        }
+      } catch { /* display-only */ }
+    }
+    if (!ov?.name || !ov?.value) {
+      return ok({ success: true, field: "cf", verified: false, noToken: true, cfHostnameStatus: cfStatus });
+    }
+    let stale = false;
+    let verified = false;
+    try {
+      const chk = await checkTxtValue(ov.name, ov.value);
+      stale = chk.unknown === true;
+      verified = chk.found === true;
+    } catch {
+      stale = true;
+    }
+    return ok({
+      success: true,
+      field: "cf",
+      ...(stale ? { stale: true } : {}),
+      verified,
+      cfHostnameStatus: cfStatus,
     });
   },
 
@@ -2832,15 +2832,8 @@ const actions = {
       } else if (cf && cfNeedsTxt(cf)) {
         cf = await cfEnsureSaaS(doc.domain, "alias").catch(() => cf);
       }
+      syncCfDoc(doc, cf);
       if (cf) {
-        doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
-        doc.cfHostnameStatus = cf.status || null;
-        doc.cfSslStatus = cf.ssl?.status || null;
-        doc.cfSslMethod = cf.ssl?.method || doc.cfSslMethod || null;
-        const ov = cf.ownership_verification || null;
-        if (ov && ov.name && ov.value) {
-          doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
-        }
         await s.setJSON(`domain/${doc.domain}`, doc);
       }
       const st = (cf && cf.status) || doc.cfHostnameStatus || null;
@@ -3673,16 +3666,7 @@ const actions = {
           if (cfConfig() && doc.isVerified) {
             try {
               const cf = await cfEnsureSaaS(doc.domain, doc.dnsVerification?.routingMethod || null);
-              if (cf) {
-                doc.cfHostnameId = cf.id || null;
-                doc.cfHostnameStatus = cf.status || null;
-                doc.cfSslStatus = cf.ssl?.status || null;
-                doc.cfSslMethod = cf.ssl?.method || doc.cfSslMethod || null;
-                const ov = cf.ownership_verification || null;
-                if (ov && ov.name && ov.value) {
-                  doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
-                }
-              }
+              syncCfDoc(doc, cf);
             } catch (e) {
               console.error(`SaaS ensure failed for ${doc.domain}:`, e?.message || e);
             }

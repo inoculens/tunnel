@@ -2273,6 +2273,8 @@
           window._routingMethod = (domainDoc.dnsVerification && domainDoc.dnsVerification.routingMethod) || null;
           window._cfHostnameStatus = domainDoc.cfHostnameStatus
             || (domainDoc.cloudflare && domainDoc.cloudflare.hostnameStatus) || null;
+          // Fresh dialogue: CF badge starts unchecked like the redirect badge.
+          if (cfName && cfValue) updateStatusUI('cf', null);
         } catch (e) { /* ownership card optional */ }
 
         // Routing target (SaaS) — backend-driven, never hardcoded.
@@ -2374,14 +2376,18 @@
           routable: (dns.routable === false) ? false : null,
           // Redirect check has no server-side sticky state: every fresh
           // verification context starts unchecked (badge shows Pending).
-          apex: null
+          apex: null,
+          // Cloudflare TXT likewise starts unchecked per dialogue open.
+          cf: null
         };
 
         // Initialize button labels (routing accepts CNAME/ALIAS/ANAME/flattened).
         const cnameBtn = document.getElementById('verifyCnameBtn');
         const txtBtn = document.getElementById('verifyTxtBtn');
+        const cfBtn = document.getElementById('verifyCfBtn');
         if (cnameBtn) cnameBtn.textContent = 'Verify routing';
         if (txtBtn) txtBtn.textContent = 'Verify TXT';
+        if (cfBtn) cfBtn.textContent = 'Verify TXT';
 
         // Update UI status using persistent values
         updateStatusUI('cname', verificationState.cname);
@@ -2508,10 +2514,12 @@
         // Update verificationState
         if (field === 'cname') verificationState.cname = ok;
         else if (field === 'txt') verificationState.txt = ok;
+        else if (field === 'cf') verificationState.cf = ok;
 
         const map = {
           cname: { status: 'cnameStatus', btn: 'verifyCnameBtn', label: 'Verify routing' },
-          txt: { status: 'txtStatus', btn: 'verifyTxtBtn', label: 'Verify TXT' }
+          txt: { status: 'txtStatus', btn: 'verifyTxtBtn', label: 'Verify TXT' },
+          cf: { status: 'cfStatus', btn: 'verifyCfBtn', label: 'Verify TXT' }
         };
 
         const config = map[field];
@@ -2620,16 +2628,17 @@
           // a backend-paired doc, or an explicitly opened fallback card.
           // Primaries with no visible card never wait for it.
           const apexOk = (pairedGating || redirectCardVisible) ? verificationState.apex === true : true;
-          // ALIAS/ANAME pre-payment gate: the CF ownership card is visible
-          // only for alias setups with a known token; Cloudflare must report
-          // active before money moves (backend enforces the same).
+          // ALIAS/ANAME/flattened pre-payment gate: the CF ownership card is
+          // visible only for setups SaaS flagged; its green pill plus an
+          // active Cloudflare hostname are both required before money moves
+          // (backend enforces status; the pill proves the shown TXT).
           const cfCardBlocking = (() => {
             try {
               const card = document.getElementById('cfOwnershipCard');
               const visible = !!card && card.style.display !== 'none';
               if (!visible) return false;
               if ((window._routingMethod || null) !== 'alias') return false;
-              return (window._cfHostnameStatus || null) !== 'active';
+              return verificationState.cf !== true || (window._cfHostnameStatus || null) !== 'active';
             } catch (e) { return false; }
           })();
           const readyForPayment = ((cnameOk && txtOk) || isPermanentlyVerified) && routableOk && apexOk && !cfCardBlocking;
@@ -2828,6 +2837,44 @@
           console.error('verifyTxtOnly Exception:', e);
           updateStatusUI('txt', false, true);
           showToast('Error verifying TXT: ' + (e.message || 'Unknown error'), 'error');
+        } finally {
+          if (btn) { btn.disabled = false; if (btn.textContent === 'Verifying...') btn.textContent = 'Verify TXT'; }
+        }
+      }
+
+      // Cloudflare ownership TXT badge (ALIAS/ANAME/flattened apex only):
+      // DoH-reads the shown _cf-custom-hostname value. Gates payment together
+      // with Cloudflare hostname status (see updateContinueButton).
+      async function verifyCfOnly() {
+        if (!currentDomain || !getSessionId()) {
+          showToast('Selection error: please re-open the domain manager.', 'error');
+          console.error('verifyCfOnly: Context missing', { currentDomain, sessionId: getSessionId() });
+          return;
+        }
+        const btn = document.getElementById('verifyCfBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
+        try {
+          const verifyFn = functions.httpsCallable('verifyCfOwnership');
+          const res = await verifyFn({ domain: currentDomain, sessionId: getSessionId() });
+          const data = res.data || {};
+          if (data.cfHostnameStatus) window._cfHostnameStatus = data.cfHostnameStatus;
+          if (data.stale === true) {
+            console.warn('Cloudflare TXT verification: LOOKUP FAILED (badge unchanged)');
+            showToast('DNS lookup hiccup — nothing changed, try again in a moment.', 'error');
+          } else if (data.verified) {
+            updateStatusUI('cf', true);
+            showToast('Cloudflare TXT verified!', 'success');
+          } else {
+            console.warn('Cloudflare TXT verification: FAILED (Check DNS)');
+            updateStatusUI('cf', false);
+            showToast(data.noToken
+              ? 'No Cloudflare TXT required for this setup.'
+              : 'Cloudflare TXT not detected yet. Check the record and retry.', 'error');
+          }
+        } catch (e) {
+          console.error('verifyCfOnly Exception:', e);
+          updateStatusUI('cf', false);
+          showToast('Error verifying Cloudflare TXT: ' + (e.message || 'Unknown error'), 'error');
         } finally {
           if (btn) { btn.disabled = false; if (btn.textContent === 'Verifying...') btn.textContent = 'Verify TXT'; }
         }

@@ -964,10 +964,60 @@ export function cfNeedsTxt(cf) {
   } catch { return false; }
 }
 
+// True when the hostname's zone runs on Cloudflare nameservers (SaaS
+// auto-validates ownership there — no _cf-custom-hostname TXT needed even
+// for apex-flattened records). Null on lookup failure (unknown, fail-closed
+// toward the TXT path so a hiccup never strands a domain as unservable).
+export async function cfHostedOnCloudflare(domain) {
+  const d = cleanDomain(domain);
+  if (!d) return null;
+  const r = await dohResult(d, "NS");
+  if (!r.ok) return null;
+  if (!r.answers.length) return null;
+  return r.answers.some((v) => String(v || "").toLowerCase().includes("cloudflare"));
+}
+
+// DoH check that a TXT name carries an expected value (quote-tolerant).
+// Returns { found, unknown }: transport failure is unknown (fail-open),
+export async function checkTxtValue(name, value) {
+  const want = String(value || "");
+  if (!want) return { found: false, unknown: false };
+  try {
+    const r = await dohResult(name, "TXT");
+    if (!r.ok) return { found: false, unknown: true };
+    return { found: r.answers.some((v) => String(v || "").replace(/"/g, "").trim() === want), unknown: false };
+  } catch {
+    return { found: false, unknown: true };
+  }
+}
+
+// Single persist point for SaaS state on domain docs (replaces scattered
+// inline blocks that previously forgot fields on some paths). Fail-open:
+// a null lookup never wipes stored state. Ownership clears when the live
+// object carries none (http method), so a healed hostname drops its card.
+export function syncCfDoc(doc, cf) {
+  if (!doc || !cf) return;
+  try {
+    doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
+    doc.cfHostnameStatus = cf.status || null;
+    doc.cfSslStatus = (cf.ssl && cf.ssl.status) || null;
+    doc.cfSslMethod = (cf.ssl && cf.ssl.method) || doc.cfSslMethod || null;
+    const ov = cf.ownership_verification || null;
+    if (ov && ov.name && ov.value) {
+      doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
+    } else {
+      delete doc.cfOwnershipVerification;
+    }
+  } catch { /* display-only */ }
+}
+
 // Single SaaS policy for every caller: http first (create or as-is, never
 // downgrades), migrate to txt only when routing is alias AND SaaS reports
-// the CNAME problem. Orange/proxied CNAMEs classifying as alias on the wire
-// keep working http with no extra TXT step.
+// the CNAME problem AND the zone is not Cloudflare-hosted (SaaS
+// auto-validates Cloudflare zones, so orange/flattened CNAMEs there keep
+// working http with no extra TXT step). Heals stuck txt hostnames back to
+// http when active without errors on a Cloudflare zone with no TXT published
+// (proves the TXT was never needed).
 export async function cfEnsureSaaS(domain, routingMethod = null) {
   const d = cleanDomain(domain);
   if (!d) throw Object.assign(new Error("Invalid domain name."), { statusCode: 400, code: "invalid-argument" });
@@ -977,8 +1027,57 @@ export async function cfEnsureSaaS(domain, routingMethod = null) {
   }
   if (!cf) return null;
   if ((routingMethod || null) === "alias" && cfNeedsTxt(cf)) {
-    cf = await cfEnsureCustomHostname(d, "txt");
+    let hosted = null;
+    try { hosted = await cfHostedOnCloudflare(d); } catch { hosted = null; }
+    if (hosted !== true) {
+      cf = await cfEnsureCustomHostname(d, "txt");
+    }
   }
+  try {
+    const cur = String((cf && cf.ssl && cf.ssl.method) || "").toLowerCase();
+    if (cf && cur === "txt" && String(cf.status || "").toLowerCase() === "active" && !cfNeedsTxt(cf)) {
+      const hosted = await cfHostedOnCloudflare(d).catch(() => null);
+      if (hosted === true) {
+        const ov = cf.ownership_verification || null;
+        let txtAbsent = false;
+        if (ov && ov.name && ov.value) {
+          try {
+            const chk = await checkTxtValue(ov.name, ov.value);
+            txtAbsent = chk && chk.unknown !== true && chk.found !== true;
+          } catch { txtAbsent = false; }
+        }
+        if (txtAbsent) {
+          try {
+            await cfFetch(`/custom_hostnames/${cf.id}`, {
+              method: "PATCH",
+              body: { ssl: { method: "http", type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } } },
+            });
+            const re = await cfGetCustomHostname(d).catch(() => null);
+            // Converge: keep http only if SaaS accepts it; a moved/CNAME
+            // signal means txt was genuinely required — revert immediately
+            // so repeated Verifies never flap the method back and forth.
+            if (re && !cfNeedsTxt(re)) {
+              cf = re;
+            } else if (re && cfNeedsTxt(re)) {
+              try {
+                const back = await cfFetch(`/custom_hostnames/${cf.id}`, {
+                  method: "PATCH",
+                  body: { ssl: { method: "txt", type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } } },
+                });
+                cf = back || re;
+              } catch {
+                cf = re;
+              }
+            } else if (re) {
+              cf = re;
+            }
+          } catch (e) {
+            console.error(`cfEnsureSaaS(${d}) revert to http failed:`, e?.message || e);
+          }
+        }
+      }
+    }
+  } catch { /* heal-only, never blocks */ }
   return cf;
 }
 
