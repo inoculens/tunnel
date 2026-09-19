@@ -981,8 +981,17 @@
             try { selectDomain(canon + '/'); } catch (e) {}
           }
           const filtHost = String(selectedHistoryDomain || '').replace(/\/$/, '').toLowerCase();
-          if (selectedHistoryDomain !== 'all' && filtHost && !known.has(filtHost)) {
-            try { selectHistoryFilter(canon + '/', displayHost(canon) + '/'); } catch (e) {}
+          if (selectedHistoryDomain !== 'all' && filtHost) {
+            // Twin-aware: the filter holds a display label — keep it while any
+            // known canonical host still maps to that label.
+            let labelAlive = false;
+            try {
+              const wantLabel = displayHost(filtHost);
+              labelAlive = [...known].some((h) => displayHost(h) === wantLabel);
+            } catch (e) { labelAlive = false; }
+            if (!labelAlive) {
+              try { selectHistoryFilter(canon + '/', displayHost(canon) + '/'); } catch (e) {}
+            }
           }
         } catch (e) {}
       }
@@ -1106,18 +1115,22 @@
           </div>
         `;
 
-        // Sort domains alphabetically and add to dropdown
-        // (values stay canonical so filtering matches; labels show exactly
-        // what the user typed).
-        Array.from(historyDomains).sort().forEach(domainName => {
+        // Sort domains alphabetically and add to dropdown.
+        // Twin-aware: options are grouped by display label (what the user
+        // typed), so paired twins (e.g. s.ghiveci.com + www.s.ghiveci.com)
+        // render ONE row. The value stays the label; renderHistory matches
+        // any canonical host in the group (see filter below).
+        const labelOfCanon = (canon) => displayHost(String(canon || '').replace(/\/$/, '')) + '/';
+        const curLabel = currentFilter === 'all' ? 'all' : labelOfCanon(currentFilter);
+        const historyLabels = [...new Set(Array.from(historyDomains).map(labelOfCanon))].sort();
+        historyLabels.forEach(filterLabel => {
           const filterOpt = document.createElement('div');
-          filterOpt.className = `filter-option ${currentFilter === domainName ? 'selected' : ''}`;
-          const filterLabel = displayHost(domainName.replace(/\/$/, '')) + '/';
+          filterOpt.className = `filter-option ${curLabel === filterLabel ? 'selected' : ''}`;
           filterOpt.innerHTML = `
             <span>${escapeHTML(filterLabel)}</span>
-            ${currentFilter === domainName ? checkIcon : ''}
+            ${curLabel === filterLabel ? checkIcon : ''}
           `;
-          filterOpt.onclick = () => selectHistoryFilter(domainName, filterLabel);
+          filterOpt.onclick = () => selectHistoryFilter(filterLabel, filterLabel);
           historyFilterDropdown.appendChild(filterOpt);
         });
 
@@ -6406,9 +6419,16 @@
         const header = document.getElementById('historyHeader');
         const domainFilter = selectedHistoryDomain;
 
-        // Filter by domain locally
+        // Filter by domain locally. Twin-aware: the filter value is a display
+        // label, matched against each link's display label, so paired twins
+        // (canonical s.ghiveci.com + www.s.ghiveci.com) filter as one setup.
         if (domainFilter !== 'all') {
-          links = links.filter(l => l.short.startsWith(`https://${domainFilter}`) || l.short.startsWith(`http://${domainFilter}`));
+          const wantLabel = displayHost(String(domainFilter).replace(/\/$/, '')).toLowerCase();
+          links = links.filter(l => {
+            try {
+              return displayHost(hostOf(l.short)).toLowerCase() === wantLabel;
+            } catch (e) { return false; }
+          });
         }
 
         if (!links || links.length === 0) {
