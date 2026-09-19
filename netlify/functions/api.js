@@ -2817,6 +2817,32 @@ const actions = {
     if (!(dns.cnameValid && dns.txtVerified)) {
       return fail(412, "failed-precondition", "DNS verification required before payment.");
     }
+    // ALIAS/ANAME apex: nothing technical may remain after payment — the
+    // chain must be fully green before any money moves, then 1 confirmation
+    // activates automatically. CNAME/http needs no extra record, but alias/txt
+    // requires the SaaS hostname ACTIVE (ownership TXT added + verified).
+    // Exact prefix the frontend matches on — keep stable.
+    if ((dns.routingMethod || null) === "alias" && cfConfig()) {
+      let cf = await cfGetCustomHostname(doc.domain).catch(() => null);
+      if (!cf && dns.cnameValid && dns.txtVerified) {
+        cf = await cfEnsureCustomHostname(doc.domain, "txt").catch(() => null);
+      }
+      if (cf) {
+        doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
+        doc.cfHostnameStatus = cf.status || null;
+        doc.cfSslStatus = cf.ssl?.status || null;
+        doc.cfSslMethod = cf.ssl?.method || doc.cfSslMethod || null;
+        const ov = cf.ownership_verification || null;
+        if (ov && ov.name && ov.value) {
+          doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
+        }
+        await s.setJSON(`domain/${doc.domain}`, doc);
+      }
+      const st = (cf && cf.status) || doc.cfHostnameStatus || null;
+      if (st !== "active") {
+        return fail(412, "failed-precondition", "CLOUDFLARE_TXT_REQUIRED: add the shown _cf-custom-hostname TXT and Re-verify until Cloudflare is active, then continue to payment.");
+      }
+    }
     const consentBlock = await withdrawalConsentGate(s, doc, p, "requesting a payment address");
     if (consentBlock) return consentBlock;
     const now = Date.now();

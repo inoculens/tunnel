@@ -2257,8 +2257,8 @@
         if (txtHostEl) txtHostEl.textContent = txtHost;
 
         // Cloudflare SaaS ownership TXT (ALIAS/ANAME apex only, where CNAME is
-        // illegal at the zone apex). Coexists with ALIAS; issued after payment
-        // when routingMethod is alias (see backend ensureSaaSHostname).
+        // illegal at the zone apex). Coexists with ALIAS; surfaced pre-payment
+        // when routingMethod is alias so nothing technical remains after pay.
         try {
           const cfName = (domainDoc.instructions && domainDoc.instructions.cfOwnershipName)
             || (domainDoc.cloudflare && domainDoc.cloudflare.ownershipVerification && domainDoc.cloudflare.ownershipVerification.name) || '';
@@ -2270,6 +2270,9 @@
           if (cfNameEl) cfNameEl.textContent = cfName;
           if (cfValueEl) cfValueEl.textContent = cfValue;
           if (cfCard) cfCard.style.display = (cfName && cfValue) ? 'flex' : 'none';
+          window._routingMethod = (domainDoc.dnsVerification && domainDoc.dnsVerification.routingMethod) || null;
+          window._cfHostnameStatus = domainDoc.cfHostnameStatus
+            || (domainDoc.cloudflare && domainDoc.cloudflare.hostnameStatus) || null;
         } catch (e) { /* ownership card optional */ }
 
         // Routing target (SaaS) — backend-driven, never hardcoded.
@@ -2432,6 +2435,10 @@
           lifetime: domainData.coverageLifetime === true,
           expiresAt: domainData.coverageExpiresAt || null
         };
+        window._routingMethod = (dns && dns.routingMethod) || window._routingMethod || null;
+        window._cfHostnameStatus = domainData.cfHostnameStatus
+          || (domainData.cloudflare && domainData.cloudflare.hostnameStatus)
+          || window._cfHostnameStatus || null;
 
         // Update badges - stored passes stay green; anything else starts at
         // Pending (Failed appears only from pressing Verify in this dialogue).
@@ -2586,7 +2593,10 @@
           // a domain with no usable edge address cannot serve links, so it
           // must not take payment. SSL provisions automatically via Cloudflare
           // SaaS HTTP validation after the CNAME is live — it must NOT block
-          // payment (takes minutes in background). Paired fallback setups
+          // payment (takes minutes in background). ALIAS/ANAME apex is the
+          // exception: its _cf-custom-hostname TXT must be added AND Cloudflare
+          // hostname active BEFORE payment, so 1 confirmation activates with
+          // zero post-payment setup. Paired fallback setups
           // additionally require the redirect check — but ONLY when the
           // redirect card is actually visible (backend-paired doc or
           // explicitly opened fallback). A stale window flag must never gate
@@ -2610,7 +2620,19 @@
           // a backend-paired doc, or an explicitly opened fallback card.
           // Primaries with no visible card never wait for it.
           const apexOk = (pairedGating || redirectCardVisible) ? verificationState.apex === true : true;
-          const readyForPayment = ((cnameOk && txtOk) || isPermanentlyVerified) && routableOk && apexOk;
+          // ALIAS/ANAME pre-payment gate: the CF ownership card is visible
+          // only for alias setups with a known token; Cloudflare must report
+          // active before money moves (backend enforces the same).
+          const cfCardBlocking = (() => {
+            try {
+              const card = document.getElementById('cfOwnershipCard');
+              const visible = !!card && card.style.display !== 'none';
+              if (!visible) return false;
+              if ((window._routingMethod || null) !== 'alias') return false;
+              return (window._cfHostnameStatus || null) !== 'active';
+            } catch (e) { return false; }
+          })();
+          const readyForPayment = ((cnameOk && txtOk) || isPermanentlyVerified) && routableOk && apexOk && !cfCardBlocking;
           const allChecksPass = readyForPayment;
 
           if (isDomainActive) {
@@ -2627,7 +2649,9 @@
             // Lapsed but previously paid: this is a renewal, label it so.
             const needsRenewal = window.domainCoverage && window.domainCoverage.valid !== true
               && window.domainCoverage.lifetime !== true && window.domainPaymentStatus === 'paid';
-            btnText.textContent = needsRenewal ? 'Renew — $10/year' : 'Continue to Payment';
+            btnText.textContent = cfCardBlocking
+              ? 'Add Cloudflare TXT to continue'
+              : (needsRenewal ? 'Renew — $10/year' : 'Continue to Payment');
             continueBtn.style.opacity = continueBtn.disabled ? '0.5' : '1';
             continueBtn.classList.remove('status-active');
             continueBtn.onclick = () => continueToPaymentFromVerification();
@@ -2712,6 +2736,10 @@
             updateRoutingUI(null);
           }
         }
+
+        // Store CF SaaS state for the pre-payment alias gate below.
+        if (checks && checks.routingMethod) window._routingMethod = checks.routingMethod;
+        if (data && data.cfHostnameStatus) window._cfHostnameStatus = data.cfHostnameStatus;
 
         // Cloudflare SaaS ownership TXT (ALIAS/ANAME apex): paint from Verify
         // response so it appears pre-payment, not only after activation.
@@ -3193,6 +3221,33 @@
               updateContinueButton();
               return;
             }
+          }
+
+          // ALIAS/ANAME pre-payment gate (mirrors backend + Continue button):
+          // Cloudflare must be active before the payment step opens, so
+          // nothing technical remains after 1 confirmation.
+          const _rm = (data.dnsVerification && data.dnsVerification.routingMethod) || null;
+          const _cf = data.cfHostnameStatus || (data.cloudflare && data.cloudflare.hostnameStatus) || null;
+          if (_rm === 'alias' && _cf !== 'active') {
+            try {
+              window._routingMethod = 'alias';
+              window._cfHostnameStatus = _cf;
+              const _cn = (data.instructions && data.instructions.cfOwnershipName)
+                || (data.cloudflare && data.cloudflare.ownershipVerification && data.cloudflare.ownershipVerification.name) || '';
+              const _cv = (data.instructions && data.instructions.cfOwnershipValue)
+                || (data.cloudflare && data.cloudflare.ownershipVerification && data.cloudflare.ownershipVerification.value) || '';
+              const _card = document.getElementById('cfOwnershipCard');
+              if (_cn && _cv) {
+                const _nEl = document.getElementById('cfOwnershipName');
+                const _vEl = document.getElementById('cfOwnershipValue');
+                if (_nEl) _nEl.textContent = _cn;
+                if (_vEl) _vEl.textContent = _cv;
+                if (_card) _card.style.display = 'flex';
+              }
+            } catch (e) {}
+            showToast("Add the shown _cf-custom-hostname TXT and Re-verify until Cloudflare is active, then continue.", "error");
+            updateContinueButton();
+            return;
           }
 
           if (isVerified) {
@@ -3864,7 +3919,16 @@
           return;
         }
         loadingState.style.display = 'block';
-        if (err && err.code === 'failed-precondition' && err.message && err.message.includes('DNS verification')) {
+        if (err && err.code === 'failed-precondition' && err.message && err.message.includes('CLOUDFLARE_TXT_REQUIRED')) {
+          loadingState.innerHTML = '<span style="color: #f5a623;">Cloudflare TXT required before payment — add the shown _cf-custom-hostname TXT and Re-verify.</span>';
+          showCustomModal({
+            title: "Cloudflare TXT Required",
+            message: "This ALIAS/ANAME setup needs its _cf-custom-hostname TXT added and Cloudflare active before payment, so activation is automatic after 1 confirmation. Go back to Verification to copy it.",
+            confirmText: "Go to Verification",
+            showCancel: true,
+            cancelText: "Cancel"
+          }).then((ok) => { if (ok) showStep('verification'); });
+        } else if (err && err.code === 'failed-precondition' && err.message && err.message.includes('DNS verification')) {
           loadingState.innerHTML = '<span style="color: #f5a623;">DNS verification required before payment.</span>';
           showCustomModal({
             title: "Verification Required",
