@@ -1011,13 +1011,13 @@ export function syncCfDoc(doc, cf) {
   } catch { /* display-only */ }
 }
 
-// Single SaaS policy for every caller: http first (create or as-is, never
-// downgrades), migrate to txt only when routing is alias AND SaaS reports
-// the CNAME problem AND the zone is not Cloudflare-hosted (SaaS
-// auto-validates Cloudflare zones, so orange/flattened CNAMEs there keep
-// working http with no extra TXT step). Heals stuck txt hostnames back to
-// http when active without errors on a Cloudflare zone with no TXT published
-// (proves the TXT was never needed).
+// Single SaaS policy for every caller: http first (create or as-is), txt only
+// for non-Cloudflare zones whose routing is alias AND SaaS reports the CNAME
+// problem (delegated-apex ALIAS with no Enterprise Apex Proxying).
+// Cloudflare-hosted zones always stay http: SaaS auto-validates ownership
+// and DCV there, so txt would only manufacture _acme-challenge homework —
+// including apex-flattened CNAMEs, which present as alias on the wire but
+// need nothing extra. A stuck txt on a Cloudflare zone is downgraded back.
 export async function cfEnsureSaaS(domain, routingMethod = null) {
   const d = cleanDomain(domain);
   if (!d) throw Object.assign(new Error("Invalid domain name."), { statusCode: 400, code: "invalid-argument" });
@@ -1026,58 +1026,34 @@ export async function cfEnsureSaaS(domain, routingMethod = null) {
     cf = await cfEnsureCustomHostname(d, "http");
   }
   if (!cf) return null;
-  if ((routingMethod || null) === "alias" && cfNeedsTxt(cf)) {
-    let hosted = null;
+  // Cloudflare-hosted zones (detected via NS) need one extra read only when
+  // the method is txt or an alias routing hits the CNAME signal; plain http
+  // hosts cost nothing extra here.
+  const alias = (routingMethod || null) === "alias";
+  const cur = String((cf && cf.ssl && cf.ssl.method) || "http").toLowerCase();
+  let hosted = null;
+  if (cur === "txt" || (alias && cfNeedsTxt(cf))) {
     try { hosted = await cfHostedOnCloudflare(d); } catch { hosted = null; }
-    if (hosted !== true) {
-      cf = await cfEnsureCustomHostname(d, "txt");
-    }
   }
-  try {
-    const cur = String((cf && cf.ssl && cf.ssl.method) || "").toLowerCase();
-    if (cf && cur === "txt" && String(cf.status || "").toLowerCase() === "active" && !cfNeedsTxt(cf)) {
-      const hosted = await cfHostedOnCloudflare(d).catch(() => null);
-      if (hosted === true) {
-        const ov = cf.ownership_verification || null;
-        let txtAbsent = false;
-        if (ov && ov.name && ov.value) {
-          try {
-            const chk = await checkTxtValue(ov.name, ov.value);
-            txtAbsent = chk && chk.unknown !== true && chk.found !== true;
-          } catch { txtAbsent = false; }
-        }
-        if (txtAbsent) {
-          try {
-            await cfFetch(`/custom_hostnames/${cf.id}`, {
-              method: "PATCH",
-              body: { ssl: { method: "http", type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } } },
-            });
-            const re = await cfGetCustomHostname(d).catch(() => null);
-            // Converge: keep http only if SaaS accepts it; a moved/CNAME
-            // signal means txt was genuinely required — revert immediately
-            // so repeated Verifies never flap the method back and forth.
-            if (re && !cfNeedsTxt(re)) {
-              cf = re;
-            } else if (re && cfNeedsTxt(re)) {
-              try {
-                const back = await cfFetch(`/custom_hostnames/${cf.id}`, {
-                  method: "PATCH",
-                  body: { ssl: { method: "txt", type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } } },
-                });
-                cf = back || re;
-              } catch {
-                cf = re;
-              }
-            } else if (re) {
-              cf = re;
-            }
-          } catch (e) {
-            console.error(`cfEnsureSaaS(${d}) revert to http failed:`, e?.message || e);
-          }
-        }
-      }
+  if (hosted === true && cur === "txt") {
+    // SaaS auto-validates Cloudflare zones on http (ownership + DCV), so a
+    // txt method there is pure _acme-challenge homework — e.g. a flattened
+    // apex CNAME flipped by an earlier build. Downgrade; http is accepted as
+    // final for CF-hosted zones even if the CNAME signal persists.
+    try {
+      const back = await cfFetch(`/custom_hostnames/${cf.id}`, {
+        method: "PATCH",
+        body: { ssl: { method: "http", type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } } },
+      });
+      cf = back || cf;
+    } catch (e) {
+      console.error(`cfEnsureSaaS(${d}) revert to http failed:`, e?.message || e);
     }
-  } catch { /* heal-only, never blocks */ }
+    return cf;
+  }
+  if (alias && cfNeedsTxt(cf) && hosted !== true) {
+    cf = await cfEnsureCustomHostname(d, "txt");
+  }
   return cf;
 }
 
