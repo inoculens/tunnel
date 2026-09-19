@@ -23,7 +23,7 @@
  * Query-param fallback (?c=, ?h=) is permanent for SaaS Worker proxies,
  * direct function hits, and deploy-skew safety.
  */
-import { store, newClickId, truncateIp, clickClientIp, isIpLiteral, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard, buildAppTargets, shouldServeInterstitial } from "./lib/util.js";
+import { store, newClickId, truncateIp, clickClientIp, isIpLiteral, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard, buildAppTargets, shouldServeInterstitial, fallbackCanonicalFor, apexForWww } from "./lib/util.js";
 
 const HOME = process.env.HOME_URL || "https://tunnel.inoculens.com/";
 
@@ -163,7 +163,78 @@ export async function handler(event) {
   const notFoundDest =
     `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}` +
     `&h=${encodeURIComponent(host)}`;
-  const link = await getWithRetry(s, linkKey(host, code), { type: "json" }, { attempts: 3, delayMs: 300 }).catch(() => null);
+  let link = await getWithRetry(s, linkKey(host, code), { type: "json" }, { attempts: 3, delayMs: 300 }).catch(() => null);
+  // Paired-counterpart fallback (miss path only): a setup that moved between
+  // recommended and fallback keeps its links on their minted host (set in
+  // stone) while the entry owns both hosts' rows. The displayed short is
+  // always what the user typed (golden rule: typed host is stone, the www
+  // redirect stays a background technicality), so an apex display URL
+  // redirects to www where the pre-move link may not live — and vice versa.
+  // On a miss, try the uniform counterpart host (www.H / strip-www) for the
+  // same slug, but ONLY when both hosts belong to one entry (same session)
+  // with valid coverage. Independent twins (apex primary + fallback pair
+  // sharing a label, possibly different sessions) must never leak across.
+  // Reads stay bounded (≤2 candidates, ≤2 doc reads) and run only on misses,
+  // so the hot path costs nothing extra.
+  let fallbackOwner = null;
+  const ownsBothHosts = (owner, h1, c1) => {
+    if (!owner) return true; // orphan links: fail open, matches legacy behavior
+    try {
+      const set = new Set();
+      const add = (v) => { const x = String(v || "").toLowerCase(); if (x) set.add(x); };
+      // Explicit ownership only: the doc's own host plus stone pointers.
+      // Uniform counterparts are added ONLY for actually-paired entries
+      // (legacy rows may lack apexSource) — never for standalone primaries,
+      // or independent twins would leak across (www primary serving its
+      // apex twin's links and vice versa).
+      add(owner.domain);
+      add(owner.apexSource);
+      add(owner.movedFrom);
+      add(owner.movedFromChain);
+      if (owner.isApexFlow === true) {
+        try { const a0 = apexForWww(owner.domain); if (a0) add(a0); } catch { /* ignore */ }
+        try {
+          const r = owner.apexSource || apexForWww(owner.domain);
+          if (r) {
+            const w1 = fallbackCanonicalFor(r);
+            if (w1) add(w1);
+          }
+        } catch { /* ignore */ }
+      }
+      return set.has(String(h1 || "").toLowerCase()) && set.has(String(c1 || "").toLowerCase());
+    } catch { return false; }
+  };
+  if ((!link || !/^https?:\/\//.test(link.original || "")) && host !== systemShortHost()) {
+    try {
+      const candidates = [];
+      try {
+        const w = fallbackCanonicalFor(host);
+        if (w && w.toLowerCase() !== host) candidates.push(w.toLowerCase());
+      } catch { /* ignore */ }
+      try {
+        const a = apexForWww(host);
+        if (a && a.toLowerCase() !== host && !candidates.includes(a.toLowerCase())) candidates.push(a.toLowerCase());
+      } catch { /* ignore */ }
+      for (const candHost of candidates.slice(0, 2)) {
+        const cand = await freshGet(s, linkKey(candHost, code), { type: "json" }).catch(() => null);
+        if (!cand || !/^https?:\/\//.test(cand.original || "")) continue;
+        const candLinkHost = String(cand.domain || candHost).toLowerCase();
+        // Ownership docs (bounded): prefer the serving entry, else the
+        // counterpart link's own entry. Missing docs fail open (legacy).
+        let servDoc = null;
+        let candDoc = null;
+        try { servDoc = await freshGet(s, `domain/${host}`, { type: "json" }).catch(() => null); } catch { servDoc = null; }
+        try { candDoc = await freshGet(s, `domain/${candLinkHost}`, { type: "json" }).catch(() => null); } catch { candDoc = null; }
+        const owner = servDoc || candDoc || null;
+        if (owner && !ownsBothHosts(owner, host, candLinkHost)) continue;
+        if (owner && cand.sessionId && owner.sessionId && cand.sessionId !== owner.sessionId) continue;
+        if (owner && !coverageValid(owner)) continue;
+        link = cand;
+        fallbackOwner = owner;
+        break;
+      }
+    } catch { /* fall through to 404 below */ }
+  }
   if (!link || !/^https?:\/\//.test(link.original || "")) {
     return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
   }
@@ -173,7 +244,13 @@ export async function handler(event) {
   // already reads "Link Expired"). No click is logged — this was not a
   // visit. System-host links are unaffected; a missing domain doc fails
   // open (link deletion cascades, so this should not happen).
-  if (link.domain && link.domain !== systemShortHost()) {
+  // Fallback hits already validated their owning entry during selection;
+  // re-check it here (no extra read) so lapsed pairs hard-stop on both hosts.
+  if (fallbackOwner) {
+    if (!coverageValid(fallbackOwner)) {
+      return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
+    }
+  } else if (link.domain && link.domain !== systemShortHost()) {
     const doc = await freshGet(s, `domain/${link.domain}`, { type: "json" }).catch(() => null);
     if (doc && !coverageValid(doc)) {
       return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
@@ -185,6 +262,11 @@ export async function handler(event) {
   // the per-minute detail budget (distinct IPs each get full budget, so viral
   // + dumb repeats are fully stored). Totals are exact via write-only shards;
   // link.clickCount stays as an approximate live badge.
+  // Stats follow the link identity (its minted host), not the serving host:
+  // a fallback-served pre-move link keeps one stats stream on its own key.
+  // The 404 display (?h=) above keeps the visited host; attribution below
+  // keeps the serving host (custom vs system path).
+  const linkHost = String(link.domain || host).toLowerCase() || host;
   try {
     if (link.quarantined) {
       return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
@@ -193,7 +275,7 @@ export async function handler(event) {
     // see clickClientIp): the generic trustedRawIp demonstrably yields edge
     // egress on this rewritten path, so it must not feed click rows/buckets.
     const rawIp = clickClientIp(event, host);
-    const storeDetail = await shouldStoreClickDetail(s, host, link.code, rawIp);
+    const storeDetail = await shouldStoreClickDetail(s, linkHost, link.code, rawIp);
     // Full visitor address (new field; the truncated ip below stays the
     // privacy-preserving default everywhere else). Stored only when the
     // source actually resolved to an IP literal — never "unknown".
@@ -201,14 +283,14 @@ export async function handler(event) {
     const truncIp = truncateIp(rawIp);
     if (storeDetail) {
       const id = newClickId();
-      await s.setJSON(`${clicksPrefix(host, link.code)}${id}`, {
+      await s.setJSON(`${clicksPrefix(linkHost, link.code)}${id}`, {
         id,
         timestamp: Date.now(),
         ip: truncIp,
         ...(fullIp ? { fullIp } : {}),
       });
     } else {
-      await s.setJSON(`${clicksPrefix(host, link.code)}flood-${Date.now().toString(36)}`, {
+      await s.setJSON(`${clicksPrefix(linkHost, link.code)}flood-${Date.now().toString(36)}`, {
         id: `flood-${Date.now().toString(36)}`,
         timestamp: Date.now(),
         ip: truncIp,
@@ -218,8 +300,8 @@ export async function handler(event) {
     }
     if (link.baseCount === undefined) link.baseCount = link.clickCount || 0;
     link.clickCount = (link.clickCount || 0) + 1;
-    await s.setJSON(linkKey(host, link.code), link);
-    await writeCountShard(s, host, link.code, 1);
+    await s.setJSON(linkKey(linkHost, link.code), link);
+    await writeCountShard(s, linkHost, link.code, 1);
   } catch (e) {
     console.error("click log failed:", e);
   }
