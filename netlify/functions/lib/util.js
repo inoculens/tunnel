@@ -607,6 +607,105 @@ async function dohResult(name, type) {
   }
 }
 
+// Cloudflare edge CIDRs (published, used only as a last-resort alias proof).
+// Exact /24+/64 overlap fails across anycast POPs (prod target IPs differ by
+// region from the flattened domain IPs), so when pool matching misses we
+// accept domain IPs inside Cloudflare ranges — combined with the separately
+// required TXT ownership + SaaS hostname activation, this cannot hijack (an
+// attacker can't pass another domain's TXT). Fetched live with an embedded
+// fallback snapshot; cached per warm instance.
+const CF_V4_FALLBACK = [
+  "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+  "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+  "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+  "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+];
+const CF_V6_FALLBACK = [
+  "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+  "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+];
+let cfRangesCache = { at: 0, v4: [], v6: [] };
+function ipv4ToInt(ip) {
+  const m = String(ip || "").trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return null;
+  const o = m.slice(1, 5).map(Number);
+  if (o.some((n) => !(n >= 0 && n <= 255))) return null;
+  return ((o[0] * 256 + o[1]) * 256 + o[2]) * 256 + o[3];
+}
+function v4InCidr(ip, cidr) {
+  try {
+    const [base, bits] = String(cidr).split("/");
+    const b = ipv4ToInt(base);
+    const i = ipv4ToInt(ip);
+    const n = Number(bits);
+    if (b === null || i === null || !(n >= 0 && n <= 32)) return false;
+    if (n === 0) return true;
+    const mask = n === 32 ? 0xffffffff : (0xffffffff << (32 - n)) >>> 0;
+    return ((b & mask) >>> 0) === ((i & mask) >>> 0);
+  } catch { return false; }
+}
+function ipv6Groups(ip) {
+  const g = expandIPv6Groups(ip);
+  if (!g) return null;
+  try {
+    return g.map((part) => parseInt(part, 16));
+  } catch { return null; }
+}
+function v6InCidr(ip, cidr) {
+  // No BigInt: compare full 16-bit groups, then the partial-group mask.
+  try {
+    const parts = String(cidr).split("/");
+    const n = Number(parts[1]);
+    if (!(n >= 0 && n <= 128)) return false;
+    const b = ipv6Groups(parts[0]);
+    const a = ipv6Groups(ip);
+    if (!b || !a) return false;
+    if (b.some((x) => !Number.isInteger(x)) || a.some((x) => !Number.isInteger(x))) return false;
+    const full = Math.floor(n / 16);
+    const rem = n % 16;
+    for (let i = 0; i < full; i++) {
+      if (b[i] !== a[i]) return false;
+    }
+    if (rem > 0) {
+      const mask = (0xffff << (16 - rem)) & 0xffff;
+      if ((b[full] & mask) !== (a[full] & mask)) return false;
+    }
+    return true;
+  } catch { return false; }
+}
+async function cfEdgeRanges() {
+  const now = Date.now();
+  if (cfRangesCache.at && now - cfRangesCache.at < 3600000 && cfRangesCache.v4.length) {
+    return cfRangesCache;
+  }
+  const fetchList = async (url) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3500);
+    try {
+      const r = await fetch(url, { signal: ctrl.signal });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return String(await r.text()).split(/\s+/).map((s) => s.trim()).filter((s) => s.includes("/"));
+    } finally {
+      clearTimeout(t);
+    }
+  };
+  try {
+    const [v4, v6] = await Promise.all([
+      fetchList("https://www.cloudflare.com/ips-v4").catch(() => []),
+      fetchList("https://www.cloudflare.com/ips-v6").catch(() => []),
+    ]);
+    const out = {
+      at: now,
+      v4: v4.length ? v4 : CF_V4_FALLBACK,
+      v6: v6.length ? v6 : CF_V6_FALLBACK,
+    };
+    cfRangesCache = out;
+    return out;
+  } catch {
+    return { at: now, v4: CF_V4_FALLBACK, v6: CF_V6_FALLBACK };
+  }
+}
+
 export function routingTarget() {
   // SaaS CNAME target customers must point at (proxied, Cloudflare for SaaS).
   // INOCULENS account (inoculens.com): customers.inoculens.com -> proxy-fallback
@@ -939,12 +1038,12 @@ export async function verifyDns(domain, token, only = null) {
   // Cloudflare anycast note: an ALIAS/ANAME/flattened record pointing at the
   // SaaS target flattens to a *nearby* edge IP (e.g. 188.114.96.3 vs live
   // 188.114.96.0, or 2a06:98c1:3120::3 vs ::), not necessarily the exact IP
-  // returned for the target right now. Exact equality alone therefore rejects
-  // correctly-configured records (observed live: s.ghiveci.com ALIAS ->
-  // customers.inoculens.com shares /24 + /64 but no exact IP). Accept exact
-  // overlap OR same-/24 (IPv4) OR same-/64 (IPv6, first 4 groups expanded).
-  // TXT ownership is still required separately, so pointing at the shared
-  // edge alone never proves ownership.
+  // returned for the target right now — and cross-region POPs may share
+  // neither exact IP nor /24 (observed: prod Verify red while same-POP DoH
+  // shares /24). Accept exact overlap OR same-/24 (IPv4) OR same-/64 (IPv6)
+  // OR all-domain-IPs-inside-Cloudflare-edge-CIDRs (last resort; anycast
+  // region-proof). TXT ownership is still required separately, so pointing
+  // at the shared edge alone never proves ownership.
   let aliasAllOk = false;
   if (wantRouting && !checks.cname) {
     const [rA, rAaaa, rTA, rTAaaa] = await Promise.all([
@@ -982,7 +1081,26 @@ export async function verifyDns(domain, token, only = null) {
       const p = v6Prefix64(ip);
       return p && targetV6Net.has(p);
     });
-    if (v4Hit || v6Hit || v4NetHit || v6NetHit) {
+    let cfEdgeHit = false;
+    if (!v4Hit && !v6Hit && !v4NetHit && !v6NetHit) {
+      // Last resort: every domain address inside Cloudflare edge CIDRs while
+      // the live target also sits on Cloudflare edge. Region-proof (any POP),
+      // still gated by separate TXT ownership + SaaS hostname activation.
+      try {
+        const ranges = await cfEdgeRanges();
+        const domV4Clean = domV4.filter((ip) => ipv4ToInt(ip) !== null);
+        const domV6Clean = domV6.filter((ip) => ipv6Groups(ip) !== null);
+        const domV4Cf = domV4Clean.length > 0 && domV4Clean.every((ip) => ranges.v4.some((c) => v4InCidr(ip, c)));
+        const domV6Cf = domV6Clean.length > 0 && domV6Clean.every((ip) => ranges.v6.some((c) => v6InCidr(ip, c)));
+        const tgtV4Cf = [...targetV4].some((ip) => ranges.v4.some((c) => v4InCidr(ip, c)));
+        const tgtV6Cf = [...targetV6].some((ip) => ranges.v6.some((c) => v6InCidr(ip, c)));
+        cfEdgeHit = (domV4Cf && tgtV4Cf) || (domV6Cf && tgtV6Cf);
+        if (cfEdgeHit) {
+          try { console.error(`verifyDns(${domain}) alias pass via CF edge CIDR`); } catch { /* log-only */ }
+        }
+      } catch { /* fail-open to miss log below */ }
+    }
+    if (v4Hit || v6Hit || v4NetHit || v6NetHit || cfEdgeHit) {
       checks.cname = true;
       checks.alias = true;
       checks.routingMethod = "alias";
