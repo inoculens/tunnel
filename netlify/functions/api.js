@@ -368,9 +368,10 @@ async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, pa
       await s.setJSON(b.key, { ...l, sessionId: p.sessionId });
     });
   }
-  try {
-    if (cfConfig()) await cfDeleteCustomHostname(srcHost).catch(() => null);
-  } catch { /* best effort: abandoned host no longer serves links */ }
+  // NOTE: the abandoned host's SaaS hostname is intentionally KEPT (deleted
+  // only with the domain itself): resolvers cache the old ALIAS/CNAME IPs up
+  // to TTL, and deleting it turns that window from "still routes" into
+  // Cloudflare 530/1016. An orphan hostname is harmless and quota-cheap.
   await s.delete(`domain/${srcHost}`);
   return dest;
 }
