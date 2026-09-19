@@ -2271,6 +2271,11 @@ const actions = {
           dest.cfHostnameId = cf.id || dest.cfHostnameId || null;
           dest.cfHostnameStatus = cf.status || null;
           dest.cfSslStatus = cf.ssl?.status || null;
+          dest.cfSslMethod = cf.ssl?.method || dest.cfSslMethod || null;
+          const ov = cf.ownership_verification || null;
+          if (ov && ov.name && ov.value) {
+            dest.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
+          }
           dest.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : dest.dnsVerification.sslVerified;
         }
       }
@@ -2341,6 +2346,18 @@ const actions = {
       if (dest.isVerified && dest.paymentStatus === "paid" && coverageValid(dest)) {
         dest.status = "active";
         await ensureSaaSHostname(dest);
+        const cf = cfConfig() ? await cfGetCustomHostname(dest.domain) : null;
+        if (cf) {
+          dest.cfHostnameId = cf.id || dest.cfHostnameId || null;
+          dest.cfHostnameStatus = cf.status || null;
+          dest.cfSslStatus = cf.ssl?.status || null;
+          dest.cfSslMethod = cf.ssl?.method || dest.cfSslMethod || null;
+          const ov = cf.ownership_verification || null;
+          if (ov && ov.name && ov.value) {
+            dest.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
+          }
+          dest.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : dest.dnsVerification.sslVerified;
+        }
       }
       await s.setJSON(`domain/${dest.domain}`, dest);
       try {
@@ -2371,11 +2388,24 @@ const actions = {
       txtVerified: true,
       sslVerified: !!live.ssl,
       routable: live.routable ?? null,
+      routingMethod: live.routingMethod || null,
     };
     refreshCoverage(doc);
     if (doc.isVerified && doc.paymentStatus === "paid" && coverageValid(doc)) {
       doc.status = "active";
       await ensureSaaSHostname(doc);
+      const cf = cfConfig() ? await cfGetCustomHostname(doc.domain) : null;
+      if (cf) {
+        doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
+        doc.cfHostnameStatus = cf.status || null;
+        doc.cfSslStatus = cf.ssl?.status || null;
+        doc.cfSslMethod = cf.ssl?.method || doc.cfSslMethod || null;
+        const ov = cf.ownership_verification || null;
+        if (ov && ov.name && ov.value) {
+          doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
+        }
+        doc.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : doc.dnsVerification.sslVerified;
+      }
     } else if (doc.status === "active" && !coverageValid(doc)) {
       doc.status = "pending_verification";
     } else if (doc.isVerified && doc.paymentStatus === "paid" && coverageValid(doc)) {
