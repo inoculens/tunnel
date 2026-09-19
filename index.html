@@ -537,8 +537,8 @@
 
           <div id="cfOwnershipCard"
             style="display: none; padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); flex-direction: column;">
-            <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">TXT Record (Needed for, ALIAS/ANAME only)</label>
-            <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 8px;">Required when routing via ALIAS/ANAME at a zone apex where CNAME is illegal. Coexists with ALIAS (unlike CNAME). Add before payment — required to activate.</div>
+            <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">TXT Record (Needed for ALIAS / ANAME / flattened CNAME only)</label>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 8px;">Required when routing via ALIAS / ANAME / flattened CNAME at a zone apex where CNAME is illegal. Coexists with ALIAS (unlike CNAME). Add before payment — required to activate.</div>
             <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
               <div id="cfOwnershipName"
@@ -672,7 +672,7 @@
           <div id="withdrawalConsentNote" style="display: none; margin-top: 8px; font-size: 0.8rem; color: #f5a623;">Tick the box above to load your payment address.</div>
         </div>
 
-        <button class="modal-btn modal-btn-cancel" id="paymentBackBtn" onclick="showStep(2)"
+        <button class="modal-btn modal-btn-cancel" id="paymentBackBtn" onclick="showStep('verification')"
           style="width: 100%;">Back</button>
       </div>
     </div>
