@@ -7,7 +7,7 @@
  * Netlify runs this automatically thanks to the `config.schedule` export.
  * No cron service needed. Uses only the public mempool.space API.
  */
-import { store, listAll, cfConfig, cfEnsureCustomHostname, coverageValid, COVERAGE_YEAR_MS, freshGet, satsFromBtc, ignoredAddresses, markIgnored } from "./lib/util.js";
+import { store, listAll, cfConfig, cfEnsureSaaS, coverageValid, COVERAGE_YEAR_MS, freshGet, satsFromBtc, ignoredAddresses, markIgnored } from "./lib/util.js";
 
 export const config = { schedule: "@hourly" };
 
@@ -126,11 +126,11 @@ export async function handler(event) {
           d.paidAmount = paidBy.amount;
           if (paidBy.current && d.quote) d.quote.paidAt = new Date().toISOString();
           // Provision Cloudflare SaaS hostname so TLS issues immediately after payment.
-          // Method follows routing: ALIAS/ANAME apex stays txt (CNAME illegal at
-          // apex), CNAME stays http — never revert after the user paid.
+          // Single SaaS policy (see cfEnsureSaaS): http first, txt only on the
+          // CNAME signal — never revert an active hostname after the user paid.
           if (cfConfig() && d.isVerified) {
             try {
-              const cf = await cfEnsureCustomHostname(d.domain, d.dnsVerification?.routingMethod === "alias" ? "txt" : "http");
+              const cf = await cfEnsureSaaS(d.domain, d.dnsVerification?.routingMethod || null);
               if (cf) {
                 d.cfHostnameId = cf.id || null;
                 d.cfHostnameStatus = cf.status || null;

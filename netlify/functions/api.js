@@ -29,7 +29,8 @@ import {
   sslDelegationTarget,
   cfConfig,
   cfGetCustomHostname,
-  cfEnsureCustomHostname,
+  cfEnsureSaaS,
+  cfNeedsTxt,
   cfDeleteCustomHostname,
   btcUsdPrice,
   quoteFor,
@@ -201,12 +202,11 @@ async function ensureSaaSHostname(doc) {
   if (!cfConfig()) return null;
   if (!(doc.dnsVerification?.cnameValid && doc.dnsVerification?.txtVerified)) return null;
   if (doc.paymentStatus !== "paid") return null;
-  // ALIAS/ANAME apex (routingMethod alias, CNAME illegal at delegated apex)
-  // must use TXT SaaS validation (_cf-custom-hostname coexists with ALIAS);
-  // CNAME hosts keep HTTP (no extra record). See cfEnsureCustomHostname.
-  const wantMethod = doc.dnsVerification?.routingMethod === "alias" ? "txt" : "http";
+  // Single SaaS policy (see cfEnsureSaaS): http first, txt only when SaaS
+  // reports the CNAME problem. Orange/proxied CNAMEs classifying as alias on
+  // the wire keep working http with no extra TXT step.
   try {
-    const cf = await cfEnsureCustomHostname(doc.domain, wantMethod);
+    const cf = await cfEnsureSaaS(doc.domain, doc.dnsVerification?.routingMethod || null);
     if (cf) {
       doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
       doc.cfHostnameStatus = cf.status || null;
@@ -2574,15 +2574,17 @@ const actions = {
     // Pre-payment CF ownership surfacing for ALIAS/ANAME apex (CNAME illegal
     // at delegated zone apex): the _cf-custom-hostname TXT must be visible
     // BEFORE payment/activation, or users hit pending/530 with no guidance.
-    // Read-only fetch when alias routing detected; creation (to obtain the
+    // Read-only fetch when alias routing detected; creation (to obtain a
     // token when none exists) only once DNS-proven (routing + our TXT) to
-    // avoid quota burn from unverified callers. Owner-only path (needOwned).
+    // avoid quota burn from unverified callers. SaaS policy itself stays
+    // http-first (see cfEnsureSaaS): true apex-A migrates to txt on the CNAME
+    // signal, working proxied CNAMEs never gain a card. Owner-only (needOwned).
     const aliasHere = doc.dnsVerification?.routingMethod === "alias";
     if (aliasHere && cfConfig()) {
       try {
         let cfLive = await cfGetCustomHostname(doc.domain).catch(() => null);
         if (!cfLive && cnameValid && txtVerified) {
-          cfLive = await cfEnsureCustomHostname(doc.domain, "txt").catch(() => null);
+          cfLive = await cfEnsureSaaS(doc.domain, "alias").catch(() => null);
         }
         if (cfLive) {
           doc.cfHostnameId = cfLive.id || doc.cfHostnameId || null;
@@ -2819,13 +2821,16 @@ const actions = {
     }
     // ALIAS/ANAME apex: nothing technical may remain after payment — the
     // chain must be fully green before any money moves, then 1 confirmation
-    // activates automatically. CNAME/http needs no extra record, but alias/txt
-    // requires the SaaS hostname ACTIVE (ownership TXT added + verified).
-    // Exact prefix the frontend matches on — keep stable.
+    // activates automatically. CNAME/http needs no extra record; true apex-A
+    // (SaaS reporting the CNAME problem) requires the hostname ACTIVE via its
+    // ownership TXT. Working proxied CNAMEs classifying as alias on the wire
+    // pass through with no card and no block. Exact prefixes below — keep stable.
     if ((dns.routingMethod || null) === "alias" && cfConfig()) {
       let cf = await cfGetCustomHostname(doc.domain).catch(() => null);
       if (!cf && dns.cnameValid && dns.txtVerified) {
-        cf = await cfEnsureCustomHostname(doc.domain, "txt").catch(() => null);
+        cf = await cfEnsureSaaS(doc.domain, "alias").catch(() => null);
+      } else if (cf && cfNeedsTxt(cf)) {
+        cf = await cfEnsureSaaS(doc.domain, "alias").catch(() => cf);
       }
       if (cf) {
         doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
@@ -2840,7 +2845,10 @@ const actions = {
       }
       const st = (cf && cf.status) || doc.cfHostnameStatus || null;
       if (st !== "active") {
-        return fail(412, "failed-precondition", "CLOUDFLARE_TXT_REQUIRED: add the shown _cf-custom-hostname TXT and Re-verify until Cloudflare is active, then continue to payment.");
+        const hasOv = !!(doc.cfOwnershipVerification?.name && doc.cfOwnershipVerification?.value);
+        return fail(412, "failed-precondition", hasOv
+          ? "CLOUDFLARE_TXT_REQUIRED: add the shown _cf-custom-hostname TXT and Re-verify until Cloudflare is active, then continue to payment."
+          : "CLOUDFLARE_PENDING: Cloudflare is still activating this hostname — wait a moment and Re-verify, then continue to payment.");
       }
     }
     const consentBlock = await withdrawalConsentGate(s, doc, p, "requesting a payment address");
@@ -3664,7 +3672,7 @@ const actions = {
           if (c.current && doc.quote) doc.quote.paidAt = new Date().toISOString();
           if (cfConfig() && doc.isVerified) {
             try {
-              const cf = await cfEnsureCustomHostname(doc.domain, doc.dnsVerification?.routingMethod === "alias" ? "txt" : "http");
+              const cf = await cfEnsureSaaS(doc.domain, doc.dnsVerification?.routingMethod || null);
               if (cf) {
                 doc.cfHostnameId = cf.id || null;
                 doc.cfHostnameStatus = cf.status || null;

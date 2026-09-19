@@ -916,30 +916,32 @@ export async function cfEnsureCustomHostname(domain, sslMethod = "http") {
   const want = sslMethod === "txt" ? "txt" : "http";
   const existing = await cfGetCustomHostname(d);
   if (existing) {
-    // ALIAS/ANAME apex (CNAME illegal at zone apex, e.g. delegated s.ghiveci.com
-    // in ClouDNS) can never satisfy HTTP validation ("does not CNAME to this
-    // zone" -> status moved, HTTP 530). TXT ownership (_cf-custom-hostname,
-    // coexists with ALIAS at apex unlike CNAME) activates those without
-    // Enterprise Apex Proxying. Migrate http -> txt when needed.
+    // One-way upgrade only: http -> txt for true apex-A setups (CNAME illegal
+    // at zone apex, e.g. delegated s.ghiveci.com in ClouDNS). Never downgrade
+    // txt -> http: an active txt hostname serves, and flipping it back would
+    // return it to moved/530. Which setups need txt is decided by SaaS state
+    // (see cfNeedsTxt/cfEnsureSaaS), never by DNS shape alone — a Cloudflare
+    // flattened/proxied CNAME classifies as alias on the wire but validates
+    // fine over http and must not gain an extra TXT step.
     const cur = String(existing.ssl?.method || "http").toLowerCase();
-    if (cur !== want) {
+    if (want === "txt" && cur !== "txt") {
       try {
         const patched = await cfFetch(`/custom_hostnames/${existing.id}`, {
           method: "PATCH",
-          body: { ssl: { method: want, type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } } },
+          body: { ssl: { method: "txt", type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } } },
         });
         return patched || existing;
       } catch (e) {
-        console.error(`cfEnsureCustomHostname(${d}) patch to ${want} failed:`, e?.message || e);
+        console.error(`cfEnsureCustomHostname(${d}) patch to txt failed:`, e?.message || e);
         return existing;
       }
     }
     return existing;
   }
   // HTTP validation: no extra customer record beyond the CNAME to ROUTING_TARGET.
-  // TXT validation: for ALIAS/ANAME apex, user adds _cf-custom-hostname TXT
-  // (coexists with ALIAS). Certificates auto-issue once ownership proves;
-  // downtime is a few minutes max.
+  // TXT validation: only for true apex-A (see cfEnsureSaaS); its
+  // _cf-custom-hostname TXT coexists with ALIAS. Certificates auto-issue once
+  // ownership proves; downtime is a few minutes max.
   return cfFetch(`/custom_hostnames`, {
     method: "POST",
     body: {
@@ -947,6 +949,37 @@ export async function cfEnsureCustomHostname(domain, sslMethod = "http") {
       ssl: { method: want, type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } },
     },
   });
+}
+
+// True when SaaS explicitly reports the CNAME problem (apex-A without
+// Enterprise Apex Proxying): status moved, or verification errors naming
+// CNAME. Pending without errors is indeterminate (fresh http still
+// evaluating) — never a migrate signal on its own.
+export function cfNeedsTxt(cf) {
+  if (!cf) return false;
+  try {
+    if (String(cf.status || "").toLowerCase() === "moved") return true;
+    const errs = Array.isArray(cf.verification_errors) ? cf.verification_errors.join(" ") : "";
+    return /CNAME/i.test(errs);
+  } catch { return false; }
+}
+
+// Single SaaS policy for every caller: http first (create or as-is, never
+// downgrades), migrate to txt only when routing is alias AND SaaS reports
+// the CNAME problem. Orange/proxied CNAMEs classifying as alias on the wire
+// keep working http with no extra TXT step.
+export async function cfEnsureSaaS(domain, routingMethod = null) {
+  const d = cleanDomain(domain);
+  if (!d) throw Object.assign(new Error("Invalid domain name."), { statusCode: 400, code: "invalid-argument" });
+  let cf = await cfGetCustomHostname(d);
+  if (!cf) {
+    cf = await cfEnsureCustomHostname(d, "http");
+  }
+  if (!cf) return null;
+  if ((routingMethod || null) === "alias" && cfNeedsTxt(cf)) {
+    cf = await cfEnsureCustomHostname(d, "txt");
+  }
+  return cf;
 }
 
 export async function cfDeleteCustomHostname(domain) {

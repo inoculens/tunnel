@@ -3919,7 +3919,9 @@
           return;
         }
         loadingState.style.display = 'block';
-        if (err && err.code === 'failed-precondition' && err.message && err.message.includes('CLOUDFLARE_TXT_REQUIRED')) {
+        if (err && err.code === 'failed-precondition' && err.message && err.message.includes('CLOUDFLARE_PENDING')) {
+          loadingState.innerHTML = '<span style="color: #f5a623;">Cloudflare is still activating — wait a moment and Re-verify, then continue.</span>';
+        } else if (err && err.code === 'failed-precondition' && err.message && err.message.includes('CLOUDFLARE_TXT_REQUIRED')) {
           loadingState.innerHTML = '<span style="color: #f5a623;">Cloudflare TXT required before payment — add the shown _cf-custom-hostname TXT and Re-verify.</span>';
           showCustomModal({
             title: "Cloudflare TXT Required",
