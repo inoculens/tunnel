@@ -855,7 +855,8 @@ export async function verifyDns(domain, token, only = null) {
   // Routing is valid via ANY of: standard CNAME, ALIAS, ANAME, or flattened
   // CNAME — all point the hostname at the SaaS target. ALIAS/ANAME/flattened
   // never appear as a wire type (authoritative servers synthesize A/AAAA),
-  // so they are proven by address equality with the live target (see below).
+  // so they are proven by edge-pool overlap with the live target (exact IP
+  // OR same-/24 for v4, same-/64 for v6 — see below).
   // `checks.cname` stays the routing-valid flag for backward compat; the
   // specific mechanism travels in `checks.routingMethod` + `checks.alias`.
   const acceptedTargets = new Set([target]);
@@ -910,10 +911,17 @@ export async function verifyDns(domain, token, only = null) {
   // types resolve server-side and present as plain A/AAAA on the wire, so a
   // visible-CNAME lookup can never see them. If no CNAME matched above, accept
   // when the hostname resolves to the same live edge addresses as the SaaS
-  // target (IPv4 OR IPv6 overlap). Queries run together; target + domain are
-  // read at the same moment so edge rotation cannot false-negative across
-  // sequential lookups. TXT ownership is still required separately, so pointing
-  // at the shared edge alone never proves ownership.
+  // target. Queries run together; target + domain are read at the same moment
+  // so edge rotation cannot false-negative across sequential lookups.
+  // Cloudflare anycast note: an ALIAS/ANAME/flattened record pointing at the
+  // SaaS target flattens to a *nearby* edge IP (e.g. 188.114.96.3 vs live
+  // 188.114.96.0, or 2a06:98c1:3120::3 vs ::), not necessarily the exact IP
+  // returned for the target right now. Exact equality alone therefore rejects
+  // correctly-configured records (observed live: s.ghiveci.com ALIAS ->
+  // customers.inoculens.com shares /24 + /64 but no exact IP). Accept exact
+  // overlap OR same-/24 (IPv4) OR same-/64 (IPv6, first 4 groups expanded).
+  // TXT ownership is still required separately, so pointing at the shared
+  // edge alone never proves ownership.
   let aliasAllOk = false;
   if (wantRouting && !checks.cname) {
     const [rA, rAaaa, rTA, rTAaaa] = await Promise.all([
@@ -925,13 +933,33 @@ export async function verifyDns(domain, token, only = null) {
     aliasAllOk = rA.ok && rAaaa.ok && rTA.ok && rTAaaa.ok;
     const normV4 = (v) => String(v || "").trim();
     const normV6 = (v) => String(v || "").trim().toLowerCase().replace(/\.$/, "");
+    const v4Prefix24 = (ip) => {
+      const m = String(ip || "").trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (!m) return null;
+      const oct = m.slice(1, 5).map(Number);
+      if (oct.some((n) => !(n >= 0 && n <= 255))) return null;
+      return `${oct[0]}.${oct[1]}.${oct[2]}`;
+    };
+    const v6Prefix64 = (ip) => {
+      const g = expandIPv6Groups(ip);
+      if (!g) return null;
+      return g.slice(0, 4).join(":");
+    };
     const targetV4 = new Set(rTA.answers.map(normV4).filter(Boolean));
     const targetV6 = new Set(rTAaaa.answers.map(normV6).filter(Boolean));
     const domV4 = rA.answers.map(normV4);
     const domV6 = rAaaa.answers.map(normV6);
     const v4Hit = targetV4.size > 0 && domV4.some((ip) => targetV4.has(ip));
     const v6Hit = targetV6.size > 0 && domV6.some((ip) => targetV6.has(ip));
-    if (v4Hit || v6Hit) {
+    // Same-edge-pool fallback for flattened records (see note above).
+    const targetV4Net = new Set([...targetV4].map(v4Prefix24).filter(Boolean));
+    const targetV6Net = new Set([...targetV6].map(v6Prefix64).filter(Boolean));
+    const v4NetHit = targetV4Net.size > 0 && domV4.some((ip) => targetV4Net.has(v4Prefix24(ip)));
+    const v6NetHit = targetV6Net.size > 0 && domV6.some((ip) => {
+      const p = v6Prefix64(ip);
+      return p && targetV6Net.has(p);
+    });
+    if (v4Hit || v6Hit || v4NetHit || v6NetHit) {
       checks.cname = true;
       checks.alias = true;
       checks.routingMethod = "alias";
