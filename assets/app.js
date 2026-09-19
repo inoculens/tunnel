@@ -2256,6 +2256,22 @@
         if (txtTokenEl) txtTokenEl.textContent = txtToken;
         if (txtHostEl) txtHostEl.textContent = txtHost;
 
+        // Cloudflare SaaS ownership TXT (ALIAS/ANAME apex only, where CNAME is
+        // illegal at the zone apex). Coexists with ALIAS; issued after payment
+        // when routingMethod is alias (see backend ensureSaaSHostname).
+        try {
+          const cfName = (domainDoc.instructions && domainDoc.instructions.cfOwnershipName)
+            || (domainDoc.cloudflare && domainDoc.cloudflare.ownershipVerification && domainDoc.cloudflare.ownershipVerification.name) || '';
+          const cfValue = (domainDoc.instructions && domainDoc.instructions.cfOwnershipValue)
+            || (domainDoc.cloudflare && domainDoc.cloudflare.ownershipVerification && domainDoc.cloudflare.ownershipVerification.value) || '';
+          const cfCard = document.getElementById('cfOwnershipCard');
+          const cfNameEl = document.getElementById('cfOwnershipName');
+          const cfValueEl = document.getElementById('cfOwnershipValue');
+          if (cfNameEl) cfNameEl.textContent = cfName;
+          if (cfValueEl) cfValueEl.textContent = cfValue;
+          if (cfCard) cfCard.style.display = (cfName && cfValue) ? 'flex' : 'none';
+        } catch (e) { /* ownership card optional */ }
+
         // Routing target (SaaS) — backend-driven, never hardcoded.
         // INOCULENS account: customers.inoculens.com (proxied SaaS target).
         // Accepts CNAME, ALIAS, ANAME, or flattened CNAME — all verified via

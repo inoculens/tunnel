@@ -535,6 +535,36 @@
             </div>
           </div>
 
+          <div id="cfOwnershipCard"
+            style="display: none; padding: 10px 12px; background: rgba(0, 0, 0, 0.32); border-radius: 8px; border: 1px solid var(--border); flex-direction: column;">
+            <label style="font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 8px;">TXT Record (Cloudflare activation, ALIAS/ANAME only)</label>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 8px;">Required when routing via ALIAS/ANAME at a zone apex where CNAME is illegal. Coexists with ALIAS (unlike CNAME). Add after payment.</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Name/Host:</div>
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+              <div id="cfOwnershipName"
+                style="font-family: monospace; font-size: 0.8rem; color: #8ab4ff; background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;"></div>
+              <button class="copy-btn" onclick="copyTextFromElement('cfOwnershipName')" title="Copy Host"
+                style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2-2v1"></path>
+                </svg>
+              </button>
+            </div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Value:</div>
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+              <div id="cfOwnershipValue"
+                style="font-family: monospace; font-size: 0.8rem; color: var(--text); background: #000; padding: 8px; border-radius: 4px; flex: 1; word-break: break-all;"></div>
+              <button class="copy-btn" onclick="copyTextFromElement('cfOwnershipValue')" title="Copy Value"
+                style="background: rgba(255,255,255,0.1); border: none; padding: 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2-2v1"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+
           <div style="font-size: 0.78rem; color: var(--text-muted); text-align: center; padding: 4px 0 0;">🔒 SSL is automatic via Cloudflare and may take a while to become available.</div>
         </div>
 

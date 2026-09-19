@@ -201,12 +201,21 @@ async function ensureSaaSHostname(doc) {
   if (!cfConfig()) return null;
   if (!(doc.dnsVerification?.cnameValid && doc.dnsVerification?.txtVerified)) return null;
   if (doc.paymentStatus !== "paid") return null;
+  // ALIAS/ANAME apex (routingMethod alias, CNAME illegal at delegated apex)
+  // must use TXT SaaS validation (_cf-custom-hostname coexists with ALIAS);
+  // CNAME hosts keep HTTP (no extra record). See cfEnsureCustomHostname.
+  const wantMethod = doc.dnsVerification?.routingMethod === "alias" ? "txt" : "http";
   try {
-    const cf = await cfEnsureCustomHostname(doc.domain);
+    const cf = await cfEnsureCustomHostname(doc.domain, wantMethod);
     if (cf) {
       doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
       doc.cfHostnameStatus = cf.status || null;
       doc.cfSslStatus = cf.ssl?.status || null;
+      doc.cfSslMethod = cf.ssl?.method || wantMethod;
+      const ov = cf.ownership_verification || null;
+      if (ov && ov.name && ov.value) {
+        doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
+      }
     }
     return cf;
   } catch (e) {
@@ -566,6 +575,8 @@ async function domainInfo(doc, viewerSessionId = null) {
       hostnameId: doc.cfHostnameId || null,
       hostnameStatus: doc.cfHostnameStatus || null,
       sslStatus: doc.cfSslStatus || null,
+      sslMethod: doc.cfSslMethod || null,
+      ownershipVerification: doc.cfOwnershipVerification || null,
     },
     instructions: {
       cnameTarget: route,
@@ -577,6 +588,9 @@ async function domainInfo(doc, viewerSessionId = null) {
       sslCnameName: `_acme-challenge.${doc.domain}`,
       dcvTarget: dcvDelegationTargetFor(doc.domain),
       routingTarget: route,
+      ...(doc.cfOwnershipVerification?.name && doc.cfOwnershipVerification?.value && isOwner
+        ? { cfOwnershipName: doc.cfOwnershipVerification.name, cfOwnershipValue: doc.cfOwnershipVerification.value }
+        : {}),
     },
   };
 }
@@ -2514,6 +2528,11 @@ const actions = {
         doc.cfHostnameId = cf.id || doc.cfHostnameId || null;
         doc.cfHostnameStatus = cf.status || null;
         doc.cfSslStatus = cf.ssl?.status || null;
+        doc.cfSslMethod = cf.ssl?.method || doc.cfSslMethod || null;
+        const ov = cf.ownership_verification || null;
+        if (ov && ov.name && ov.value) {
+          doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
+        }
         doc.dnsVerification.sslVerified = cf.ssl?.status === "active" ? true : doc.dnsVerification.sslVerified;
       }
       // Active requires ownership + payment + live coverage. TLS (cfSslStatus active) is reported

@@ -811,18 +811,41 @@ export async function cfGetCustomHostname(domain) {
   }
 }
 
-export async function cfEnsureCustomHostname(domain) {
+export async function cfEnsureCustomHostname(domain, sslMethod = "http") {
   const d = cleanDomain(domain);
   if (!d) throw Object.assign(new Error("Invalid domain name."), { statusCode: 400, code: "invalid-argument" });
+  const want = sslMethod === "txt" ? "txt" : "http";
   const existing = await cfGetCustomHostname(d);
-  if (existing) return existing;
+  if (existing) {
+    // ALIAS/ANAME apex (CNAME illegal at zone apex, e.g. delegated s.ghiveci.com
+    // in ClouDNS) can never satisfy HTTP validation ("does not CNAME to this
+    // zone" -> status moved, HTTP 530). TXT ownership (_cf-custom-hostname,
+    // coexists with ALIAS at apex unlike CNAME) activates those without
+    // Enterprise Apex Proxying. Migrate http -> txt when needed.
+    const cur = String(existing.ssl?.method || "http").toLowerCase();
+    if (cur !== want) {
+      try {
+        const patched = await cfFetch(`/custom_hostnames/${existing.id}`, {
+          method: "PATCH",
+          body: { ssl: { method: want, type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } } },
+        });
+        return patched || existing;
+      } catch (e) {
+        console.error(`cfEnsureCustomHostname(${d}) patch to ${want} failed:`, e?.message || e);
+        return existing;
+      }
+    }
+    return existing;
+  }
   // HTTP validation: no extra customer record beyond the CNAME to ROUTING_TARGET.
-  // Certificates auto-issue once the hostname points at us; downtime is a few minutes max.
+  // TXT validation: for ALIAS/ANAME apex, user adds _cf-custom-hostname TXT
+  // (coexists with ALIAS). Certificates auto-issue once ownership proves;
+  // downtime is a few minutes max.
   return cfFetch(`/custom_hostnames`, {
     method: "POST",
     body: {
       hostname: d,
-      ssl: { method: "http", type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } },
+      ssl: { method: want, type: "dv", bundle_method: "ubiquitous", wildcard: false, settings: { min_tls_version: "1.2" } },
     },
   });
 }

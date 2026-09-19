@@ -11,9 +11,15 @@
 #       -> Worker tunnel-custom-host (*/* route) -> https://s.inoculens.com/<code>
 #   Customers (ANY hostname, apex or subdomain — each is an independent
 #   setup with its own payment): CNAME — or ALIAS / ANAME / flattened CNAME
-#   (all verified via visible CNAME or live A/AAAA equality, IPv4 or IPv6)
+#   (CNAME verified directly; ALIAS/ANAME/flattened via live edge-pool overlap
+#   same-/24 v4 or same-/64 v6, since flattening returns nearby anycast IPs).
 #     <custom> -> customers.inoculens.com
 #              TXT verification.<custom> -> <token> (ownership)
+#   SaaS validation splits by routing: CNAME hosts use HTTP (no extra record);
+#   ALIAS/ANAME apex hosts (CNAME illegal at delegated zone apex, e.g. ClouDNS
+#   free without flattened CNAME) use TXT ownership _cf-custom-hostname.<custom>
+#   (coexists with ALIAS, shown after payment) — otherwise Cloudflare reports
+#   "moved / does not CNAME" + HTTP 530 without Enterprise Apex Proxying.
 #   Fallback pairing (IP safety net, uniform rule): for ANY entered host X, one
 #   doc serves short links from the canonical www.X while X itself 301s to it
 #   via A/AAAA -> 65.21.184.101 / 2a01:4f9:c012:a304::1 (redirect edge, proven
