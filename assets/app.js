@@ -2713,6 +2713,21 @@
           }
         }
 
+        // Cloudflare SaaS ownership TXT (ALIAS/ANAME apex): paint from Verify
+        // response so it appears pre-payment, not only after activation.
+        try {
+          const cfN = (data && data.cfOwnershipName) || '';
+          const cfV = (data && data.cfOwnershipValue) || '';
+          const card = document.getElementById('cfOwnershipCard');
+          const nEl = document.getElementById('cfOwnershipName');
+          const vEl = document.getElementById('cfOwnershipValue');
+          if (cfN && cfV) {
+            if (nEl) nEl.textContent = cfN;
+            if (vEl) vEl.textContent = cfV;
+            if (card) card.style.display = 'flex';
+          }
+        } catch (e) { /* card optional */ }
+
         updateContinueButton();
         refreshDiscountWindowState();
       }
@@ -6052,7 +6067,7 @@
                 ? "This domain's coverage has lapsed — its links stopped resolving. Renew with a new promo code or the $10/year fee to reactivate everything.<br><br>Choose Manage Domain to renew."
                 : unroutable
                   ? `${escapeHTML(error.message)}<br><br>Choose Manage Domain to re-verify routing.`
-                  : "The custom domain you selected is not fully verified or paid. Please complete the following steps:<br><br>1. CNAME your domain to customers.inoculens.com<br>2. Add the TXT ownership record<br>3. Complete payment (SSL provisions automatically)<br><br>Choose Manage Domain to continue verification.",
+                  : "The custom domain you selected is not fully verified or paid. Please complete the following steps:<br><br>1. Point your domain to customers.inoculens.com (CNAME, or ALIAS/ANAME at a zone apex where CNAME is illegal)<br>2. Add the TXT ownership record (plus the shown Cloudflare TXT for ALIAS/ANAME)<br>3. Complete payment (SSL provisions automatically)<br><br>Choose Manage Domain to continue verification.",
               confirmText: "Manage Domain",
               showCancel: true,
               cancelText: "Close"

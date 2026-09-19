@@ -2541,6 +2541,31 @@ const actions = {
       // validation completes in minutes); strict TLS gating would strand paid users.
       if (coverageValid(doc)) doc.status = "active";
     }
+    // Pre-payment CF ownership surfacing for ALIAS/ANAME apex (CNAME illegal
+    // at delegated zone apex): the _cf-custom-hostname TXT must be visible
+    // BEFORE payment/activation, or users hit pending/530 with no guidance.
+    // Read-only fetch when alias routing detected; creation (to obtain the
+    // token when none exists) only once DNS-proven (routing + our TXT) to
+    // avoid quota burn from unverified callers. Owner-only path (needOwned).
+    const aliasHere = doc.dnsVerification?.routingMethod === "alias";
+    if (aliasHere && cfConfig()) {
+      try {
+        let cfLive = await cfGetCustomHostname(doc.domain).catch(() => null);
+        if (!cfLive && cnameValid && txtVerified) {
+          cfLive = await cfEnsureCustomHostname(doc.domain, "txt").catch(() => null);
+        }
+        if (cfLive) {
+          doc.cfHostnameId = cfLive.id || doc.cfHostnameId || null;
+          doc.cfHostnameStatus = cfLive.status || doc.cfHostnameStatus || null;
+          doc.cfSslStatus = cfLive.ssl?.status || doc.cfSslStatus || null;
+          doc.cfSslMethod = cfLive.ssl?.method || doc.cfSslMethod || null;
+          const ov = cfLive.ownership_verification || null;
+          if (ov && ov.name && ov.value) {
+            doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
+          }
+        }
+      } catch { /* display-only, never blocks verify */ }
+    }
     await s.setJSON(`domain/${doc.domain}`, doc);
     return ok({
       success: true,
@@ -2550,6 +2575,9 @@ const actions = {
       checks: { cname: cnameValid, txt: txtVerified, ssl: !!doc.dnsVerification.sslVerified, routable, routingMethod: doc.dnsVerification.routingMethod || null },
       cfHostnameStatus: doc.cfHostnameStatus || live.cfHostnameStatus || null,
       cfSslStatus: doc.cfSslStatus || live.cfSslStatus || null,
+      ...(doc.cfOwnershipVerification?.name && doc.cfOwnershipVerification?.value
+        ? { cfOwnershipName: doc.cfOwnershipVerification.name, cfOwnershipValue: doc.cfOwnershipVerification.value }
+        : {}),
       status: doc.status,
       paymentStatus: doc.paymentStatus,
       coverageExpiresAt: doc.coverageExpiresAt || null,

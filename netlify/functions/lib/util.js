@@ -986,6 +986,16 @@ export async function verifyDns(domain, token, only = null) {
       checks.cname = true;
       checks.alias = true;
       checks.routingMethod = "alias";
+    } else {
+      // Debug aid for prod false negatives (no tokens logged): shows whether
+      // the miss was exact-only or pool-wide (e.g. cross-region anycast).
+      try {
+        console.error(
+          `verifyDns(${domain}) alias miss: domV4=[${domV4.join(",")}] tgtV4=[${[...targetV4].join(",")}] ` +
+          `domV4Net=[${domV4.map(v4Prefix24).join(",")}] tgtV4Net=[${[...targetV4Net].join(",")}] ` +
+          `domV6Net=[${domV6.map(v6Prefix64).join(",")}] tgtV6Net=[${[...targetV6Net].join(",")}]`
+        );
+      } catch { /* log-only */ }
     }
   }
 
