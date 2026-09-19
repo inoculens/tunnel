@@ -126,13 +126,20 @@ export async function handler(event) {
           d.paidAmount = paidBy.amount;
           if (paidBy.current && d.quote) d.quote.paidAt = new Date().toISOString();
           // Provision Cloudflare SaaS hostname so TLS issues immediately after payment.
+          // Method follows routing: ALIAS/ANAME apex stays txt (CNAME illegal at
+          // apex), CNAME stays http — never revert after the user paid.
           if (cfConfig() && d.isVerified) {
             try {
-              const cf = await cfEnsureCustomHostname(d.domain);
+              const cf = await cfEnsureCustomHostname(d.domain, d.dnsVerification?.routingMethod === "alias" ? "txt" : "http");
               if (cf) {
                 d.cfHostnameId = cf.id || null;
                 d.cfHostnameStatus = cf.status || null;
                 d.cfSslStatus = cf.ssl?.status || null;
+                d.cfSslMethod = cf.ssl?.method || d.cfSslMethod || null;
+                const ov = cf.ownership_verification || null;
+                if (ov && ov.name && ov.value) {
+                  d.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
+                }
               }
             } catch (e) {
               console.error(`SaaS ensure failed for ${d.domain}:`, e?.message || e);

@@ -3664,11 +3664,16 @@ const actions = {
           if (c.current && doc.quote) doc.quote.paidAt = new Date().toISOString();
           if (cfConfig() && doc.isVerified) {
             try {
-              const cf = await cfEnsureCustomHostname(doc.domain);
+              const cf = await cfEnsureCustomHostname(doc.domain, doc.dnsVerification?.routingMethod === "alias" ? "txt" : "http");
               if (cf) {
                 doc.cfHostnameId = cf.id || null;
                 doc.cfHostnameStatus = cf.status || null;
                 doc.cfSslStatus = cf.ssl?.status || null;
+                doc.cfSslMethod = cf.ssl?.method || doc.cfSslMethod || null;
+                const ov = cf.ownership_verification || null;
+                if (ov && ov.name && ov.value) {
+                  doc.cfOwnershipVerification = { name: String(ov.name), value: String(ov.value) };
+                }
               }
             } catch (e) {
               console.error(`SaaS ensure failed for ${doc.domain}:`, e?.message || e);
