@@ -252,13 +252,39 @@ function effectiveDisplayLabel(d) {
 // stone: exit must never morph it into the canonical). Fresh DNS state +
 // fresh token on arrival (new names need new records); SaaS hostname of the
 // abandoned host is dropped best-effort.
+// Full stone-history set for a domain doc: its own host plus every
+// previously-abandoned host (single-field chain + full history array).
+// Readers must use this helper so multi-hop moves (S1→S2→S1→S2) never drop
+// the oldest hosts from sweeps, moves, or serving checks.
+function stoneHostsForDoc(doc) {
+  const set = new Set();
+  const add = (v) => {
+    const x = String(v || "").toLowerCase();
+    if (x) set.add(x);
+  };
+  if (!doc) return set;
+  add(doc.domain);
+  add(doc.apexSource);
+  add(doc.movedFrom);
+  add(doc.movedFromChain);
+  try {
+    if (Array.isArray(doc.movedFromHistory)) {
+      for (const h of doc.movedFromHistory) add(h);
+    }
+  } catch { /* ignore */ }
+  return set;
+}
+
 async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, paired, redirect }) {
   const delegation = sslDelegationTarget();
   const now = Date.now();
-  // Preserve stone history: the new entry keeps owning the abandoned host's
-  // rows (plus any older chain) until an independent setup occupies it, so
-  // delete sweeps and transfers never orphan links behind.
-  const prevMoved = (typeof srcDoc.movedFrom === "string" && srcDoc.movedFrom) ? srcDoc.movedFrom.toLowerCase() : null;
+  // Preserve full stone history: the new entry keeps owning every abandoned
+  // host's rows until an independent setup occupies it, so delete sweeps and
+  // transfers never orphan links behind. movedFromChain stays as compat for
+  // older readers; movedFromHistory carries the complete chain.
+  const prevChain = [...stoneHostsForDoc(srcDoc)].filter(
+    (h) => h && h !== String(srcHost || "").toLowerCase() && h !== String(destHost || "").toLowerCase()
+  );
   const dest = {
     domain: destHost,
     displayName: display || destHost,
@@ -266,7 +292,7 @@ async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, pa
     // owning that host's rows (delete sweeps it, transfers move it) until an
     // independent setup occupies it.
     movedFrom: srcHost,
-    ...(prevMoved && prevMoved !== String(srcHost || "").toLowerCase() && prevMoved !== String(destHost || "").toLowerCase() ? { movedFromChain: prevMoved } : {}),
+    ...(prevChain.length ? { movedFromChain: prevChain[0], movedFromHistory: prevChain.slice(0, 20) } : {}),
     sessionId: p.sessionId,
     status: "pending_verification",
     paymentStatus: srcDoc.paymentStatus === "paid" ? "paid" : "unpaid",
@@ -300,12 +326,11 @@ async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, pa
   // A paired entry owns BOTH hosts' rows (plus any stone chain): move every
   // related host's links, not just the abandoned host, so the source session
   // is left clean and no www/apex ghost rows linger behind. Hosts occupied
-  // by an independent live doc are never touched.
+  // by an independent live doc are never touched. Two passes close the race
+  // where a link is minted between the list and the move (issue #1).
   const ownedHosts = new Set([String(srcHost || "").toLowerCase(), String(destHost || "").toLowerCase()]);
   try {
-    if (srcDoc.apexSource) ownedHosts.add(String(srcDoc.apexSource).toLowerCase());
-    if (srcDoc.movedFrom) ownedHosts.add(String(srcDoc.movedFrom).toLowerCase());
-    if (srcDoc.movedFromChain) ownedHosts.add(String(srcDoc.movedFromChain).toLowerCase());
+    for (const h of stoneHostsForDoc(srcDoc)) ownedHosts.add(h);
     if (redirect) ownedHosts.add(String(redirect).toLowerCase());
     const w1 = (() => { try { return fallbackCanonicalFor(srcHost); } catch { return null; } })();
     if (w1) ownedHosts.add(String(w1).toLowerCase());
@@ -313,7 +338,6 @@ async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, pa
     if (a1) ownedHosts.add(String(a1).toLowerCase());
   } catch { /* srcHost only */ }
   ownedHosts.delete("");
-  const linkBlobs = await listAll(s, "link/");
   // Resolve occupancy once so independent setups' rows are never stolen.
   const occupants = new Map();
   for (const h of ownedHosts) {
@@ -323,20 +347,25 @@ async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, pa
       if (occ) occupants.set(h, true);
     } catch { /* treat as unoccupied */ }
   }
-  const doomedLinks = linkBlobs.filter((b) => {
-    const k = String(b.key || "").toLowerCase();
+  const matchesOwned = (key) => {
+    const k = String(key || "").toLowerCase();
     for (const h of ownedHosts) {
       if (!h || occupants.has(h)) continue;
       if (k.startsWith(`link/${h}/`)) return true;
     }
     return false;
-  });
-  await mapWithConcurrency(doomedLinks, 12, async (b) => {
-    const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
-    if (!l || !l.code) return;
-    if (l.sessionId === p.sessionId) return;
-    await s.setJSON(b.key, { ...l, sessionId: p.sessionId });
-  });
+  };
+  for (let pass = 0; pass < 2; pass++) {
+    const linkBlobs = await listAll(s, "link/");
+    const doomedLinks = linkBlobs.filter((b) => matchesOwned(b.key));
+    if (!doomedLinks.length) break;
+    await mapWithConcurrency(doomedLinks, 12, async (b) => {
+      const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
+      if (!l || !l.code) return;
+      if (l.sessionId === p.sessionId) return;
+      await s.setJSON(b.key, { ...l, sessionId: p.sessionId });
+    });
+  }
   try {
     if (cfConfig()) await cfDeleteCustomHostname(srcHost).catch(() => null);
   } catch { /* best effort: abandoned host no longer serves links */ }
@@ -801,9 +830,36 @@ const actions = {
     const sessionDoc = sessionRes.value;
 
     let code;
+    // Twin-slug guard: the same slug on a counterpart host owned by this
+    // session would be unreachable (serving-host wins, the other stays
+    // invisible) — refuse with a clear message instead of minting a ghost.
+    // Different sessions may reuse slugs freely (resolve isolates by owner).
+    const counterpartHosts = (() => {
+      const out = [];
+      try {
+        const w = fallbackCanonicalFor(host);
+        if (w && w.toLowerCase() !== host.toLowerCase()) out.push(w.toLowerCase());
+      } catch { /* ignore */ }
+      try {
+        const a = apexForWww(host);
+        if (a && a.toLowerCase() !== host.toLowerCase() && !out.includes(a.toLowerCase())) out.push(a.toLowerCase());
+      } catch { /* ignore */ }
+      return out.slice(0, 2);
+    })();
+    const slugTakenOnTwin = async (slug) => {
+      for (const cHost of counterpartHosts) {
+        const other = await getLink(s, cHost, slug).catch(() => null);
+        if (other && other.sessionId === sessionId) return cHost;
+      }
+      return null;
+    };
     if (cleanSlug) {
       if (!validSlug(cleanSlug)) {
-        const e = new Error("Custom slugs must be 1–60 chars: letters, numbers, - _");
+        const e = new Error(
+          String(cleanSlug).includes(".")
+            ? "Slugs cannot contain dots (they would never resolve as short links) — use - or _ instead."
+            : "Custom slugs must be 1–60 chars: letters, numbers, - _"
+        );
         e.statusCode = 400;
         e.code = "invalid-argument";
         throw e;
@@ -815,12 +871,21 @@ const actions = {
         e.code = "already-exists";
         throw e;
       }
+      const twinHost = await slugTakenOnTwin(cleanSlug);
+      if (twinHost) {
+        const e = new Error(`That slug is already used on ${twinHost} in this session — pick another slug or delete the twin link first.`);
+        e.statusCode = 409;
+        e.code = "already-exists";
+        throw e;
+      }
       code = cleanSlug;
     } else {
       code = null;
       for (let i = 0; i < 10 && !code; i++) {
         const c = newCode(8);
-        if (!(await getLink(s, host, c))) code = c;
+        if (await getLink(s, host, c)) continue;
+        if (await slugTakenOnTwin(c)) continue;
+        code = c;
       }
       if (!code) {
         const e = new Error("Could not allocate a short code, try again.");
@@ -840,10 +905,16 @@ const actions = {
       const usable =
         doc && doc.sessionId === sessionId && doc.status === "active" && coverageValid(doc);
       if (!usable) {
-        const lapsed = doc && doc.sessionId === sessionId && !coverageValid(doc);
-        const e = new Error(lapsed
-          ? "Domain coverage expired — renew the domain (new code or $10/year) to create new links."
-          : "permission-denied");
+        const owned = doc && doc.sessionId === sessionId;
+        // Distinguish "no usable edge address" from "payment lapsed": a
+        // typo'd routing target must never read as an expired subscription.
+        const unroutable = owned && (doc.dnsVerification || {}).routable === false;
+        const lapsed = owned && !coverageValid(doc);
+        const e = new Error(unroutable
+          ? "Domain does not resolve to Tunnel edge — fix the routing target (CNAME/ALIAS/ANAME) or wait for propagation, then try again."
+          : lapsed
+            ? "Domain coverage expired — renew the domain (new code or $10/year) to create new links."
+            : "permission-denied");
         e.statusCode = 403;
         e.code = "permission-denied";
         throw e;
@@ -1186,18 +1257,26 @@ const actions = {
       return fail(400, "invalid-argument", "Invalid session pair.");
     }
     await Promise.all([needSession(s, oldSessionId), needSession(s, newSessionId)]);
-    const links = await listLinksOfSession(s, oldSessionId);
-    await mapWithConcurrency(links, 12, (l) => {
-      l.sessionId = newSessionId;
-      // Keys are (host, code): derive the host from the stored doc, falling
-      // back to the link URL itself so the key can never go missing.
-      let lh = l.domain;
-      if (!lh) {
-        try { lh = new URL(l.short).hostname; } catch { lh = ""; }
-        l.domain = lh;
-      }
-      return s.setJSON(linkKey(lh, l.code), l);
-    });
+    // Two passes close the race where a link is minted mid-merge.
+    let links = [];
+    for (let pass = 0; pass < 2; pass++) {
+      const batch = (await listLinksOfSession(s, oldSessionId)).filter(
+        (l) => !links.some((k) => k.code === l.code && (k.domain || "") === (l.domain || ""))
+      );
+      if (!batch.length) break;
+      await mapWithConcurrency(batch, 12, (l) => {
+        l.sessionId = newSessionId;
+        // Keys are (host, code): derive the host from the stored doc, falling
+        // back to the link URL itself so the key can never go missing.
+        let lh = l.domain;
+        if (!lh) {
+          try { lh = new URL(l.short).hostname; } catch { lh = ""; }
+          l.domain = lh;
+        }
+        return s.setJSON(linkKey(lh, l.code), l);
+      });
+      links = links.concat(batch);
+    }
     // Custom domains belong to the session too: move them along so a merge
     // transfers everything (links + domains). Hostnames are unique docs, so
     // no conflicts are possible. Past promo redemptions stay recorded.
@@ -2008,7 +2087,19 @@ const actions = {
     const proofHost = recommendedPair ? redirectHostFull : doc.domain;
     const live = await verifyDns(proofHost, doc.pendingClaim.token).catch(() => ({
       cname: false, txt: false, ssl: false, routable: null, routingMethod: null, alias: false,
+      routingUnknown: true, txtUnknown: true,
     }));
+    // DNS outage during transfer is UNKNOWN, not proof of absence: report
+    // stale so the UI keeps badges instead of failing the claim.
+    if (live.routingUnknown === true && live.txtUnknown === true) {
+      return ok({
+        success: false,
+        isVerified: false,
+        stale: true,
+        checks: { cname: false, txt: false, routable: null, routingMethod: null },
+        status: doc.status,
+      });
+    }
     // Pairing is doc-driven under the uniform rule: an already-paired doc
     // requires its stored redirect host too; unpaired docs need routing +
     // TXT only. Claimant intent params can no longer add a pairing (that
@@ -2279,15 +2370,12 @@ const actions = {
     await s.setJSON(`domain/${doc.domain}`, doc);
     // Move links (history + stats follow: clicks/ keyed by host/code).
     // A paired entry owns both hosts' rows (links stay on their minted host —
-    // set in stone — only the session changes). The count is reported so the
+    // set in stone — only the session changes). Two passes close the race
+    // where a link is minted mid-transfer. The count is reported so the
     // UI can say exactly what moved — a silent zero-move success is
     // indistinguishable from a broken transfer otherwise.
     let movedLinks = 0;
     try {
-      const blobs = await listAll(s, "link/");
-      const docs = await mapWithConcurrency(blobs, 12, (b) =>
-        freshGet(s, b.key, { type: "json" }).catch(() => null)
-      );
       const moveHosts = new Set([doc.domain.toLowerCase()]);
       // A host joins the move only while no live doc occupies it — an
       // independent setup's rows must never change session.
@@ -2303,8 +2391,7 @@ const actions = {
         const rh = (typeof doc.apexSource === "string" && doc.apexSource) ||
           (doc.isApexFlow === true ? apexForWww(doc.domain) : null);
         await maybeMove(rh);
-        await maybeMove(doc.movedFrom);
-        await maybeMove(doc.movedFromChain);
+        for (const h of stoneHostsForDoc(doc)) await maybeMove(h);
         // Uniform counterparts so no ghost rows linger on either side.
         try {
           const w0 = fallbackCanonicalFor(doc.domain);
@@ -2315,22 +2402,30 @@ const actions = {
           }
         } catch { /* doc + known hosts only */ }
       } catch { /* doc host only */ }
-      const mine = docs.filter((l) => {
-        if (!l) return false;
-        const h = (l.domain || "").toLowerCase();
-        if (moveHosts.has(h)) return true;
-        try { return moveHosts.has(new URL(l.short).hostname.toLowerCase()); } catch { return false; }
-      });
-      await mapWithConcurrency(mine, 12, (l) => {
-        l.sessionId = p.sessionId;
-        if (!l.domain) {
-          try { l.domain = new URL(l.short).hostname.toLowerCase(); } catch { /* keep */ }
-        }
-        return s.setJSON(linkKey(l.domain || doc.domain, l.code), l);
-      });
-      movedLinks = mine.length;
-      await bumpSessionLinkCount(s, p.sessionId, mine.length);
-      if (fromSid) await bumpSessionLinkCount(s, fromSid, -mine.length);
+      const moveMine = async () => {
+        const blobs = await listAll(s, "link/");
+        const docs = await mapWithConcurrency(blobs, 12, (b) =>
+          freshGet(s, b.key, { type: "json" }).catch(() => null)
+        );
+        const mine = docs.filter((l) => {
+          if (!l || l.sessionId === p.sessionId) return false;
+          const h = (l.domain || "").toLowerCase();
+          if (moveHosts.has(h)) return true;
+          try { return moveHosts.has(new URL(l.short).hostname.toLowerCase()); } catch { return false; }
+        });
+        await mapWithConcurrency(mine, 12, (l) => {
+          l.sessionId = p.sessionId;
+          if (!l.domain) {
+            try { l.domain = new URL(l.short).hostname.toLowerCase(); } catch { /* keep */ }
+          }
+          return s.setJSON(linkKey(l.domain || doc.domain, l.code), l);
+        });
+        return mine.length;
+      };
+      movedLinks += await moveMine();
+      movedLinks += await moveMine(); // second pass catches mid-transfer mints
+      await bumpSessionLinkCount(s, p.sessionId, movedLinks);
+      if (fromSid) await bumpSessionLinkCount(s, fromSid, -movedLinks);
     } catch (e) {
       console.error(`claim link move failed for ${doc.domain}:`, e?.message || e);
     }
@@ -2367,28 +2462,32 @@ const actions = {
       routingUnknown: true,
       txtUnknown: true,
     }));
-    // Fail-open on hiccups (per-field only): a transport failure is UNKNOWN,
-    // not negative — the stored badge survives and the UI reports stale. A
-    // definitive empty answer still flips the badge. Full mode ("all", payment
-    // gating and direct API calls) keeps the legacy fail-closed persist.
+    // Fail-open on hiccups: a transport failure is UNKNOWN, not negative —
+    // the stored badge survives and the UI reports stale. A definitive empty
+    // answer still flips the badge. Full mode ("all") keeps unknown parts on
+    // stored values too and reports stale when nothing live answered, so one
+    // DoH outage can no longer wipe both badges at payment time.
     const stale =
       (field === "cname" && live.routingUnknown === true) ||
-      (field === "txt" && live.txtUnknown === true);
+      (field === "txt" && live.txtUnknown === true) ||
+      (field === "all" && live.routingUnknown === true && live.txtUnknown === true);
     // routable: true = resolves to edge, false = definitively unservable as
     // configured, null = unknown (fail-open, never blocks on lookup hiccups).
     // Routing valid = CNAME OR ALIAS OR ANAME OR flattened CNAME (live.cname).
     const liveRoutable = live.routable === false ? false : live.routable === true ? true : null;
-    const routable = field === "txt" || (field === "cname" && stale)
+    const cnameUnknown = (field === "cname" || field === "all") && live.routingUnknown === true;
+    const txtUnknown = (field === "txt" || field === "all") && live.txtUnknown === true;
+    const routable = field === "txt" || cnameUnknown
       ? (stored.routable === false ? false : stored.routable === true ? true : null)
       : liveRoutable;
-    const cnameValid = field === "txt" || (field === "cname" && stale) ? !!stored.cnameValid : !!live.cname;
-    const txtVerified = field === "cname" || (field === "txt" && stale) ? !!stored.txtVerified : !!live.txt;
+    const cnameValid = field === "txt" || cnameUnknown ? !!stored.cnameValid : !!live.cname;
+    const txtVerified = field === "cname" || txtUnknown ? !!stored.txtVerified : !!live.txt;
     doc.dnsVerification = {
       cnameValid,
       txtVerified,
       sslVerified: field === "all" ? !!live.ssl : !!stored.sslVerified,
       routable,
-      routingMethod: field === "txt" || (field === "cname" && stale) ? (stored.routingMethod || null) : (live.routingMethod || null),
+      routingMethod: field === "txt" || cnameUnknown ? (stored.routingMethod || null) : (live.routingMethod || null),
     };
     if (field === "all") {
       if (live.cfHostnameStatus) doc.cfHostnameStatus = live.cfHostnameStatus;
@@ -2470,8 +2569,7 @@ const actions = {
         ? doc.apexSource.toLowerCase()
         : (doc.isApexFlow === true ? apexForWww(doc.domain) : null);
       await maybeSweep(redirect);
-      await maybeSweep(doc.movedFrom);
-      await maybeSweep(doc.movedFromChain);
+      for (const h of stoneHostsForDoc(doc)) await maybeSweep(h);
       // Uniform counterparts: a stone chain can reference either direction.
       try {
         const w0 = fallbackCanonicalFor(doc.domain);
@@ -2590,6 +2688,16 @@ const actions = {
     if (isSelfRootTarget(doc.domain, raw)) {
       return fail(400, "invalid-argument", "The destination cannot be this domain's own root (that would loop forever).");
     }
+    // Root destinations get the same safety screening as short links: a
+    // compromised root would otherwise redirect every bare-domain visitor.
+    try {
+      const verdict = await checkUrlSafety(s, raw);
+      if (verdict && verdict.safe === false) {
+        return fail(400, "invalid-argument", "ERR_UNSAFE_URL");
+      }
+    } catch (e) {
+      console.error("apex target safety check failed open:", e?.message || e);
+    }
     doc.apexTarget = raw;
     doc.apexUpdatedAt = new Date().toISOString();
     await s.setJSON(`domain/${doc.domain}`, doc);
@@ -2706,6 +2814,28 @@ const actions = {
     } else {
       doc.quote = { ...q, address, index: doc.quote.index };
     }
+    // Concurrent-mint merge: two simultaneous fresh mints can both read a
+    // null/stale quote and derive different addresses. Without a merge the
+    // second save would silently drop the first displayed address, stranding
+    // that payment. Re-read and retire any foreign quote we never saw.
+    try {
+      const latest = await freshGet(s, `domain/${doc.domain}`, { type: "json" }).catch(() => null);
+      const latestAddr = latest && latest.quote && latest.quote.address;
+      if (latestAddr && latestAddr !== doc.quote.address) {
+        doc.quoteHistory = Array.isArray(doc.quoteHistory) ? doc.quoteHistory : [];
+        if (!doc.quoteHistory.some((h) => h && h.address === latestAddr)) {
+          doc.quoteHistory.push({
+            address: latest.quote.address,
+            amount: latest.quote.amount,
+            index: latest.quote.index,
+            expiresAt: latest.quote.expiresAt,
+            supersededAt: new Date().toISOString(),
+            ...(latest.quote.discountPercent ? { discountPercent: latest.quote.discountPercent } : {}),
+          });
+          if (doc.quoteHistory.length > 50) doc.quoteHistory = doc.quoteHistory.slice(-50);
+        }
+      }
+    } catch { /* merge best-effort; clash loops below still guard dupes */ }
     await s.setJSON(`domain/${doc.domain}`, doc);
     // Post-save clash re-check (see model above): whoever saved second
     // re-issues. Derivation is deterministic, so a working xpub cannot start
@@ -3189,6 +3319,27 @@ const actions = {
     } else {
       doc.quote = { ...q, address, index: doc.quote.index };
     }
+    // Concurrent-mint merge (same as generatePaymentAddress): preserve a
+    // foreign quote saved between our read and write so its address stays
+    // credited.
+    try {
+      const latest = await freshGet(s, `domain/${doc.domain}`, { type: "json" }).catch(() => null);
+      const latestAddr = latest && latest.quote && latest.quote.address;
+      if (latestAddr && latestAddr !== doc.quote.address) {
+        doc.quoteHistory = Array.isArray(doc.quoteHistory) ? doc.quoteHistory : [];
+        if (!doc.quoteHistory.some((h) => h && h.address === latestAddr)) {
+          doc.quoteHistory.push({
+            address: latest.quote.address,
+            amount: latest.quote.amount,
+            index: latest.quote.index,
+            expiresAt: latest.quote.expiresAt,
+            supersededAt: new Date().toISOString(),
+            ...(latest.quote.discountPercent ? { discountPercent: latest.quote.discountPercent } : {}),
+          });
+          if (doc.quoteHistory.length > 50) doc.quoteHistory = doc.quoteHistory.slice(-50);
+        }
+      }
+    } catch { /* merge best-effort */ }
     await s.setJSON(`domain/${doc.domain}`, doc);
     // Post-save clash re-check: same simultaneous-issuance race as
     // generatePaymentAddress (see model above) — whoever saved second
@@ -3228,7 +3379,10 @@ const actions = {
     // Funds-in-flight guard: voiding discounted history while a discounted
     // payment is unconfirmed (or partially confirmed) would make that money
     // invisible forever. If ANY displayed address shows movement, refuse and
-    // tell the user to wait for confirmation first.
+    // tell the user to wait for confirmation first. Fail CLOSED on lookup
+    // outages: voiding history is irreversible, so an incomplete check must
+    // refuse rather than silently strand in-flight money.
+    let balanceCheckIncomplete = false;
     try {
       const addrs = [];
       if (doc.quote?.address) addrs.push(doc.quote.address);
@@ -3236,9 +3390,16 @@ const actions = {
         if (h?.address && h?.discountPercent) addrs.push(h.address);
       }
       for (const a of [...new Set(addrs)].slice(0, 5)) {
-        const res = await fetchWithTimeoutMs(`https://mempool.space/api/address/${encodeURIComponent(a)}`, 6000);
-        if (!res.ok) continue;
+        let res = null;
+        try {
+          res = await fetchWithTimeoutMs(`https://mempool.space/api/address/${encodeURIComponent(a)}`, 6000);
+        } catch {
+          balanceCheckIncomplete = true;
+          continue;
+        }
+        if (!res.ok) { balanceCheckIncomplete = true; continue; }
         const data = await res.json().catch(() => null);
+        if (!data) { balanceCheckIncomplete = true; continue; }
         const chain = (Number(data?.chain_stats?.funded_txo_sum) || 0) - (Number(data?.chain_stats?.spent_txo_sum) || 0);
         const mem = (Number(data?.mempool_stats?.funded_txo_sum) || 0) - (Number(data?.mempool_stats?.spent_txo_sum) || 0);
         if (chain > 0 || mem > 0) {
@@ -3247,8 +3408,10 @@ const actions = {
       }
     } catch (e) {
       console.error(`removeDiscountCode pre-check failed for ${doc.domain}:`, e?.message || e);
-      // Fail-closed here is wrong (price feed hiccup shouldn't trap users),
-      // but log loudly: the void below is irreversible for discounted history.
+      balanceCheckIncomplete = true;
+    }
+    if (balanceCheckIncomplete) {
+      return fail(503, "unavailable", "Balance check unavailable — could not verify no payment is in flight. Try again in a moment; nothing was changed.");
     }
     doc.discount = null;
     // Coverage follows the money, not the removed deal: a payment within

@@ -23,9 +23,31 @@
  * Query-param fallback (?c=, ?h=) is permanent for SaaS Worker proxies,
  * direct function hits, and deploy-skew safety.
  */
-import { store, newClickId, truncateIp, clickClientIp, isIpLiteral, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard, buildAppTargets, shouldServeInterstitial, fallbackCanonicalFor, apexForWww } from "./lib/util.js";
+import { store, newClickId, truncateIp, clickClientIp, isIpLiteral, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard, buildAppTargets, shouldServeInterstitial, fallbackCanonicalFor, apexForWww, checkRate, isStrongConsistencyError } from "./lib/util.js";
 
 const HOME = process.env.HOME_URL || "https://tunnel.inoculens.com/";
+
+// Strong read for security-relevant decisions (coverage/quarantine): edge
+// reads lag writes by seconds (up to ~60s for updates), so a just-lapsed or
+// just-quarantined link could otherwise keep serving. Falls back to the fast
+// path when strong consistency is unavailable on the runtime.
+async function strongGet(s, key, opts = {}) {
+  try {
+    const v = await s.get(key, { ...opts, consistency: "strong" });
+    if (v !== null && v !== undefined) return v;
+  } catch (e) {
+    try {
+      if (isStrongConsistencyError(e)) return await s.get(key, opts);
+    } catch { /* fall through to freshGet below */ }
+    // Non-consistency transport error: fall through to the cached read
+    // rather than failing the redirect outright.
+  }
+  try {
+    return await freshGet(s, key, opts);
+  } catch {
+    return null;
+  }
+}
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -105,8 +127,38 @@ export async function handler(event) {
   // proxies forward the original host via X-Forwarded-Host or ?h=.
   // Query-param fallback (?h=) is permanent: SaaS Worker, direct function
   // hits, and deploy-skew all depend on it.
-  const fwd = (lowered["x-forwarded-host"] || lowered["x-original-host"] || "").toString().split(",")[0].trim();
-  const rawHost = (lowered["x-tunnel-host"] || qs.h || fwd || lowered.host || "").toString().split(",")[0].trim().split(":")[0];
+  // Forged-host guard: anyone can hand-craft headers/?h= on a direct hit and
+  // enumerate another host's slugs. Contract: proxies asserting a host other
+  // than the arrival host must send x-tunnel-proxy-sig: TUNNEL_PROXY_SECRET.
+  // Mismatched claims without a valid signature fall back to the arrival
+  // host. Unset secret = legacy behavior (fail-open, plus miss rate limiting
+  // below). ROLLOUT: only set TUNNEL_PROXY_SECRET after the SaaS Worker (and
+  // any other proxy) actually sends x-tunnel-proxy-sig — otherwise legit
+  // custom traffic falls back to the arrival host and misses. The edge
+  // function enforces the same rule when deriving effHost.
+  const arrivalHost = (() => {
+    try {
+      return cleanDomain((lowered.host || "").toString().split(",")[0].trim().split(":")[0]);
+    } catch { return null; }
+  })();
+  const proxySigOk = (() => {
+    try {
+      const secret = process.env.TUNNEL_PROXY_SECRET || null;
+      if (!secret) return true;
+      const sig = (lowered["x-tunnel-proxy-sig"] || "").toString();
+      if (!sig || sig.length !== secret.length) return false;
+      let diff = 0;
+      for (let i = 0; i < secret.length; i++) diff |= secret.charCodeAt(i) ^ sig.charCodeAt(i);
+      return diff === 0;
+    } catch { return true; }
+  })();
+  const claimedHost = cleanDomain(
+    ((lowered["x-tunnel-host"] || qs.h || lowered["x-forwarded-host"] || lowered["x-original-host"] || "").toString().split(",")[0].trim().split(":")[0])
+  );
+  let rawHost;
+  if (!claimedHost) rawHost = (lowered.host || "").toString().split(",")[0].trim().split(":")[0];
+  else if (!arrivalHost || claimedHost === arrivalHost || proxySigOk) rawHost = claimedHost;
+  else rawHost = (lowered.host || "").toString().split(",")[0].trim().split(":")[0];
   const host = cleanDomain(rawHost);
   if (!host) {
     return { statusCode: 302, headers: { Location: HOME, "Cache-Control": "no-store" } };
@@ -164,6 +216,16 @@ export async function handler(event) {
     `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}` +
     `&h=${encodeURIComponent(host)}`;
   let link = await getWithRetry(s, linkKey(host, code), { type: "json" }, { attempts: 3, delayMs: 300 }).catch(() => null);
+  // Freshness re-check for quarantine: the fast path above can serve a
+  // seconds-stale copy missing a just-set quarantine flag. One strong read
+  // closes that window; on runtimes without strong support it degrades to
+  // the cached copy (platform-limited lag).
+  if (link && /^https?:\/\//.test(link.original || "")) {
+    try {
+      const freshLink = await strongGet(s, linkKey(host, code), { type: "json" });
+      if (freshLink && freshLink.code) link = freshLink;
+    } catch { /* keep the fast copy */ }
+  }
   // Paired-counterpart fallback (miss path only): a setup that moved between
   // recommended and fallback keeps its links on their minted host (set in
   // stone) while the entry owns both hosts' rows. The displayed short is
@@ -219,14 +281,16 @@ export async function handler(event) {
         const cand = await freshGet(s, linkKey(candHost, code), { type: "json" }).catch(() => null);
         if (!cand || !/^https?:\/\//.test(cand.original || "")) continue;
         const candLinkHost = String(cand.domain || candHost).toLowerCase();
-        // Ownership docs (bounded): prefer the serving entry, else the
-        // counterpart link's own entry. Missing docs fail open (legacy).
+        // Ownership docs via strong reads (bounded): prefer the serving
+        // entry, else the counterpart link's own entry. Doubly-missing docs
+        // mean orphan rows from a capped delete sweep — never serve those.
         let servDoc = null;
         let candDoc = null;
-        try { servDoc = await freshGet(s, `domain/${host}`, { type: "json" }).catch(() => null); } catch { servDoc = null; }
-        try { candDoc = await freshGet(s, `domain/${candLinkHost}`, { type: "json" }).catch(() => null); } catch { candDoc = null; }
+        try { servDoc = await strongGet(s, `domain/${host}`, { type: "json" }); } catch { servDoc = null; }
+        try { candDoc = await strongGet(s, `domain/${candLinkHost}`, { type: "json" }); } catch { candDoc = null; }
         const owner = servDoc || candDoc || null;
-        if (owner && !ownsBothHosts(owner, host, candLinkHost)) continue;
+        if (!owner) continue;
+        if (!ownsBothHosts(owner, host, candLinkHost)) continue;
         if (owner && cand.sessionId && owner.sessionId && cand.sessionId !== owner.sessionId) continue;
         if (owner && !coverageValid(owner)) continue;
         link = cand;
@@ -236,14 +300,24 @@ export async function handler(event) {
     } catch { /* fall through to 404 below */ }
   }
   if (!link || !/^https?:\/\//.test(link.original || "")) {
+    // Miss-path enumeration guard: unknown slugs cost the same 404, but a
+    // fast scanner burning through codes gets slowed to 429 past 60/min/IP.
+    // Legitimate mistypes never approach that budget.
+    try {
+      const missBucket = truncateIp(clickClientIp(event, host));
+      if (!(await checkRate(s, "resolve-miss", missBucket || "unknown", 60))) {
+        return { statusCode: 429, headers: { "Cache-Control": "no-store", "Retry-After": "60" }, body: "Too many attempts, wait a moment." };
+      }
+    } catch { /* fail open to the branded 404 below */ }
     return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
   }
 
   // Hard stop on lapsed coverage: links on custom domains whose payment
   // year / promo grant ran out behave as deleted (the branded 404 copy
   // already reads "Link Expired"). No click is logged — this was not a
-  // visit. System-host links are unaffected; a missing domain doc fails
-  // open (link deletion cascades, so this should not happen).
+  // visit. System-host links are unaffected. Orphan rows (custom link whose
+  // domain doc is gone — e.g. left behind by a capped delete sweep) never
+  // serve: strong reads distinguish a deleted doc from edge lag.
   // Fallback hits already validated their owning entry during selection;
   // re-check it here (no extra read) so lapsed pairs hard-stop on both hosts.
   if (fallbackOwner) {
@@ -251,8 +325,17 @@ export async function handler(event) {
       return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
     }
   } else if (link.domain && link.domain !== systemShortHost()) {
-    const doc = await freshGet(s, `domain/${link.domain}`, { type: "json" }).catch(() => null);
-    if (doc && !coverageValid(doc)) {
+    const doc = await strongGet(s, `domain/${link.domain}`, { type: "json" }).catch(() => null);
+    if (!doc) {
+      return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
+    }
+    if (!coverageValid(doc)) {
+      return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
+    }
+  } else if (!link.domain && host !== systemShortHost()) {
+    // Legacy rows without a domain field are gated on the serving host.
+    const doc = await strongGet(s, `domain/${host}`, { type: "json" }).catch(() => null);
+    if (!doc || !coverageValid(doc)) {
       return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
     }
   }
@@ -290,8 +373,11 @@ export async function handler(event) {
         ...(fullIp ? { fullIp } : {}),
       });
     } else {
-      await s.setJSON(`${clicksPrefix(linkHost, link.code)}flood-${Date.now().toString(36)}`, {
-        id: `flood-${Date.now().toString(36)}`,
+      // Random suffix: ms-precision timestamps alone collide under bursts
+      // (last-wins undercounted flood rows). Shard totals stay exact.
+      const floodRand = Math.random().toString(36).slice(2, 10);
+      await s.setJSON(`${clicksPrefix(linkHost, link.code)}flood-${Date.now().toString(36)}-${floodRand}`, {
+        id: `flood-${Date.now().toString(36)}-${floodRand}`,
         timestamp: Date.now(),
         ip: truncIp,
         ...(fullIp ? { fullIp } : {}),

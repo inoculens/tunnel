@@ -66,12 +66,39 @@ export default async (request, context) => {
   // validated SaaS-forwarded host (?h= / X-Forwarded-Host from the Worker —
   // custom-domain traffic arrives here as s.inoculens.com), else arrival.
   // Strict checks keep header values byte-safe (headers.set throws on CRLF).
+  // Forged-host guard (mirrors resolve.js): a forwarded host differing from
+  // arrival is only honored with x-tunnel-proxy-sig: TUNNEL_PROXY_SECRET.
+  // Unset/unreadable secret = legacy behavior (fail-open).
   const fwdH = url.searchParams.get("h")
     || request.headers.get("x-forwarded-host")
     || request.headers.get("x-original-host")
     || "";
   const fwdHost = fwdH.split(",")[0].trim().toLowerCase();
-  const effHost = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(fwdHost) && fwdHost.length <= 253
+  const proxySecret = (() => {
+    try {
+      if (typeof Netlify !== "undefined" && Netlify.env && typeof Netlify.env.get === "function") {
+        const v = Netlify.env.get("TUNNEL_PROXY_SECRET");
+        if (v) return v;
+      }
+    } catch { /* fall through */ }
+    try {
+      const v = globalThis?.process?.env?.TUNNEL_PROXY_SECRET;
+      if (v) return v;
+    } catch { /* fall through */ }
+    return null;
+  })();
+  const proxySigOkEdge = (() => {
+    if (!proxySecret) return true;
+    try {
+      const sig = request.headers.get("x-tunnel-proxy-sig") || "";
+      if (!sig || sig.length !== proxySecret.length) return false;
+      let diff = 0;
+      for (let i = 0; i < proxySecret.length; i++) diff |= proxySecret.charCodeAt(i) ^ sig.charCodeAt(i);
+      return diff === 0;
+    } catch { return true; }
+  })();
+  const fwdValid = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(fwdHost) && fwdHost.length <= 253;
+  const effHost = (fwdValid && (fwdHost === host || proxySigOkEdge))
     ? fwdHost
     : host;
 

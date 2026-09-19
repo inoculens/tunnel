@@ -49,6 +49,31 @@ export async function handler(event) {
         console.error(`safety rescan failed for ${link.code}:`, e?.message || e);
       }
     }
+    // Root routing targets get the same screening: an unsafe apexTarget is
+    // cleared so bare-domain visitors land on the app home instead of malware.
+    // Bounded like the link scan; failures fail open (next hour retries).
+    try {
+      const domainBlobs = await listAll(s, "domain/");
+      const domainDocs = await mapWithConcurrency(domainBlobs.slice(0, 500), 12, (b) =>
+        freshGet(s, b.key, { type: "json" }).catch(() => null)
+      );
+      for (const d of domainDocs) {
+        try {
+          if (!d || typeof d.apexTarget !== "string" || !d.apexTarget) continue;
+          const verdict = await checkUrlSafety(s, String(d.apexTarget));
+          if (verdict && verdict.safe === false) {
+            console.error(`safety rescan clearing unsafe apexTarget on ${d.domain}: ${verdict.reason}`);
+            d.apexTarget = null;
+            d.apexUpdatedAt = new Date().toISOString();
+            await s.setJSON(`domain/${d.domain}`, d);
+          }
+        } catch (e) {
+          console.error(`safety apex rescan failed for ${d && d.domain}:`, e?.message || e);
+        }
+      }
+    } catch (e) {
+      console.error("safety apex rescan failed:", e?.message || e);
+    }
   } catch (e) {
     console.error("safety watcher failed:", e);
     return { statusCode: 500, body: "safety watcher error" };

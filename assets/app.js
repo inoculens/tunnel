@@ -509,7 +509,7 @@
         } catch (e) {}
         // Just-created flow before the domain list reloads.
         try {
-          if (window._apexFlow === true && window._apexName && typeof wwwForApexInput === 'function'
+          if ((window._apexFlow === true || window._fallbackIntent === true) && window._apexName && typeof wwwForApexInput === 'function'
             && wwwForApexInput(window._apexName) === w) return String(window._apexName).toLowerCase();
         } catch (e) {}
         return null;
@@ -552,7 +552,9 @@
       // anything else missing is server truth — deleted elsewhere — and
       // drops on the spot, so refresh shows the latest state. Confirmed
       // and over-age just-created keys are pruned here. Items from other
-      // sessions (stale cache after a session switch) are dropped.
+      // sessions (stale cache after a session switch) are dropped, as are
+      // legacy rows with no session at all (pre-session cache entries must
+      // never haunt a newly loaded session).
       function mergeServerLinks(serverLinks, sid) {
         const server = Array.isArray(serverLinks) ? serverLinks : [];
         const seen = new Set();
@@ -572,6 +574,10 @@
         for (const it of (Array.isArray(currentLinks) ? currentLinks : [])) {
           if (!it) continue;
           if (sid && it.sessionId && it.sessionId !== sid) continue;
+          // Legacy cache rows without any session predate session scoping:
+          // they belong to no session, so they never survive a server sync
+          // into a session — otherwise they haunt every newly loaded session.
+          if (!it.sessionId) continue;
           let k = '';
           try { k = itemKey(it); } catch (e) { continue; }
           if (seen.has(k)) continue;
@@ -736,6 +742,7 @@
           window._docIsPaired = false;
           window._fallbackOpen = false;
           window._fallbackFor = '';
+          window._fallbackIntent = false;
           window._claimFallback = false;
           window._claimCanonical = null;
         } catch (e) {}
@@ -958,9 +965,12 @@
       // this, a selection left pointing at the retired host mints into a 403
       // ("Domain Not Active") and the history filter shows an empty list while
       // the moved links sit under the new host. Selections pointing at live
-      // hosts are never touched.
+      // hosts are never touched. Skipped until the domain list has settled —
+      // reconciling against a pre-settle (possibly empty) list would mistake
+      // every live host for retired and yank the user's selection.
       function reconcileSelections(canon) {
         if (!canon) return;
+        if (!window._domainsSettled) return;
         try {
           const known = new Set(['s.inoculens.com']);
           (userCustomDomains || []).forEach((d) => {
@@ -979,8 +989,17 @@
       function reconcileAfterHostChange(resultDomain) {
         const canon = String(resultDomain || '').toLowerCase();
         if (!canon) return;
-        reconcileSelections(canon);
-        try { renderHistory(currentLinks); } catch (e) {}
+        // Settle first so the known-host set below is truthful; otherwise a
+        // pre-settle reconcile is skipped inside reconcileSelections anyway.
+        const run = () => {
+          try { reconcileSelections(canon); } catch (e) {}
+          try { renderHistory(currentLinks); } catch (e) {}
+        };
+        try {
+          if (!window._domainsSettled && typeof ensureDomainsSettled === 'function') {
+            Promise.resolve(ensureDomainsSettled()).catch(() => {}).then(run);
+          } else run();
+        } catch (e) { run(); }
         // One delayed pass to outlast Blobs tombstone lag: a just-deleted doc
         // can otherwise ghost back into the list for a few seconds and leave
         // the selections dangling again.
@@ -1007,17 +1026,30 @@
         const existingOptions = dropdown.querySelectorAll('.domain-option:not(.add-new)');
         existingOptions.forEach(opt => opt.remove());
 
-        // Twin warning (legacy/residual rows predating the creation guards):
-        // two setups sharing one label render identically and links may land
-        // on either. Non-interactive; points at Manage (which routes each row
-        // by its canonical host) so one of them can be deleted.
+        // Twin warning: two setups sharing one display label render the same
+        // label but mint/serve on different canonical hosts. List each label
+        // with its canonical hosts so support tickets can tell twins apart;
+        // Manage routes each row by canonical host.
         try {
           const twins = window._domainTwins || [];
           if (Array.isArray(twins) && twins.length) {
+            const canonForLabel = (label) => {
+              try {
+                return (userCustomDomains || [])
+                  .filter((d) => d && String(d.displayName || d.domain || '').toLowerCase() === String(label || '').toLowerCase())
+                  .map((d) => String(d.domain || '').toLowerCase())
+                  .filter(Boolean)
+                  .sort();
+              } catch (e) { return []; }
+            };
+            const twinLines = twins.slice(0, 3).map((t) => {
+              const hosts = canonForLabel(t);
+              return hosts.length > 1 ? `${t} (${hosts.join(' + ')})` : String(t);
+            });
             const warnOpt = document.createElement('div');
             warnOpt.className = 'domain-option';
             warnOpt.style.cursor = 'default';
-            warnOpt.innerHTML = `<span style="white-space: normal; font-size: 0.75rem; color: #fbd665;">⚠️ ${escapeHTML(twins.slice(0, 3).join(', '))}${twins.length > 3 ? ` (+${twins.length - 3} more)` : ''} appears more than once — open each via Manage and delete the setup you don't need.</span>`;
+            warnOpt.innerHTML = `<span style="white-space: normal; font-size: 0.75rem; color: #fbd665;">⚠️ ${escapeHTML(twinLines.join(', '))}${twins.length > 3 ? ` (+${twins.length - 3} more)` : ''} appears more than once — open each via Manage (canonical host shown there) and delete the setup you don't need.</span>`;
             dropdown.insertBefore(warnOpt, document.getElementById('dropdownAddNew'));
           }
         } catch (e) {}
@@ -1224,6 +1256,7 @@
         window._docIsPaired = false;
         window._fallbackOpen = false;
         window._fallbackFor = '';
+        window._fallbackIntent = false;
         const apexCard0 = document.getElementById('apexRedirectCard');
         if (apexCard0) apexCard0.style.display = 'none';
         syncExitFallbackRow();
@@ -1252,6 +1285,7 @@
         window._docIsPaired = false;
         window._fallbackOpen = false;
         window._fallbackFor = '';
+        window._fallbackIntent = false;
         resetConsentBox();
         showStep('loading');
       }
@@ -1581,6 +1615,8 @@
         window._apexName = '';
         window._docIsPaired = false;
         window._fallbackOpen = false;
+        window._fallbackFor = '';
+        window._fallbackIntent = false;
         pendingDomain = rawDomain;
         // Typed label for the claim modal (set in stone): what the user
         // entered is what the claim proves first, same as adding fresh.
@@ -2125,6 +2161,12 @@
               try { closeDomainManager(); } catch (e) {}
             });
           } else {
+            // Lookup hiccup: badges keep stored state — never report the
+            // domain as misconfigured for a transport failure.
+            if (res.data && res.data.stale === true) {
+              showCustomModal({ title: "Lookup hiccup", message: "DNS lookup failed — nothing changed. Try Verify Claim again in a moment." });
+              return;
+            }
             // Name redirect records only for fallback flows (backend echoes
             // isApexFlow on fallback failures); primaries keep routing text.
             // Intent-scoped: main-flow _apexFlow is never read here.
@@ -2229,10 +2271,22 @@
         // Display name lives on the domain docs (displayName) and renders via
         // displayHost(); no window-local copy needed.
         if (domainDoc.isApexFlow === true && domainDoc.apex) window._apexName = domainDoc.apex;
-        // Apex primaries are first-class (ALIAS/ANAME/flattened): never show
-        // the old "delete and re-add" note. Naked domains work directly.
+        // Twin notice: same display label on two canonical hosts. Name the
+        // canonical host this setup verifies so the user configures DNS on
+        // the right name (records below are for this host only).
         const apexNote = document.getElementById('apexNote');
-        if (apexNote) apexNote.style.display = 'none';
+        try {
+          const myLabel = String(domainDoc.displayName || domainName || '').toLowerCase();
+          const twinOther = (userCustomDomains || []).some((x) => x &&
+            String(x.domain || '').toLowerCase() !== String(domainName || '').toLowerCase() &&
+            String(x.displayName || x.domain || '').toLowerCase() === myLabel);
+          if (apexNote) {
+            if (twinOther) {
+              apexNote.textContent = `Note: “${myLabel}” exists twice in this session — this setup verifies the ${String(domainName).toLowerCase()} records shown below.`;
+              apexNote.style.display = 'block';
+            } else apexNote.style.display = 'none';
+          }
+        } catch (e) { if (apexNote) apexNote.style.display = 'none'; }
 
         // Fallback pairing (IP safety net): one doc covers an entered host X
         // plus its canonical www.X — redirect A/AAAA on X, routing on www.X.
@@ -2532,7 +2586,10 @@
               return !!c && c.style.display !== 'none';
             } catch (e) { return false; }
           })();
-          const pairedGating = window._docIsPaired === true || window._apexFlow === true;
+          // Server truth only: an optimistic intent that never confirmed must
+          // not gate a primary. An explicitly opened fallback card still gates
+          // via visibility below.
+          const pairedGating = window._docIsPaired === true;
           // Require the redirect only when it is actually part of this setup:
           // a backend-paired doc, or an explicitly opened fallback card.
           // Primaries with no visible card never wait for it.
@@ -2581,8 +2638,22 @@
         try {
           const el = document.getElementById('coverageStatus');
           if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+          // The verified banner is sticky state, not coverage state: keep it
+          // painted while the domain is verified + active + routable, instead
+          // of blanking it on every Continue-button sync.
           const vs = document.getElementById('verificationStatus');
-          if (vs) { vs.style.display = 'none'; vs.innerHTML = ''; }
+          if (vs) {
+            const showBanner = window.domainIsVerified === true && window.domainIsActive === true &&
+              (!window.domainCoverage || window.domainCoverage.lifetime === true || window.domainCoverage.valid === true) &&
+              verificationState.routable !== false;
+            if (showBanner) {
+              vs.innerHTML = '<div style="background: rgba(43, 166, 64, 0.12); border: 1px solid rgba(43, 166, 64, 0.4); color: #6fcf7f; padding: 10px; border-radius: 8px; text-align: center;"><b>Domain Ownership Verified</b></div>';
+              vs.style.display = 'block';
+            } else {
+              vs.style.display = 'none';
+              vs.innerHTML = '';
+            }
+          }
         } catch (e) {}
       }
 
@@ -2852,6 +2923,7 @@
           window._docIsPaired = false;
           window._fallbackOpen = false;
           window._fallbackFor = '';
+          window._fallbackIntent = false;
           updateApexStatusUI(null);
           await loadUserDomains();
           try { upsertUserDomain(data); } catch (e) {}
@@ -2941,7 +3013,11 @@
         const enteredViaRedirectHere = String(currentDomain || pendingDomain || '').toLowerCase() === redirect;
         window._fallbackOpen = true;
         window._fallbackFor = www;
-        window._apexFlow = true;
+        // Intent only — never assert pairing before the server confirms it.
+        // Gating keys off the visible card + server truth (_docIsPaired), so
+        // a failed/cancelled fallback open can never strand a primary behind
+        // a redirect check it never asked for.
+        window._fallbackIntent = true;
         window._apexName = redirect;
         setFallbackBusy(true);
         const attemptFallback = async (turnstileToken, extra) => {
@@ -2984,6 +3060,8 @@
           }
           if (data.domain) { pendingDomain = data.domain; currentDomain = data.domain; }
           if (data.isApexFlow === true) { window._apexFlow = true; window._docIsPaired = true; }
+          else { window._apexFlow = false; window._docIsPaired = false; }
+          window._fallbackIntent = false;
           if (data.apex) window._apexName = data.apex;
           await loadUserDomains();
           try { upsertUserDomain(data); } catch (e) {}
@@ -3028,6 +3106,8 @@
           // apex redirect that was never actually opened.
           window._fallbackOpen = false;
           window._fallbackFor = '';
+          window._fallbackIntent = false;
+          window._apexFlow = false;
         } finally {
           window._tsRetried = false;
           setFallbackBusy(false);
@@ -3276,11 +3356,12 @@
           if ((window._fallbackFor || '') !== String(domain || '').toLowerCase()) {
             window._fallbackOpen = false;
             window._fallbackFor = '';
+            window._fallbackIntent = false;
           }
           window._apexFlow = false;
           window._apexName = '';
           window._docIsPaired = false;
-        } catch (e) { window._apexFlow = false; window._apexName = ''; window._fallbackOpen = false; window._docIsPaired = false; }
+        } catch (e) { window._apexFlow = false; window._apexName = ''; window._fallbackOpen = false; window._fallbackIntent = false; window._docIsPaired = false; }
 
         // Defensive: everything below paints into domainManagerOverlay, so
         // make sure it is visible (the showDomainManager entry flow normally
@@ -3539,7 +3620,8 @@
           try { await loadUserDomains(); } catch (e) {}
         } catch (e) {
           if (window._apexDomain !== d) return;
-          if (errBox) { errBox.textContent = e.message || 'Could not save.'; errBox.style.display = 'block'; }
+          const rawMsg = e.message || 'Could not save.';
+          if (errBox) { errBox.textContent = /ERR_UNSAFE_URL/.test(rawMsg) ? 'That destination looks unsafe and was blocked. Pick a different address.' : rawMsg; errBox.style.display = 'block'; }
         } finally {
           if (window._apexDomain === d) setApexBusy(false);
         }
@@ -3697,9 +3779,15 @@
 
       // Quote read (no DOM): shared by the atomic loader and refreshes.
       // consentOverride lets callers pass a pre-reset snapshot; otherwise the
-      // live checkbox state is read (safe on paths without a reset, e.g. refresh).
+      // live checkbox state is read ONLY when it was ticked for this exact
+      // domain — a stale tick from another domain's screen never counts.
       async function fetchQuote(forceRefresh = false, consentOverride = null) {
-        const flag = consentOverride === null ? withdrawalConsentChecked() : consentOverride;
+        let flag;
+        if (consentOverride === null) {
+          flag = (window._consentForDomain === pendingDomain) && withdrawalConsentChecked();
+        } else {
+          flag = consentOverride;
+        }
         const genFn = functions.httpsCallable('generatePaymentAddress');
         const res = await genFn({
           domain: pendingDomain,
@@ -3764,8 +3852,14 @@
       // Refresh path (discount removed): screen is already revealed,
       // so paint directly with a stale-domain guard.
       async function updateQuote(forceRefresh = false) {
+        // Serialize quote-affecting actions: concurrent apply/remove/refresh
+        // otherwise last-writer-wins on the domain doc and can strand a
+        // displayed address. Every entry bumps the paint token so late
+        // responses never overwrite the winner.
+        if (window._paymentOp) return;
+        window._paymentOp = true;
         const myDomain = pendingDomain;
-        const myToken = paymentScreenToken;
+        const myToken = ++paymentScreenToken;
         const instructions = document.getElementById('paymentInstructions');
         const loadingState = document.getElementById('paymentLoadingState');
         const paymentDetails = document.getElementById('paymentDetails');
@@ -3776,13 +3870,16 @@
         }
         if (paymentDetails) paymentDetails.style.display = 'none';
         try {
-          const data = await fetchQuote(forceRefresh, withdrawalConsentChecked());
+          const scopedConsent = (window._consentForDomain === myDomain) && withdrawalConsentChecked();
+          const data = await fetchQuote(forceRefresh, scopedConsent);
           if (pendingDomain !== myDomain || myToken !== paymentScreenToken) return;
           paintQuoteSuccess(data);
         } catch (err) {
           console.error(err);
           if (pendingDomain !== myDomain || myToken !== paymentScreenToken) return;
           paintQuoteError(err);
+        } finally {
+          window._paymentOp = false;
         }
       }
 
@@ -3866,6 +3963,10 @@
         const backBtn = document.getElementById('paymentBackBtn');
         const code = discountInput.value.trim();
         const myDomain = pendingDomain;
+        // Invalidate any in-flight quote refresh so its late paint cannot
+        // overwrite this apply's result (backend merge keeps both addresses
+        // credited regardless of write order).
+        paymentScreenToken++;
 
         if (!code) {
           messageEl.textContent = 'Please enter a discount code';
@@ -3896,7 +3997,7 @@
             domain: pendingDomain,
             sessionId: getSessionId(),
             forceRefresh: true,
-            withdrawalConsent: withdrawalConsentChecked()
+            withdrawalConsent: (window._consentForDomain === myDomain) && withdrawalConsentChecked()
           });
           if (pendingDomain !== myDomain) return;
 
@@ -4015,6 +4116,9 @@
         const messageEl = document.getElementById('discountCodeMessage');
         const bannerEl = document.getElementById('discountAppliedBanner');
         const backBtn = document.getElementById('paymentBackBtn');
+        // Invalidate in-flight quote paints (same reason as apply path).
+        paymentScreenToken++;
+        const myDomain = pendingDomain;
 
         try {
           removeBtn.disabled = true;
@@ -5746,10 +5850,15 @@
         }
 
         // Client-side slug check: 1–60 chars, letters/numbers/-/_ only.
+        // Dots are called out explicitly: the edge router treats any dotted
+        // first path segment as a file/static asset, so dotted slugs would
+        // mint successfully yet never resolve.
         if (slugInput && !/^[A-Za-z0-9_-]{1,60}$/.test(slugInput)) {
           showCustomModal({
             title: "Invalid Slug",
-            message: "Custom slugs must be 1–60 chars: letters, numbers, - _"
+            message: slugInput.includes('.')
+              ? "Slugs cannot contain dots — dotted links would never resolve (they look like files to the router). Use - or _ instead."
+              : "Custom slugs must be 1–60 chars: letters, numbers, - _"
           });
           button.disabled = false;
           button.textContent = 'Shorten URL';
@@ -5903,6 +6012,10 @@
             message = "This URL is flagged as unsafe (phishing/malware) and can't be shortened.";
           } else if (errorCode === 'ERR_SLUG_TAKEN') {
             message = "This slug is already taken on this domain. Please choose a different one (the same slug can still be used on your other domains).";
+          } else if (error.code === 'already-exists' && error.message && error.message !== 'ERR_SLUG_TAKEN') {
+            // Twin-slug guard: same slug on the counterpart host in this
+            // session. Surface verbatim so the user knows which host holds it.
+            message = error.message;
           } else if (error.code === 'invalid-argument' && error.message && error.message !== 'ERR_INVALID_URL') {
             // Surface backend validation verbatim (slug 1–60, URL too long, etc.).
             message = error.message;
@@ -5912,14 +6025,18 @@
             // Domain is not active - show a clear modal with instructions.
             // showCustomModal resolves true on confirm: open the manager then.
             // A lapsed-coverage domain carries its own backend message and
-            // gets a renewal dialog instead of the first-time setup one.
+            // gets a renewal dialog; an unroutable domain gets a DNS-fix
+            // dialog instead of the first-time setup one.
             const lapsed = !!error.message && error.message.includes('coverage expired');
-            message = lapsed ? error.message : "Domain not active. Complete verification and payment first.";
+            const unroutable = !!error.message && /does not resolve to Tunnel edge/i.test(error.message);
+            message = (lapsed || unroutable) ? error.message : "Domain not active. Complete verification and payment first.";
             showCustomModal({
-              title: lapsed ? "Coverage Expired" : "Domain Not Active",
+              title: lapsed ? "Coverage Expired" : unroutable ? "Domain Not Resolving" : "Domain Not Active",
               message: lapsed
                 ? "This domain's coverage has lapsed — its links stopped resolving. Renew with a new promo code or the $10/year fee to reactivate everything.<br><br>Choose Manage Domain to renew."
-                : "The custom domain you selected is not fully verified or paid. Please complete the following steps:<br><br>1. CNAME your domain to customers.inoculens.com<br>2. Add the TXT ownership record<br>3. Complete payment (SSL provisions automatically)<br><br>Choose Manage Domain to continue verification.",
+                : unroutable
+                  ? `${escapeHTML(error.message)}<br><br>Choose Manage Domain to re-verify routing.`
+                  : "The custom domain you selected is not fully verified or paid. Please complete the following steps:<br><br>1. CNAME your domain to customers.inoculens.com<br>2. Add the TXT ownership record<br>3. Complete payment (SSL provisions automatically)<br><br>Choose Manage Domain to continue verification.",
               confirmText: "Manage Domain",
               showCancel: true,
               cancelText: "Close"
@@ -6990,9 +7107,11 @@
           return;
         }
 
+        const dispShort = displayShort(item.short);
+        const canonShort = String(item.short || '');
         const confirmed = await showCustomModal({
           title: "Delete link?",
-          message: `Delete this link for everyone on the internet?<span class="modal-url-box">${escapeHTML(item.short)}</span>Anyone on the internet will then be able to reclaim the URL slug you used.`,
+          message: `Delete this link for everyone on the internet?<span class="modal-url-box">${escapeHTML(dispShort)}</span>${canonShort && canonShort !== dispShort ? `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">Stored as <span style="font-family: monospace;">${escapeHTML(canonShort)}</span></div>` : ''}Anyone on the internet will then be able to reclaim the URL slug you used.`,
           showCancel: true,
           danger: true
         });
@@ -7074,9 +7193,13 @@
         }
         const stripScheme = (u) => String(u || '').trim().replace(/^https?:\/\//i, '').replace(/[\r\n]+/g, '');
         const lines = items.map((l) => {
-          const domain = stripScheme(displayHost(itemDomain(l)));
-          const code = String(l.code || '').replace(/[\r\n]+/g, '');
-          return `${domain}/${code} : ${stripScheme(l.original)}`;
+          // Canonical host first (re-mintable as-is); display hint appended
+          // when the pair shows under a different label so support tickets
+          // can never confuse twins.
+          const canonLine = stripScheme(`${String(itemDomain(l) || '')}/${String(l.code || '')}`);
+          const disp = stripScheme(displayShort(l.short || ''));
+          const shown = disp && disp !== canonLine ? ` (shows as ${disp})` : '';
+          return `${canonLine} : ${stripScheme(l.original)}${shown}`;
         });
         const text = lines.join('\n') + '\n';
         try {
