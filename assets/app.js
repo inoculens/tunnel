@@ -529,9 +529,9 @@
         } catch (e) { return String(shortUrl); }
       }
       // List labels follow one rule: show exactly what the user typed
-      // (displayHost). Same-label twins are prevented at creation time
-      // instead of disambiguated here — see proceedToAddDomain,
-      // enterFallbackMode, and the backend display-clash guards.
+      // (displayHost). Same-label twins are allowed (DNS decides which setup
+      // can verify) and surface as a warning in the dropdown — see backend
+      // twins flag and renderDomainOptions.
       function findLinkIndex(code, domain) {
         if (!code) return -1;
         if (!domain) return currentLinks.findIndex(l => l && l.code === code);
@@ -726,6 +726,19 @@
 
       function setSessionId(id) {
         try { localStorage.setItem(SESSION_KEY, id); } catch (e) {}
+        // Session switch invalidates all per-setup fallback state: stale
+        // _apexFlow/_apexName from the previous session must never leak into
+        // the new session's first paint (that flipped link displays to www
+        // and forced primaries behind a redirect check).
+        try {
+          window._apexFlow = false;
+          window._apexName = '';
+          window._docIsPaired = false;
+          window._fallbackOpen = false;
+          window._fallbackFor = '';
+          window._claimFallback = false;
+          window._claimCanonical = null;
+        } catch (e) {}
         updateSessionUI();
       }
 
@@ -1146,9 +1159,12 @@
       let pendingDomain = '';
       // Fallback pairing state. _apexFlow=true means the current setup pairs
       // the entered host with a www canonical; _apexName is the redirect host
-      // (whatever was entered: apex, www, or deeper).
+      // (whatever was entered: apex, www, or deeper). _docIsPaired mirrors
+      // the backend doc flag (isApexFlow) and drives payment gating — never
+      // a stale window flag alone.
       window._apexFlow = false;
       window._apexName = '';
+      window._docIsPaired = false;
       const APEX_REDIRECT_IPV4 = '65.21.184.101';
       const APEX_REDIRECT_IPV6 = '2a01:4f9:c012:a304::1';
       function wwwForApexInput(raw) {
@@ -1205,6 +1221,7 @@
         // Reset fallback state (primary is default; banner reopens it).
         window._apexFlow = false;
         window._apexName = '';
+        window._docIsPaired = false;
         window._fallbackOpen = false;
         window._fallbackFor = '';
         const apexCard0 = document.getElementById('apexRedirectCard');
@@ -1232,6 +1249,7 @@
         pendingDomain = '';
         window._apexFlow = false;
         window._apexName = '';
+        window._docIsPaired = false;
         window._fallbackOpen = false;
         window._fallbackFor = '';
         resetConsentBox();
@@ -1561,6 +1579,7 @@
         // pairing authoritatively (legacy docs echo isApexFlow/apex).
         window._apexFlow = false;
         window._apexName = '';
+        window._docIsPaired = false;
         window._fallbackOpen = false;
         pendingDomain = rawDomain;
         // Typed label for the claim modal (set in stone): what the user
@@ -1589,23 +1608,10 @@
             return;
           }
 
-          // Same-label guard: another entry already displays exactly what was
-          // typed (e.g. typing apex.com while its www fallback shows apex.com).
-          // Opening that setup instead of creating a twin keeps every label
-          // unique — the backend enforces the same rule as backstop.
-          const labelTwin = userCustomDomains.find((d) =>
-            d && String(d.domain || '').toLowerCase() !== String(pendingDomain).toLowerCase() &&
-            String(displayHost(d.domain)).toLowerCase() === String(pendingDomain).toLowerCase());
-          if (labelTwin) {
-            btn.classList.remove('loading');
-            btn.disabled = false;
-            showCustomModal({
-              title: "Already Added",
-              message: `<strong>${escapeHTML(displayHost(labelTwin.domain))}</strong> is already in your account — opening its setup instead of adding it twice.`
-            });
-            try { await manageDomain(labelTwin.domain); } catch (e) {}
-            return;
-          }
+          // Twin policy (simplified): apex and www are independent and may
+          // coexist even when they share a display label. No frontend block —
+          // DNS itself decides which setup can verify. The backend flags
+          // same-label twins as a warning instead of refusing creation.
 
           // Claim the domain: own domains idempotent; names held by other
           // sessions become inert pending claims (no transfer until DNS proof
@@ -1618,7 +1624,8 @@
           // Adopt backend flags (authoritative): legacy fallback docs echo
           // isApexFlow/apex/displayName; primaries echo themselves.
           if (addRes.data) {
-            if (addRes.data.isApexFlow === true) window._apexFlow = true;
+            if (addRes.data.isApexFlow === true) { window._apexFlow = true; window._docIsPaired = true; }
+            else { window._apexFlow = false; window._docIsPaired = false; }
             if (addRes.data.apex) window._apexName = addRes.data.apex;
             if (addRes.data.domain) pendingDomain = addRes.data.domain;
           }
@@ -1628,8 +1635,8 @@
             showPendingClaimModal(addRes.data);
             return;
           }
-          // Backend display-clash backstop (stale list / race): the label is
-          // taken, so open that setup instead of continuing with a twin.
+          // Legacy backstop (pre-simplification backends during deploy skew):
+          // kept harmless — current backends never send displayConflict.
           if (addRes.data && addRes.data.displayConflict) {
             btn.classList.remove('loading');
             btn.disabled = false;
@@ -1711,8 +1718,10 @@
             showPendingClaimModal(data);
             return;
           }
-          if (data.isApexFlow === true) window._apexFlow = true;
+          if (data.isApexFlow === true) { window._apexFlow = true; window._docIsPaired = true; }
+          else { window._apexFlow = false; window._docIsPaired = false; }
           if (data.apex) window._apexName = data.apex;
+          else if (window._fallbackOpen !== true) window._apexName = '';
           if (data.domain) pendingDomain = data.domain;
 
           // Set up the verification UI with the returned data
@@ -2227,14 +2236,18 @@
 
         // Fallback pairing (IP safety net): one doc covers an entered host X
         // plus its canonical www.X — redirect A/AAAA on X, routing on www.X.
-        // Shown when the doc is already paired (isApexFlow) or the user
-        // explicitly opened it via the yellow banner. Otherwise hidden —
-        // primary verifies routing + TXT alone.
-        const apexFlow = domainDoc.isApexFlow === true || window._apexFlow === true;
-        const apexHost = domainDoc.apex || (apexFlow ? (window._apexName || null) : null) || (domainDoc.fallback && domainDoc.fallback.apex) || null;
-        if (domainDoc.isApexFlow === true) window._apexFlow = true;
-        if (domainDoc.apex) window._apexName = domainDoc.apex;
+        // Backend truth decides: paired docs show the card, primaries show it
+        // only after the yellow banner explicitly opens it. Stale window flags
+        // from another setup must never force the card on (that locked
+        // recommended-first setups behind a redirect they never asked for).
+        const pairedHere = domainDoc.isApexFlow === true;
+        window._apexFlow = pairedHere;
+        window._docIsPaired = pairedHere;
+        if (pairedHere && domainDoc.apex) window._apexName = domainDoc.apex;
+        else if (!pairedHere && window._fallbackOpen !== true) window._apexName = '';
         else if (domainDoc.fallback && domainDoc.fallback.apex && window._fallbackOpen === true && !window._apexName) window._apexName = domainDoc.fallback.apex;
+        const apexFlow = pairedHere;
+        const apexHost = domainDoc.apex || (domainDoc.fallback && domainDoc.fallback.apex) || null;
         const apexCard = document.getElementById('apexRedirectCard');
         if (apexCard) {
           const showFallbackCard = (apexFlow && apexHost) || window._fallbackOpen === true;
@@ -2356,13 +2369,16 @@
         updateStatusUI('txt', dns.txtVerified === true ? true : null);
         updateRoutingUI((dns.routable === false) ? false : null);
 
-        // Fallback card visibility: paired docs show it; primaries show it
-        // only after the yellow banner opens it. Banner itself always shows.
-        if (domainData.isApexFlow === true) window._apexFlow = true;
-        if (domainData.apex) window._apexName = domainData.apex;
+        // Fallback card visibility: backend truth only. Stale window flags
+        // must never force the card on for primaries.
+        const pairedSync = domainData.isApexFlow === true;
+        window._apexFlow = pairedSync;
+        window._docIsPaired = pairedSync;
+        if (pairedSync && domainData.apex) window._apexName = domainData.apex;
+        else if (!pairedSync && window._fallbackOpen !== true) window._apexName = '';
         const apexCardS = document.getElementById('apexRedirectCard');
         if (apexCardS) {
-          const paired = window._apexFlow === true && !!(domainData.apex || window._apexName);
+          const paired = pairedSync && !!(domainData.apex || (domainData.fallback && domainData.fallback.apex));
           const opened = window._fallbackOpen === true && !!((domainData.fallback && domainData.fallback.apex) || domainData.apex || window._apexName);
           const showApex = paired || opened;
           apexCardS.style.display = showApex ? 'flex' : 'none';
@@ -2500,15 +2516,27 @@
           // a domain with no usable edge address cannot serve links, so it
           // must not take payment. SSL provisions automatically via Cloudflare
           // SaaS HTTP validation after the CNAME is live — it must NOT block
-          // payment (takes minutes in background). Apex flows additionally
-          // require the apex redirect check: the user typed an apex because
-          // they want apex links, so payment waits for it too.
+          // payment (takes minutes in background). Paired fallback setups
+          // additionally require the redirect check — but ONLY when the
+          // redirect card is actually visible (backend-paired doc or
+          // explicitly opened fallback). A stale window flag must never gate
+          // a primary behind a redirect it never asked for.
           const isPermanentlyVerified = window.domainIsVerified === true;
           // Coverage gates activity too: a stale 'active' flag with lapsed
           // coverage must behave as expired (renewable), never as done.
           const coverageOk = !window.domainCoverage || window.domainCoverage.lifetime === true || window.domainCoverage.valid === true;
           const isDomainActive = window.domainIsActive === true && coverageOk;
-          const apexOk = window._apexFlow !== true || verificationState.apex === true;
+          const redirectCardVisible = (() => {
+            try {
+              const c = document.getElementById('apexRedirectCard');
+              return !!c && c.style.display !== 'none';
+            } catch (e) { return false; }
+          })();
+          const pairedGating = window._docIsPaired === true || window._apexFlow === true;
+          // Require the redirect only when it is actually part of this setup:
+          // a backend-paired doc, or an explicitly opened fallback card.
+          // Primaries with no visible card never wait for it.
+          const apexOk = (pairedGating || redirectCardVisible) ? verificationState.apex === true : true;
           const readyForPayment = ((cnameOk && txtOk) || isPermanentlyVerified) && routableOk && apexOk;
           const allChecksPass = readyForPayment;
 
@@ -2821,6 +2849,7 @@
           if (data.domain) { pendingDomain = data.domain; currentDomain = data.domain; }
           window._apexFlow = false;
           window._apexName = '';
+          window._docIsPaired = false;
           window._fallbackOpen = false;
           window._fallbackFor = '';
           updateApexStatusUI(null);
@@ -2954,7 +2983,7 @@
             return;
           }
           if (data.domain) { pendingDomain = data.domain; currentDomain = data.domain; }
-          if (data.isApexFlow === true) window._apexFlow = true;
+          if (data.isApexFlow === true) { window._apexFlow = true; window._docIsPaired = true; }
           if (data.apex) window._apexName = data.apex;
           await loadUserDomains();
           try { upsertUserDomain(data); } catch (e) {}
@@ -3023,10 +3052,19 @@
 
           // Trust the backend's verification state (prioritize sticky isVerified flag)
           const isVerified = data.isVerified === true || (data.dnsVerification?.cnameValid && data.dnsVerification?.txtVerified);
-
+          // Sync pairing truth from the fresh doc (never a stale window flag):
+          // only a backend-paired setup requires the redirect re-check.
+          try {
+            const nowPaired = data.isApexFlow === true;
+            window._docIsPaired = nowPaired;
+            window._apexFlow = nowPaired;
+            if (nowPaired && data.apex) window._apexName = data.apex;
+            if (!nowPaired && window._fallbackOpen !== true) window._apexName = '';
+          } catch (e) {}
           // Paired flows require the redirect too (live re-check: the badge
           // alone must not let a removed record through to payment).
-          if (isVerified && window._apexFlow === true && window._apexName) {
+          const needRedirect = (data.isApexFlow === true && (data.apex || window._apexName));
+          if (isVerified && needRedirect) {
             try {
               const apexFn = functions.httpsCallable('verifyApexRedirect');
               const apexRes = await apexFn({ domain: currentDomain, apex: window._apexName, sessionId: getSessionId() });
@@ -3229,21 +3267,20 @@
         // Fresh domain context: consent ticks belong to one domain only.
         resetConsentBox();
         // Fallback state is authoritative from the backend doc (isApexFlow).
-        // Clear stale local flags when switching domains; reopening the same
-        // paired www keeps them. Never force fallback for primaries.
+        // Always start clean on a domain switch — stale flags from another
+        // setup must never leak in (that forced primaries behind a redirect
+        // check and flipped link displays to www). Backend data below sets
+        // the truth; _fallbackOpen survives only when explicitly opened for
+        // this exact host in this session.
         try {
-          const flaggedWww = window._apexName ? wwwForApexInput(window._apexName) : null;
-          if (!window._apexFlow || flaggedWww !== String(domain || '').toLowerCase()) {
-            // Keep _fallbackOpen only when explicitly opened for this domain
-            // in this session; otherwise reset to backend truth below.
-            if ((window._fallbackFor || '') !== String(domain || '').toLowerCase()) {
-              window._fallbackOpen = false;
-              window._fallbackFor = '';
-            }
-            window._apexFlow = false;
-            window._apexName = '';
+          if ((window._fallbackFor || '') !== String(domain || '').toLowerCase()) {
+            window._fallbackOpen = false;
+            window._fallbackFor = '';
           }
-        } catch (e) { window._apexFlow = false; window._apexName = ''; window._fallbackOpen = false; }
+          window._apexFlow = false;
+          window._apexName = '';
+          window._docIsPaired = false;
+        } catch (e) { window._apexFlow = false; window._apexName = ''; window._fallbackOpen = false; window._docIsPaired = false; }
 
         // Defensive: everything below paints into domainManagerOverlay, so
         // make sure it is visible (the showDomainManager entry flow normally
@@ -3284,8 +3321,10 @@
               data = res.data || {};
             } else throw e;
           }
-          if (data.isApexFlow === true) window._apexFlow = true;
+          if (data.isApexFlow === true) { window._apexFlow = true; window._docIsPaired = true; }
+          else { window._apexFlow = false; window._docIsPaired = false; }
           if (data.apex) window._apexName = data.apex;
+          else if (window._fallbackOpen !== true) window._apexName = '';
           if (data.domain) { pendingDomain = data.domain; currentDomain = data.domain; }
           // Foreign claim rows land here via showDomainManager: open the claim
           // modal (stable pending token) instead of painting the verification

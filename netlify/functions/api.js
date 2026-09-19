@@ -255,6 +255,10 @@ function effectiveDisplayLabel(d) {
 async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, paired, redirect }) {
   const delegation = sslDelegationTarget();
   const now = Date.now();
+  // Preserve stone history: the new entry keeps owning the abandoned host's
+  // rows (plus any older chain) until an independent setup occupies it, so
+  // delete sweeps and transfers never orphan links behind.
+  const prevMoved = (typeof srcDoc.movedFrom === "string" && srcDoc.movedFrom) ? srcDoc.movedFrom.toLowerCase() : null;
   const dest = {
     domain: destHost,
     displayName: display || destHost,
@@ -262,6 +266,7 @@ async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, pa
     // owning that host's rows (delete sweeps it, transfers move it) until an
     // independent setup occupies it.
     movedFrom: srcHost,
+    ...(prevMoved && prevMoved !== String(srcHost || "").toLowerCase() && prevMoved !== String(destHost || "").toLowerCase() ? { movedFromChain: prevMoved } : {}),
     sessionId: p.sessionId,
     status: "pending_verification",
     paymentStatus: srcDoc.paymentStatus === "paid" ? "paid" : "unpaid",
@@ -292,8 +297,40 @@ async function migrateDomainSetup(s, p, srcDoc, srcHost, destHost, { display, pa
   // and only for cross-session callers (claim-migrate); same-session callers
   // are a no-op write. Click rows and count shards are host/code keyed and
   // follow their links with zero work.
+  // A paired entry owns BOTH hosts' rows (plus any stone chain): move every
+  // related host's links, not just the abandoned host, so the source session
+  // is left clean and no www/apex ghost rows linger behind. Hosts occupied
+  // by an independent live doc are never touched.
+  const ownedHosts = new Set([String(srcHost || "").toLowerCase(), String(destHost || "").toLowerCase()]);
+  try {
+    if (srcDoc.apexSource) ownedHosts.add(String(srcDoc.apexSource).toLowerCase());
+    if (srcDoc.movedFrom) ownedHosts.add(String(srcDoc.movedFrom).toLowerCase());
+    if (srcDoc.movedFromChain) ownedHosts.add(String(srcDoc.movedFromChain).toLowerCase());
+    if (redirect) ownedHosts.add(String(redirect).toLowerCase());
+    const w1 = (() => { try { return fallbackCanonicalFor(srcHost); } catch { return null; } })();
+    if (w1) ownedHosts.add(String(w1).toLowerCase());
+    const a1 = (() => { try { return apexForWww(srcHost); } catch { return null; } })();
+    if (a1) ownedHosts.add(String(a1).toLowerCase());
+  } catch { /* srcHost only */ }
+  ownedHosts.delete("");
   const linkBlobs = await listAll(s, "link/");
-  const doomedLinks = linkBlobs.filter((b) => String(b.key || "").startsWith(`link/${srcHost}/`));
+  // Resolve occupancy once so independent setups' rows are never stolen.
+  const occupants = new Map();
+  for (const h of ownedHosts) {
+    if (h === String(destHost || "").toLowerCase() || h === String(srcHost || "").toLowerCase()) continue;
+    try {
+      const occ = await freshGet(s, `domain/${h}`, { type: "json" }).catch(() => null);
+      if (occ) occupants.set(h, true);
+    } catch { /* treat as unoccupied */ }
+  }
+  const doomedLinks = linkBlobs.filter((b) => {
+    const k = String(b.key || "").toLowerCase();
+    for (const h of ownedHosts) {
+      if (!h || occupants.has(h)) continue;
+      if (k.startsWith(`link/${h}/`)) return true;
+    }
+    return false;
+  });
   await mapWithConcurrency(doomedLinks, 12, async (b) => {
     const l = await freshGet(s, b.key, { type: "json" }).catch(() => null);
     if (!l || !l.code) return;
@@ -1612,29 +1649,16 @@ const actions = {
         });
       }
     } catch { /* fail-open to creation below */ }
-    // Same-label twin guards: one display label per session, so the UI (which
-    // shows exactly what was typed) can never list a name twice (docDisplay /
-    // twinLabelOf are hoisted above for the display-claim scan too).
-    // Creation guard (no canonical doc exists at this point): a touched twin
-    // refuses instead of twinning the label — the UI offers Convert for this
-    // case, which migrates instead of deleting.
-    if (isApexFlow && apexSource && host !== apexSource && twinDoc && twinTouched) {
-      return fail(409, "already-exists", `${apexSource} is already set up with recommended DNS — open its setup instead of adding it twice. To use the fallback for it, convert that setup (no new payment) or delete it first.`);
-    }
-    if (!isApexFlow) {
-      // Primary entry displaying an already-taken label: hand back the owned
-      // setup instead of creating a twin (stale lists, races, direct API).
-      try {
-        const blobs = await listAll(s, "domain/");
-        const docs = await mapWithConcurrency(blobs, 12, (b) =>
-          freshGet(s, b.key, { type: "json" }).catch(() => null)
-        );
-        const twin = docs.find((d) =>
-          d && d.sessionId === p.sessionId && String(d.domain || "").toLowerCase() !== host.toLowerCase() &&
-          twinLabelOf(d) === docDisplay);
-        if (twin) return ok({ ...(await domainInfo(twin, p.sessionId)), displayConflict: true });
-      } catch { /* fail-open: frontend guard already ran */ }
-    }
+    // Twin policy (simplified per product decision): apex and www are
+    // independent primaries and may coexist in one session even when they
+    // share a display label (e.g. an apex primary plus a fallback pair
+    // displaying the same apex). No 409, no displayConflict redirect — DNS
+    // itself decides which setup can verify (a single apex host cannot carry
+    // both a routing record and a redirect pair at once, so "routing will not
+    // happen anyways if the user tries both"). The UI flags same-label twins
+    // as a warning (see getUserDomains twins) instead of blocking creation.
+    // Convert remains as an explicit, no-new-payment migration for users who
+    // want to consolidate, but it is never forced.
     const delegation = sslDelegationTarget();
     const doc = {
       domain: host,
@@ -1658,10 +1682,15 @@ const actions = {
     return ok({ ...(await domainInfo(doc, p.sessionId)), ...(retiredHost ? { retired: retiredHost } : {}) });
   },
 
-  // Apex redirect check: live DNS read for the caller's OWN www doc.
+  // Apex redirect check: live DNS read for the caller's OWN doc.
   // Fail-closed: anonymous callers and non-owners are rejected before any
   // outbound DNS happens (no free oracle, no shared-DoH-quota burn).
-  // The apex is derived from the owned doc — never from client params.
+  // Method-agnostic: paired docs check their stored redirect host; unpaired
+  // primaries check the most plausible redirect host instead of erroring, so
+  // a setup can move between recommended and fallback in either direction
+  // regardless of how it was first verified. An explicit client redirect is
+  // honored only when it belongs to this setup (the doc host itself or its
+  // uniform www pairing) — never a stranger's zone.
   // Results cache briefly (positives 5 min, negatives 60 s) so repeat clicks
   // and floods don't re-hit the shared resolver. Never writes domain docs.
   // Required before payment in apex flows (client-side Continue gating).
@@ -1673,13 +1702,23 @@ const actions = {
       e.code = "resource-exhausted";
       throw e;
     }
-    // Throws 400/404/403 unless the caller owns this doc. Only paired docs
-    // have a redirect host (stored at pairing time) — unpaired docs, including
-    // plain www hosts, have nothing to check and are rejected outright.
+    // Throws 400/404/403 unless the caller owns this doc.
     const doc = await needOwnedDomain(s, p.domain, p.sessionId);
-    if (doc.isApexFlow !== true) return fail(400, "invalid-argument", "Redirect check applies to fallback-paired setups only.");
-    const apex = (typeof doc.apexSource === "string" && doc.apexSource) || apexForWww(doc.domain);
-    if (!apex) return fail(400, "invalid-argument", "Redirect check applies to fallback-paired setups only.");
+    const stored = (typeof doc.apexSource === "string" && doc.apexSource) || null;
+    const derived = doc.isApexFlow === true ? apexForWww(doc.domain) : null;
+    const paramR = cleanDomain(p.apex);
+    let paramOk = false;
+    try {
+      if (paramR && (paramR === doc.domain.toLowerCase() || fallbackCanonicalFor(paramR) === doc.domain.toLowerCase() || (stored && paramR === stored.toLowerCase()) || fallbackCanonicalFor(doc.domain.toLowerCase()) === paramR)) {
+        paramOk = true;
+      }
+    } catch { /* ignore */ }
+    // Paired docs keep their stored redirect; primaries fall back to an
+    // explicit valid intent, else their own host (fallback on X redirects X).
+    // Never 400 for "not paired" — that locked recommended-first setups out
+    // of the fallback path and vice versa.
+    const apex = stored || derived || (paramOk ? paramR : null) || doc.domain;
+    if (!apex) return fail(400, "invalid-argument", "Could not determine the redirect host for this setup.");
     const wwwHost = doc.domain;
     const cacheKey = `apexcheck/${apex}`;
     let r = null;
@@ -1879,9 +1918,13 @@ const actions = {
     if (claimField) {
       // Redirect host: stored pairing wins; otherwise the validated intent
       // (for intent on the claimed host itself, that host IS the redirect).
+      // Method-agnostic: a primary without intent falls back to its own host
+      // (fallback on X redirects X) instead of 400ing — the UI then reports
+      // a normal Failed/Verified badge and Verify Claim stays gated on the
+      // visible pills, so recommended-first setups can move either way.
       let redirect = storedRedirect || (pairedDoc ? apexForWww(doc.domain) : null);
       if (!redirect && useIntent) redirect = intentHost;
-      if (!redirect) return fail(400, "invalid-argument", "Redirect check applies to fallback-paired setups only.");
+      if (!redirect) redirect = doc.domain;
       if (claimField === "apex") {
         const ar = await verifyApexRedirectDns(redirect).catch(() => null);
         if (!ar) return fail(503, "unavailable", "DNS lookup failed, try again.");
@@ -2013,9 +2056,10 @@ const actions = {
         }
       }
     }
-    // Same-label guard (claimant's own docs): pairing or migrating must never
-    // twin a label the claimant already shows elsewhere. Effective-label rule
-    // mirrors addCustomDomain. Fail-open: a twin is confusion, not data loss.
+    // Same-label policy (simplified): twins are allowed — DNS decides which
+    // setup can verify. Claim transfers never 409 on the claimant's own
+    // labels; the UI flags twins as a warning instead. Helper kept for
+    // diagnostics only.
     const ownLabelTaken = async (label) => {
       try {
         const blobs = await listAll(s, "domain/");
@@ -2047,9 +2091,7 @@ const actions = {
           status: doc.status,
         });
       }
-      if (await ownLabelTaken(intentHost)) {
-        return fail(409, "already-exists", `You already have ${intentHost} — open its setup instead of adding it twice.`);
-      }
+      // Twins allowed: no own-label 409 (see policy above).
       doc.isApexFlow = true;
       doc.apexSource = intentHost;
       doc.displayName = intentHost;
@@ -2155,9 +2197,7 @@ const actions = {
       if (occupied) {
         return fail(409, "already-exists", `${X} is already set up — delete it or claim it first.`);
       }
-      if (await ownLabelTaken(X)) {
-        return fail(409, "already-exists", `You already have ${X} — open its setup instead of adding it twice.`);
-      }
+      // Twins allowed: no own-label 409 (see policy above).
       const token = doc.pendingClaim.token;
       const fromSid = doc.sessionId;
       // Count both hosts' rows for session bookkeeping before the move.
@@ -2264,6 +2304,16 @@ const actions = {
           (doc.isApexFlow === true ? apexForWww(doc.domain) : null);
         await maybeMove(rh);
         await maybeMove(doc.movedFrom);
+        await maybeMove(doc.movedFromChain);
+        // Uniform counterparts so no ghost rows linger on either side.
+        try {
+          const w0 = fallbackCanonicalFor(doc.domain);
+          if (w0) await maybeMove(w0);
+          if (rh) {
+            const w1 = fallbackCanonicalFor(rh);
+            if (w1) await maybeMove(w1);
+          }
+        } catch { /* doc + known hosts only */ }
       } catch { /* doc host only */ }
       const mine = docs.filter((l) => {
         if (!l) return false;
@@ -2421,6 +2471,16 @@ const actions = {
         : (doc.isApexFlow === true ? apexForWww(doc.domain) : null);
       await maybeSweep(redirect);
       await maybeSweep(doc.movedFrom);
+      await maybeSweep(doc.movedFromChain);
+      // Uniform counterparts: a stone chain can reference either direction.
+      try {
+        const w0 = fallbackCanonicalFor(doc.domain);
+        if (w0) await maybeSweep(w0);
+        if (redirect) {
+          const w1 = fallbackCanonicalFor(redirect);
+          if (w1) await maybeSweep(w1);
+        }
+      } catch { /* target + known hosts only */ }
     } catch { /* target-only sweep */ }
     const doomed = [];
     const seen = new Set();
