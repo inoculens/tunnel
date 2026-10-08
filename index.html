@@ -137,43 +137,6 @@
     ]
   }
   </script>
-  <!-- FAQ structured data — questions/answers mirror the visible FAQ
-       section on this page verbatim (Bing guideline #14: markup must match
-       visible content). -->
-  <script type="application/ld+json">
-  {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    "@id": "https://tunnel.inoculens.com/#faq",
-    "mainEntity": [
-      {
-        "@type": "Question",
-        "name": "Is INOCULENS Tunnel free?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Yes. URL shortening, deep links and click analytics are free with no registration. Only branded custom domains cost $10 per domain per year." }
-      },
-      {
-        "@type": "Question",
-        "name": "How do deep links work?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Tunnel detects the destination platform and routes mobile visitors so the link opens in the native YouTube, Instagram or TikTok app, which raises engagement compared to plain web links." }
-      },
-      {
-        "@type": "Question",
-        "name": "Do I need an account?",
-        "acceptedAnswer": { "@type": "Answer", "text": "No. The service uses a random session ID saved in your browser. Your links, analytics and custom domains are tied to that session, which you can copy, merge or delete at any time." }
-      },
-      {
-        "@type": "Question",
-        "name": "What analytics do I get?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Every short link records per-click timestamps so you can see total and recent activity, plus daily trends, from the Click Analytics dashboard." }
-      },
-      {
-        "@type": "Question",
-        "name": "How do I pay for a custom domain?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Each domain gets a unique Bitcoin address and quote valid for 7 days. Coverage starts after the first blockchain confirmation and lasts one year." }
-      }
-    ]
-  }
-  </script>
 
 </head>
 
@@ -359,46 +322,7 @@
       </div>
     </div>
 
-    <!-- SEO content: crawlable prose for search engines (Bing guidelines
-         #11–#18). The app above is JS-driven with little indexable text;
-         this section states what the service is, how it works, and answers
-         common questions — with internal links to About/Pricing. -->
-    <section class="seo-content" aria-label="About INOCULENS Tunnel" style="width: 100%; max-width: 720px; margin: 3rem auto 0; text-align: left;">
-      <h2 style="font-family: 'DM Sans', sans-serif; font-size: 1.4rem; font-weight: 700; letter-spacing: -0.01em; color: var(--text); margin: 0 0 1rem;">What is INOCULENS Tunnel?</h2>
-      <p style="color: var(--text-muted); font-size: 0.98rem; line-height: 1.75; margin: 0 0 1rem;">INOCULENS Tunnel is a free URL shortener and deep link generator. Paste a long link, optionally pick a custom slug, and get a short link that opens YouTube, Instagram, TikTok, Facebook, X and LinkedIn directly in their native apps — instead of trapping viewers in an in-app browser. Every link includes real-time click analytics, and no account is needed: everything is tied to an anonymous session ID stored in your own browser. Learn more <a href="/about" style="color: var(--accent);">about the platform</a>.</p>
-      <h2 style="font-family: 'DM Sans', sans-serif; font-size: 1.4rem; font-weight: 700; letter-spacing: -0.01em; color: var(--text); margin: 2rem 0 1rem;">Custom domains with automatic SSL</h2>
-      <p style="color: var(--text-muted); font-size: 0.98rem; line-height: 1.75; margin: 0 0 1rem;">Creators and brands can shorten links on their own domain for $10 per domain per year, payable in Bitcoin. We handle DNS verification, routing and managed SSL certificates automatically. See <a href="/pricing" style="color: var(--accent);">simple pricing</a>: free shortening forever, branded domains for a flat yearly fee.</p>
-      <h2 style="font-family: 'DM Sans', sans-serif; font-size: 1.4rem; font-weight: 700; letter-spacing: -0.01em; color: var(--text); margin: 2rem 0 1rem;">Frequently asked questions</h2>
-      <div style="display: flex; flex-direction: column; gap: 1rem;">
-        <div>
-          <h3 style="font-size: 1rem; font-weight: 700; color: var(--text); margin: 0 0 0.35rem;">Is INOCULENS Tunnel free?</h3>
-          <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.7; margin: 0;">Yes. URL shortening, deep links and click analytics are free with no registration. Only branded custom domains cost $10 per domain per year.</p>
-        </div>
-        <div>
-          <h3 style="font-size: 1rem; font-weight: 700; color: var(--text); margin: 0 0 0.35rem;">How do deep links work?</h3>
-          <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.7; margin: 0;">Tunnel detects the destination platform and routes mobile visitors so the link opens in the native YouTube, Instagram or TikTok app, which raises engagement compared to plain web links.</p>
-        </div>
-        <div>
-          <h3 style="font-size: 1rem; font-weight: 700; color: var(--text); margin: 0 0 0.35rem;">Do I need an account?</h3>
-          <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.7; margin: 0;">No. The service uses a random session ID saved in your browser. Your links, analytics and custom domains are tied to that session, which you can copy, merge or delete at any time.</p>
-        </div>
-        <div>
-          <h3 style="font-size: 1rem; font-weight: 700; color: var(--text); margin: 0 0 0.35rem;">What analytics do I get?</h3>
-          <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.7; margin: 0;">Every short link records per-click timestamps so you can see total and recent activity, plus daily trends, from the Click Analytics dashboard.</p>
-        </div>
-        <div>
-          <h3 style="font-size: 1rem; font-weight: 700; color: var(--text); margin: 0 0 0.35rem;">How do I pay for a custom domain?</h3>
-          <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.7; margin: 0;">Each domain gets a unique Bitcoin address and quote valid for 7 days. Coverage starts after the first blockchain confirmation and lasts one year.</p>
-        </div>
-      </div>
-    </section>
-
     <footer class="footer footer-elevated">
-      <nav aria-label="Footer" style="margin-bottom: 10px; font-size: 0.82rem;">
-        <a href="/about" style="color: var(--text-muted); text-decoration: none; margin: 0 10px;">About</a>
-        <a href="/pricing" style="color: var(--text-muted); text-decoration: none; margin: 0 10px;">Pricing</a>
-        <a href="/terms" style="color: var(--text-muted); text-decoration: none; margin: 0 10px;">Terms</a>
-      </nav>
       <span class="footer-tag">Built for creators.</span>
       <span class="footer-copy"><span class="nowrap">&copy; 2026 INOCULENS.</span> <span class="nowrap">All rights reserved.</span></span>
     </footer>
