@@ -115,6 +115,41 @@
   # the WASM resolves exactly like local Node. Verified via esbuild repro.
   node_bundler = "nft"
 
+# Canonical consolidation (Bing guideline #6): the .html file variants are
+# true duplicates of the clean canonical URLs (both returned 200 with
+# identical bytes). Force-301 them to the canonical form so link signals
+# consolidate instead of splitting. `force` is required — otherwise
+# Netlify serves the static file before the redirect.
+[[redirects]]
+  from = "/about.html"
+  to = "/about"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/pricing.html"
+  to = "/pricing"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/terms.html"
+  to = "/terms"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/report.html"
+  to = "/report"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/index.html"
+  to = "/"
+  status = 301
+  force = true
+
 # Clean URLs: /about serves about.html etc. (Netlify Pretty URLs also do
 # this by default; explicit rules keep it working if that setting changes).
 [[redirects]]

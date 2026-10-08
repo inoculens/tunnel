@@ -318,7 +318,7 @@
     .story-step[data-tint="green"] .story-kicker { color: #6fcf7f; }
     .story-step[data-tint="amber"] .story-kicker { color: #f5a623; }
 
-    .story-passage h3 {
+    .story-passage h2 {
       font-family: 'DM Sans', sans-serif;
       font-size: clamp(2.1rem, 5.4vw, 3rem);
       font-weight: 700;
@@ -406,9 +406,9 @@
         </a>
       </div>
       <div class="header-right">
-        <a href="/pricing.html" class="nav-btn">Pricing</a>
-        <a href="/about.html" class="nav-btn active">About</a>
-        <a href="/terms.html" class="nav-btn">Terms</a>
+        <a href="/pricing" class="nav-btn">Pricing</a>
+        <a href="/about" class="nav-btn active">About</a>
+        <a href="/terms" class="nav-btn">Terms</a>
       </div>
       <button class="mobile-menu-btn" onclick="toggleMobileMenu(true)" aria-label="Open menu">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -439,7 +439,7 @@
             </svg>
           </span>
           <span class="story-kicker">Deep links</span>
-          <h3>Deep Link Magic</h3>
+          <h2>Deep Link Magic</h2>
           <p>Our Tunnel Technology detects the platform and opens YouTube, Instagram, and TikTok apps directly, skyrocketing your engagement.</p>
         </div>
       </section>
@@ -457,7 +457,7 @@
             </svg>
           </span>
           <span class="story-kicker">Branding</span>
-          <h3>Custom Domains</h3>
+          <h2>Custom Domains</h2>
           <p>Shorten links using your own brand. We handle the SSL certificates, DNS routing, and management so you can look like a pro without the technical headache.</p>
         </div>
       </section>
@@ -472,7 +472,7 @@
             </svg>
           </span>
           <span class="story-kicker">Insights</span>
-          <h3>Real-time Analytics</h3>
+          <h2>Real-time Analytics</h2>
           <p>Know exactly when, where, and how your audience is interacting with your content. Every click is a data point helping you grow.</p>
         </div>
       </section>
@@ -488,7 +488,7 @@
             </svg>
           </span>
           <span class="story-kicker">Privacy &amp; freedom</span>
-          <h3>Bitcoin-Native</h3>
+          <h2>Bitcoin-Native</h2>
           <p>We believe in a decentralised future. That's why INOCULENS Tunnel is Bitcoin-only from the ground up. Complex redirects, custom domains — everything is paid in the one true currency, decentralized and censorship resistant — Bitcoin.</p>
           <div class="story-btc-row">
             <img src="/visuals/Bitcoin_Logo.png" alt="Bitcoin" width="40" height="40" loading="lazy" decoding="async">
@@ -500,6 +500,11 @@
   </main>
 
   <footer class="footer footer-elevated">
+    <nav aria-label="Footer" style="margin-bottom: 10px; font-size: 0.82rem;">
+      <a href="/about" style="color: var(--text-muted); text-decoration: none; margin: 0 10px;">About</a>
+      <a href="/pricing" style="color: var(--text-muted); text-decoration: none; margin: 0 10px;">Pricing</a>
+      <a href="/terms" style="color: var(--text-muted); text-decoration: none; margin: 0 10px;">Terms</a>
+    </nav>
     <span class="footer-tag">Built for creators.</span>
     <span class="footer-copy"><span class="nowrap">&copy; 2026 INOCULENS.</span> <span class="nowrap">All rights reserved.</span></span>
   </footer>
@@ -553,9 +558,9 @@
       </button>
     </div>
     <div class="drawer-nav">
-      <a href="/pricing.html" class="nav-btn" onclick="toggleMobileMenu(false)">Pricing</a>
-      <a href="/about.html" class="nav-btn active" onclick="toggleMobileMenu(false)">About</a>
-      <a href="/terms.html" class="nav-btn" onclick="toggleMobileMenu(false)">Terms</a>
+      <a href="/pricing" class="nav-btn" onclick="toggleMobileMenu(false)">Pricing</a>
+      <a href="/about" class="nav-btn active" onclick="toggleMobileMenu(false)">About</a>
+      <a href="/terms" class="nav-btn" onclick="toggleMobileMenu(false)">Terms</a>
     </div>
   </div>
 </body>
