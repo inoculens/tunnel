@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "description": "Netlify Functions backend for INOCULENS Tunnel.",
+  "scripts": {
+    "indexnow": "node scripts/indexnow-submit.mjs"
+  },
   "engines": {
     "node": ">=22"
   },
