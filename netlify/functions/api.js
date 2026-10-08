@@ -1273,6 +1273,16 @@ const actions = {
       const oldCode = link.code;
       link.code = newCode;
       link.short = `https://${host}/${newCode}`;
+      // Re-verify availability immediately before the write to shrink the
+      // claim race window (the store has no transactions — same residual
+      // exposure as creation). No writes have happened yet, so a hit here
+      // fails cleanly.
+      if (await getLink(s, host, newCode)) {
+        const e = new Error("ERR_SLUG_TAKEN");
+        e.statusCode = 409;
+        e.code = "already-exists";
+        throw e;
+      }
       await s.setJSON(linkKey(host, newCode), link);
       await s.delete(linkKey(host, oldCode));
       // Carry click history + count shards to the new slug (bounded, best

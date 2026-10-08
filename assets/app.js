@@ -7062,6 +7062,9 @@
 
       function openEditLinkPopup(code, domain = '') {
         try {
+          // Re-entrancy guard: the overlay blocks the page once open, but a
+          // second open without a close must never double-count scroll lock.
+          if (editLinkTarget) return;
           const index = findLinkIndex(code, domain);
           if (index === -1) {
             showCustomModal({ title: "Not Found", message: "That link is no longer in your history." });
@@ -7200,6 +7203,7 @@
           });
           const out = (res && res.data) || {};
           const oldKey = itemDomain(item) + '/' + code;
+          const prevShort = 'https://' + itemDomain(item) + '/' + code;
           item.original = out.original || newDestination;
           item.code = out.code || newSlug;
           item.short = out.short || ('https://' + itemDomain(item) + '/' + item.code);
@@ -7212,6 +7216,20 @@
             } catch (e) {}
           }
           saveLocalHistory();
+          // Keep the just-created result box truthful if it is still showing
+          // this link (it auto-hides after 5s).
+          try {
+            const resultDiv = document.getElementById('result');
+            const resultLink = document.getElementById('shortenedUrlLink');
+            if (resultDiv && resultLink && resultDiv.style.display === 'flex') {
+              const shown = resultLink.getAttribute('href') || resultLink.textContent || '';
+              if (shown === prevShort || shown === displayShort(prevShort)) {
+                const fresh = displayShort(item.short);
+                resultLink.textContent = fresh;
+                resultLink.href = fresh;
+              }
+            }
+          } catch (e) {}
           closeEditLinkPopup();
           renderHistory(currentLinks);
         } catch (e) {
