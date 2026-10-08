@@ -6552,13 +6552,13 @@
           const mobileLabelDisplay = hasLabel
             ? `<span id="mobile-label-${keyAttr}" class="link-label">${escapeHTML(itemLabel)}</span>`
             : `<span id="mobile-label-${keyAttr}" class="label-placeholder">Add label...</span>`;
-          const editButton = `<button class="label-edit-btn" onclick="event.stopPropagation(); editLabel(${codeJs}, false, ${jsDomain})" title="Edit Label">
+          const editButton = `<button class="label-edit-btn" onclick="event.stopPropagation(); openEditLinkPopup(${codeJs}, ${jsDomain})" title="Edit link">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
               </svg>
             </button>`;
-          const mobileEditButton = `<button class="label-edit-btn" onclick="event.stopPropagation(); editLabel(${codeJs}, true, ${jsDomain})" title="Edit Label">
+          const mobileEditButton = `<button class="label-edit-btn" onclick="event.stopPropagation(); openEditLinkPopup(${codeJs}, ${jsDomain})" title="Edit link">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
@@ -7056,205 +7056,178 @@
       }
 
       // --- LABEL EDIT ---
-      function editLabel(code, isMobile = false, domain = '') {
+      // Edit-link popup: slug + destination + label for an existing short
+      // link (owner-only via deleteToken). Opened from the pencil button.
+      let editLinkTarget = null;
+
+      function openEditLinkPopup(code, domain = '') {
         try {
           const index = findLinkIndex(code, domain);
           if (index === -1) {
             showCustomModal({ title: "Not Found", message: "That link is no longer in your history." });
             return;
           }
-          // Get the appropriate label span ID based on whether it's mobile or desktop
-          // (getElementById takes the literal id; selectors below use CSS.escape)
-          // Composite identity: the same slug may exist on other domains.
-          const linkDomain = domain || itemDomain(currentLinks[index]);
-          const key = linkDomain + '/' + code;
-          const labelId = isMobile ? `mobile-label-${key}` : `label-${key}`;
-          const labelSpan = document.getElementById(labelId);
-          if (!labelSpan) {
-            console.error('Label span not found:', labelId);
+          const item = currentLinks[index];
+          const linkDomain = domain || itemDomain(item);
+          editLinkTarget = { code, domain: linkDomain };
+          const overlay = document.getElementById('editLinkOverlay');
+          const hostLocked = document.getElementById('editLinkHostLocked');
+          const destInput = document.getElementById('editLinkDestination');
+          const slugInput = document.getElementById('editLinkSlug');
+          const labelInput = document.getElementById('editLinkLabelInput');
+          const errBox = document.getElementById('editLinkError');
+          if (!overlay || !destInput || !slugInput || !labelInput) {
+            console.error('Edit-link popup elements missing');
             return;
           }
-          const currentLabel = currentLinks[index]?.label || '';
-          const rowSel = '#row-' + CSS.escape(key);
-          const mobileSel = '#mobile-link-' + CSS.escape(key);
-
-          // Replace pen icon with checkmark button in desktop table
-          const editBtn = document.querySelector(`${rowSel} .label-edit-btn`);
-          if (editBtn) {
-            editBtn.classList.add('save-mode');
-            editBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M20 6L9 17l-5-5" />
-              </svg>`;
-            editBtn.title = 'Save label';
-            editBtn.onclick = async function () {
-              const input = document.querySelector(`${rowSel} .label-input`);
-              if (input) {
-                await saveLabel(code, input.value, linkDomain);
-              }
-            };
-          }
-
-          // Also update mobile dropdown edit button if exists
-          const mobileEditBtn = document.querySelector(`${mobileSel} .label-edit-btn`);
-          if (mobileEditBtn) {
-            mobileEditBtn.classList.add('save-mode');
-            mobileEditBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M20 6L9 17l-5-5" />
-              </svg>`;
-            mobileEditBtn.title = 'Save label';
-            // Stop propagation to prevent mobile dropdown toggle when clicking save
-            mobileEditBtn.onclick = async function (e) {
-              e.stopPropagation();
-              const input = document.querySelector(`${mobileSel} .label-input`);
-              if (input) {
-                await saveLabel(code, input.value, linkDomain);
-              }
-            };
-          }
-
-          // Create input element — use a cancellation flag to prevent blur from saving after Escape
-          let isCancelled = false;
-          const input = document.createElement('input');
-          input.type = 'text';
-          input.className = 'label-input';
-          input.value = currentLabel;
-          input.maxLength = 60;
-          input.placeholder = 'Add label...';
-
-          // Handle paste event to show warning if exceeding 20 characters
-          input.addEventListener('paste', function (e) {
-            const pastedText = (e.clipboardData || window.clipboardData).getData('text');
-            const currentLength = input.value.length;
-            const remainingSpace = 60 - currentLength;
-
-            if (pastedText.length > remainingSpace && remainingSpace > 0) {
-              e.preventDefault();
-              showCustomModal({
-                title: "Label Limit",
-                message: "Labels are limited to 60 characters.",
-                showCancel: false
-              });
-            } else if (pastedText.length > 60) {
-              e.preventDefault();
-              showCustomModal({
-                title: "Label Limit",
-                message: "Labels are limited to 60 characters.",
-                showCancel: false
-              });
-            }
-          });
-
-          // Handle enter key and blur to save
-          input.addEventListener('keydown', async function (e) {
-            if (e.key === 'Enter') {
-              await saveLabel(code, input.value, linkDomain);
-            } else if (e.key === 'Escape') {
-              isCancelled = true;
-              renderHistory(currentLinks); // Cancel and re-render
-            }
-          });
-
-          input.addEventListener('blur', async function () {
-            if (!isCancelled) await saveLabel(code, input.value, linkDomain);
-          });
-
-          // Replace the label span with input
-          labelSpan.parentNode.replaceChild(input, labelSpan);
-          input.focus();
-          input.select();
+          if (hostLocked) hostLocked.textContent = linkDomain + '/';
+          destInput.value = item.original || '';
+          slugInput.value = code;
+          labelInput.value = item.label || '';
+          if (errBox) errBox.style.display = 'none';
+          setEditLinkBusy(false);
+          overlay.style.display = 'flex';
+          lockScroll();
+          window.addEventListener('keydown', handleEditLinkEsc);
+          setTimeout(() => { try { destInput.focus(); destInput.select(); } catch (e) {} }, 50);
         } catch (e) {
-          console.error('Error in editLabel:', e);
+          console.error('Error opening edit-link popup:', e);
         }
       }
 
-      async function saveLabel(code, newLabel, domain = '') {
-        const trimmedLabel = String(newLabel).trim();
+      function setEditLinkBusy(busy) {
+        for (const id of ['editLinkSaveBtn', 'editLinkDestination', 'editLinkSlug', 'editLinkLabelInput']) {
+          const el = document.getElementById(id);
+          if (el) el.disabled = !!busy;
+        }
+        const saveBtn = document.getElementById('editLinkSaveBtn');
+        if (saveBtn) saveBtn.textContent = busy ? 'Saving...' : 'Save';
+      }
+
+      function editLinkFail(msg) {
+        const errBox = document.getElementById('editLinkError');
+        if (errBox) {
+          errBox.textContent = msg;
+          errBox.style.display = 'block';
+        } else {
+          showCustomModal({ title: "Edit Link", message: msg, showCancel: false });
+        }
+      }
+
+      function closeEditLinkPopup() {
+        const overlay = document.getElementById('editLinkOverlay');
+        const wasOpen = !!editLinkTarget || (overlay && overlay.style.display === 'flex');
+        editLinkTarget = null;
+        if (overlay) overlay.style.display = 'none';
+        if (wasOpen) {
+          try { unlockScroll(); } catch (e) {}
+          window.removeEventListener('keydown', handleEditLinkEsc);
+        }
+      }
+
+      function handleEditLinkEsc(e) {
+        if (!e || e.key !== 'Escape') return;
+        const modal = document.getElementById('modalOverlay');
+        if (modal && modal.style.display === 'flex') return;
+        closeEditLinkPopup();
+      }
+
+      function validEditUrl(u) {
+        // Same shape as the creation-form check in shortenUrl().
+        try {
+          if (!u || u.length > 2048) return false;
+          const parsed = new URL(u);
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+          if (parsed.username || parsed.password || !parsed.hostname) return false;
+          let badCtl = false;
+          for (let i = 0; i < u.length; i++) { const c = u.charCodeAt(i); if (c <= 31 || c === 127) { badCtl = true; break; } }
+          if (badCtl || u.indexOf(String.fromCharCode(92)) !== -1 || /[<>\"^`{|}]/.test(u) || /\s/.test(u)) return false;
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      async function saveEditLinkPopup() {
+        if (!editLinkTarget) return;
+        const { code, domain } = editLinkTarget;
         const index = findLinkIndex(code, domain);
         const item = index === -1 ? null : currentLinks[index];
-
         if (!item) {
+          closeEditLinkPopup();
           renderHistory(currentLinks);
           return;
         }
-
-        // Don't update if unchanged
-        if ((trimmedLabel || '') === (item.label || '')) {
-          renderHistory(currentLinks);
+        const destInput = document.getElementById('editLinkDestination');
+        const slugInput = document.getElementById('editLinkSlug');
+        const labelInput = document.getElementById('editLinkLabelInput');
+        const newDestination = String(destInput ? destInput.value : '').trim();
+        const newSlug = String(slugInput ? slugInput.value : '').trim();
+        const newLabel = String(labelInput ? labelInput.value : '').trim();
+        if (!newDestination) {
+          editLinkFail("Destination can't be empty.");
           return;
         }
-        if (!requireBackend()) {
-          renderHistory(currentLinks);
+        if (!validEditUrl(newDestination)) {
+          editLinkFail("That destination URL looks invalid — it must start with http(s)://.");
           return;
         }
-
-        // Show loading state - replace the label cell content with spinner (Desktop)
-        // Composite DOM ids (domain/slug) so duplicate slugs never collide.
-        const domKey = itemDomain(item) + '/' + code;
-        const rowSel = '#row-' + CSS.escape(domKey);
-        const mobileSel = '#mobile-link-' + CSS.escape(domKey);
-        const labelCell = document.querySelector(`${rowSel} .label-cell`);
-        const editBtn = document.querySelector(`${rowSel} .label-edit-btn`);
-
-        // Show loading state for mobile dropdown
-        const mobileLabelCell = document.querySelector(`${mobileSel} .label-cell`);
-        const mobileEditBtn = document.querySelector(`${mobileSel} .label-edit-btn`);
-
-        // Disable the edit buttons
-        if (editBtn) {
-          editBtn.classList.add('saving');
-          editBtn.disabled = true;
+        if (!newSlug) {
+          editLinkFail("The slug can't be empty.");
+          return;
         }
-        if (mobileEditBtn) {
-          mobileEditBtn.classList.add('saving');
-          mobileEditBtn.disabled = true;
+        if (!/^[A-Za-z0-9_-]{1,60}$/.test(newSlug)) {
+          editLinkFail(newSlug.includes(".")
+            ? "Slugs cannot contain dots (they would never resolve as short links) — use - or _ instead."
+            : "Slugs must be 1–60 chars: letters, numbers, - _");
+          return;
         }
-
-        if (labelCell) {
-          labelCell.innerHTML = `
-          <div class="label-loading">
-            <div class="label-spinner"></div>
-            <span>Saving...</span>
-          </div>
-          `;
+        if (newDestination === (item.original || '') && newSlug === code && newLabel === (item.label || '')) {
+          closeEditLinkPopup();
+          return;
         }
-
-        // Mobile loading state
-        if (mobileLabelCell) {
-          mobileLabelCell.innerHTML = `
-          <div class="label-loading">
-            <div class="label-spinner"></div>
-            <span>Saving...</span>
-          </div>
-          `;
-        }
-
-        // Ensure mobile dropdown stays expanded during save
-        const mobileContainer = document.getElementById(`mobile-link-${domKey}`);
-        if (mobileContainer && !mobileContainer.classList.contains('expanded')) {
-          mobileContainer.classList.add('expanded');
-          expandedLinks.add(domKey);
-        }
-
+        if (!requireBackend()) return;
+        setEditLinkBusy(true);
         try {
-          const updateLabelFn = functions.httpsCallable('updateLinkLabel');
-          await updateLabelFn({
-            shortCode: code,
+          const editFn = functions.httpsCallable('updateLinkRouting');
+          const res = await editFn({
             domain: itemDomain(item),
+            shortCode: code,
             deleteToken: item.deleteToken,
-            label: trimmedLabel
+            newSlug,
+            newDestination,
+            label: newLabel
           });
-
-          // Update local state
-          item.label = trimmedLabel;
-
-          // Save to localStorage for offline resilience (best effort)
+          const out = (res && res.data) || {};
+          const oldKey = itemDomain(item) + '/' + code;
+          item.original = out.original || newDestination;
+          item.code = out.code || newSlug;
+          item.short = out.short || ('https://' + itemDomain(item) + '/' + item.code);
+          item.platform = out.platform || item.platform;
+          item.label = out.label !== undefined ? out.label : newLabel;
+          if (item.code !== code) {
+            try {
+              expandedLinks.delete(oldKey);
+              expandedLinks.add(itemDomain(item) + '/' + item.code);
+            } catch (e) {}
+          }
           saveLocalHistory();
-
+          closeEditLinkPopup();
           renderHistory(currentLinks);
         } catch (e) {
-          console.error('Error saving label:', e);
-          showCustomModal({ title: "Error", message: "Failed to save label. Please try again." });
-          renderHistory(currentLinks);
+          console.error('Error saving link edit:', e);
+          const msg = String((e && e.message) || '');
+          if (msg.includes('ERR_SLUG_TAKEN')) {
+            editLinkFail("That slug is already taken on this domain. Pick another one — the same slug can still be used on your other domains.");
+          } else if (msg.includes('ERR_UNSAFE_URL')) {
+            editLinkFail("That destination was blocked by Safe Browsing (phishing/malware). Links to it can't be created or edited.");
+          } else if (msg.includes('ERR_INVALID_URL')) {
+            editLinkFail("That destination URL looks invalid — it must start with http(s)://.");
+          } else {
+            editLinkFail(msg || "Failed to save. Please try again.");
+          }
+        } finally {
+          setEditLinkBusy(false);
         }
       }
 

@@ -623,6 +623,23 @@ async function deleteClickKeys(s, host, code) {
   await mapWithConcurrency(blobs, 12, (b) => s.delete(b.key));
 }
 
+// Move every key under one prefix to another (slug renames carry click
+// history + count shards with the link). Callers bound the input first;
+// anything beyond the bound ages out with no link to attribute to.
+async function moveKeyPrefix(s, oldPrefix, newPrefix, cap) {
+  const blobs = await listAll(s, oldPrefix);
+  const slice = blobs.slice(0, cap);
+  await mapWithConcurrency(slice, 12, async (b) => {
+    try {
+      const doc = await freshGet(s, b.key, { type: "json" }).catch(() => null);
+      if (doc !== null && doc !== undefined) {
+        await s.setJSON(newPrefix + String(b.key).slice(oldPrefix.length), doc);
+      }
+    } catch { /* best effort */ }
+    try { await s.delete(b.key); } catch { /* best effort */ }
+  });
+}
+
 // ---------- managed promo codes (single-use, Blobs-backed) ----------
 // Why Blobs and not a file or env var:
 // - A file would ship with the open-source repo (public) or need a sidecar.
@@ -1147,6 +1164,130 @@ const actions = {
     link.label = String(p.label || "").slice(0, 60);
     await s.setJSON(linkKey(host, link.code), link);
     return ok({});
+  },
+
+  async updateLinkRouting(s, p, event) {
+    // Owner-only edit of a link's slug and/or destination (+ label) on any
+    // host (system short domain or a user domain). New destinations pass
+    // the exact mint-time gates (URL shape + Safe Browsing/blocklist, and
+    // fail the edit when they fail); new slugs pass the mint-time slug
+    // gates (format, per-host availability, twin-host guard). Empty-string
+    // newSlug/newDestination means "keep"; empty label clears (same as the
+    // label endpoint). Quarantine flags are never cleared by an edit.
+    const ip = clientIp(event);
+    if (!(await checkRate(s, "editlink", ip, 20))) {
+      const e = new Error("Too many edit attempts, wait a moment and try again.");
+      e.statusCode = 429;
+      e.code = "resource-exhausted";
+      throw e;
+    }
+    const host = needLinkHost(p);
+    const link = await needLink(s, host, p.shortCode);
+    needToken(link, p.deleteToken);
+
+    const rawSlug = p.newSlug == null ? "" : String(p.newSlug).trim();
+    const rawUrl = p.newDestination == null ? "" : String(p.newDestination).trim();
+    const newLabel = p.label === undefined ? (link.label || "") : String(p.label || "").slice(0, 60);
+    const slugChange = !!rawSlug && rawSlug !== link.code;
+    const urlChange = !!rawUrl && rawUrl !== link.original;
+
+    if (!slugChange && !urlChange && newLabel === (link.label || "")) {
+      return ok({ unchanged: true, code: link.code, short: link.short });
+    }
+
+    let cleanUrl = link.original;
+    if (urlChange) {
+      if (!rawUrl || rawUrl.length > 2048 || !validHttpUrl(rawUrl)) {
+        const e = new Error(
+          rawUrl && rawUrl.length > 2048
+            ? "URL too long (max 2048 characters)."
+            : "ERR_INVALID_URL"
+        );
+        e.statusCode = 400;
+        e.code = "invalid-argument";
+        throw e;
+      }
+      try {
+        const verdict = await checkUrlSafety(s, rawUrl);
+        if (verdict && verdict.safe === false) {
+          const e = new Error("ERR_UNSAFE_URL");
+          e.statusCode = 400;
+          e.code = "invalid-argument";
+          throw e;
+        }
+      } catch (e) {
+        if (e && e.message === "ERR_UNSAFE_URL") throw e;
+        console.error("safety check failed open:", e?.message || e);
+      }
+      cleanUrl = rawUrl;
+    }
+
+    let newCode = link.code;
+    if (slugChange) {
+      if (!validSlug(rawSlug)) {
+        const e = new Error(
+          String(rawSlug).includes(".")
+            ? "Slugs cannot contain dots (they would never resolve as short links) — use - or _ instead."
+            : "Custom slugs must be 1–60 chars: letters, numbers, - _"
+        );
+        e.statusCode = 400;
+        e.code = "invalid-argument";
+        throw e;
+      }
+      // Scoped uniqueness: the same slug may live on other root domains.
+      if (await getLink(s, host, rawSlug)) {
+        const e = new Error("ERR_SLUG_TAKEN");
+        e.statusCode = 409;
+        e.code = "already-exists";
+        throw e;
+      }
+      // Twin-host guard (same as creation).
+      const twinHosts = (() => {
+        const out = [];
+        try {
+          const w = fallbackCanonicalFor(host);
+          if (w && w.toLowerCase() !== host.toLowerCase()) out.push(w.toLowerCase());
+        } catch { /* ignore */ }
+        try {
+          const a = apexForWww(host);
+          if (a && a.toLowerCase() !== host.toLowerCase() && !out.includes(a.toLowerCase())) out.push(a.toLowerCase());
+        } catch { /* ignore */ }
+        return out.slice(0, 2);
+      })();
+      for (const cHost of twinHosts) {
+        const other = await getLink(s, cHost, rawSlug).catch(() => null);
+        if (other && other.sessionId === link.sessionId) {
+          const e = new Error(`That slug is already used on ${cHost} in this session — pick another slug or delete the twin link first.`);
+          e.statusCode = 409;
+          e.code = "already-exists";
+          throw e;
+        }
+      }
+      newCode = rawSlug;
+    }
+
+    link.original = cleanUrl;
+    link.platform = detectPlatform(cleanUrl);
+    link.label = newLabel;
+    if (slugChange) {
+      const oldCode = link.code;
+      link.code = newCode;
+      link.short = `https://${host}/${newCode}`;
+      await s.setJSON(linkKey(host, newCode), link);
+      await s.delete(linkKey(host, oldCode));
+      // Carry click history + count shards to the new slug (bounded, best
+      // effort — same bounds as the delete paths).
+      try {
+        await moveKeyPrefix(s, clicksPrefix(host, oldCode), clicksPrefix(host, newCode), 2000);
+      } catch { /* best effort */ }
+      try {
+        const hlo = (host || "").toLowerCase();
+        await moveKeyPrefix(s, `counts/${hlo}/${oldCode}/`, `counts/${hlo}/${newCode}/`, 500);
+      } catch { /* best effort */ }
+    } else {
+      await s.setJSON(linkKey(host, link.code), link);
+    }
+    return ok({ code: link.code, short: link.short, original: link.original, platform: link.platform, label: link.label });
   },
 
   // ----- stats -----
