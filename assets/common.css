@@ -505,18 +505,19 @@ h1 {
   .footer.footer-elevated {
     padding: 28px 16px calc(26px + env(safe-area-inset-bottom, 0px));
     /* Mobile-sized wash mirroring the desktop technique: the first value
-       is the horizontal radius, so 180px keeps the transparent 70% stop
-       inside even the narrowest footer (~280px) — the glow fades fully
-       before the footer edges instead of clipping into a hard border. */
+       is the horizontal radius. 220px stretches the glow wider while the
+       transparent 70% stop still completes at/inside the footer edges on
+       real phone widths (fully clear from ~340px up; ~1/255 residual at
+       320px) — no hard border. */
     background:
-      radial-gradient(180px 80px at 50% 0%, rgba(255, 255, 255, 0.05), transparent 70%);
+      radial-gradient(220px 90px at 50% 0%, rgba(255, 255, 255, 0.05), transparent 70%);
   }
   .footer.footer-elevated::before,
   .footer.footer-elevated::after {
-    /* Same pattern as desktop (fixed max, fluid below): both gradients
-       are transparent at their ends, so hairline + glow fade smoothly
-       with no cut-off. */
-    width: min(100%, 340px);
+    /* Stretch past the footer into the body's 20px side gutters on each
+       side (+40px total) so the fade reaches near the screen edges.
+       Both gradients stay transparent at their ends, so still no edge. */
+    width: calc(100% + 40px);
   }
 }
 
