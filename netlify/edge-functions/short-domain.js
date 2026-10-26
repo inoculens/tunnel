@@ -113,14 +113,27 @@ export default async (request, context) => {
 
   const first = url.pathname.split("/").filter(Boolean)[0] || "";
 
-  // Static assets, app pages, and files are never short codes.
+  // Static assets, app pages, and real files are never short codes.
+  // A dotted first segment passes through ONLY when it is a real file at the
+  // site root, or a dot-prefixed system path (/.well-known, /.netlify). Any
+  // other dotted path (e.g. /foo.pdf) can never be a short code, so it takes
+  // the query rewrite below and lands on the branded 404, which shows the
+  // domain exactly as its owner typed it (see resolve.js). Serving the static
+  // 404 in place instead would display the browser's host — i.e. the www
+  // canonical of a fallback pair.
+  // KEEP IN SYNC: add any new root-level file whose name contains a dot.
+  const ROOT_FILES = [
+    "404.html", "about.html", "index.html", "pricing.html", "report.html", "terms.html",
+    "sitemap.xml", "robots.txt", "970d849437874e50b415bd509c68ec33.txt",
+    "favicon.ico", "apple-touch-icon.png", "apple-touch-icon-precomposed.png",
+  ];
   if (
     !first ||
-    first.includes(".") ||
+    first.startsWith(".") ||
     first === "assets" ||
     first === "visuals" ||
-    first === ".netlify" ||
-    ["about", "pricing", "terms", "sitemap.xml", "robots.txt"].includes(first)
+    ["about", "pricing", "terms"].includes(first) ||
+    ROOT_FILES.includes(first)
   ) {
     return;
   }

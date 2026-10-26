@@ -760,6 +760,45 @@ export function apexForWww(wwwDomain) {
   return apex && apex.includes(".") ? apex : null;
 }
 
+// ---------- Display label (golden rule) ----------
+// What the owner typed in the first "Connect Custom Domain" field is the ONLY
+// name ever shown for a setup — inside the app AND on public pages such as the
+// branded 404. It is stored write-once as doc.displayName. Legacy fallback docs
+// without it show their redirect host (apexSource), else the doc host.
+// Shared by api.js (effectiveDisplayLabel) and resolve.js (404 display).
+export function domainDisplayLabel(d) {
+  if (!d) return "";
+  const storedApex = (typeof d.apexSource === "string" && d.apexSource) ? d.apexSource : null;
+  const pairedApex = storedApex || (d.isApexFlow === true ? apexForWww(d.domain) : null);
+  return String(
+    ((typeof d.displayName === "string" && d.displayName) ? d.displayName : null) ||
+    ((d.isApexFlow === true && pairedApex) ? pairedApex : null) ||
+    d.domain || ""
+  ).toLowerCase();
+}
+
+// Every host a setup owns rows on: its own host, its redirect host, and every
+// host it was moved away from (stone history). Same rule as api.js
+// stoneHostsForDoc — keep the two in sync.
+export function domainStoneHosts(doc) {
+  const set = new Set();
+  const add = (v) => {
+    const x = String(v || "").toLowerCase();
+    if (x) set.add(x);
+  };
+  if (!doc) return set;
+  add(doc.domain);
+  add(doc.apexSource);
+  add(doc.movedFrom);
+  add(doc.movedFromChain);
+  try {
+    if (Array.isArray(doc.movedFromHistory)) {
+      for (const h of doc.movedFromHistory) add(h);
+    }
+  } catch { /* ignore */ }
+  return set;
+}
+
 // Advisory DNS read (never writes): does the fallback redirect host's A/AAAA
 // point at the redirect edge? Fail-open: lookup errors yield null (unknown).
 // Callers decide gating (first-time Continue + claim transfer require it).

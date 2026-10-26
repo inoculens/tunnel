@@ -68,6 +68,7 @@ import {
   wwwForApex,
   apexForWww,
   fallbackCanonicalFor,
+  domainDisplayLabel,
   verifyApexRedirect as verifyApexRedirectDns,
 } from "./lib/util.js";
 // Static import (not dynamic): node_bundler="nft" traces static imports for
@@ -221,14 +222,8 @@ async function ensureSaaSHostname(doc) {
 // resolution: stored name, else apex for paired docs (incl. legacy rows),
 // else canonical. One rule everywhere so a typed label always finds its setup.
 function effectiveDisplayLabel(d) {
-  if (!d) return "";
-  const storedApex = (typeof d.apexSource === "string" && d.apexSource) ? d.apexSource : null;
-  const pairedApex = storedApex || (d.isApexFlow === true ? apexForWww(d.domain) : null);
-  return String(
-    ((typeof d.displayName === "string" && d.displayName) ? d.displayName : null) ||
-    ((d.isApexFlow === true && pairedApex) ? pairedApex : null) ||
-    d.domain || ""
-  ).toLowerCase();
+  // Single rule shared with resolve.js (404 page) — see util.js.
+  return domainDisplayLabel(d);
 }
 
 // Convert a touched primary (redirect host X) into its fallback pair on the
@@ -535,6 +530,12 @@ async function domainInfo(doc, viewerSessionId = null) {
     domain: doc.domain,
     id: doc.domain,
     displayName,
+    // Hosts this setup still owns link rows on besides its own host (redirect
+    // host + hosts it moved away from). Display-only: the frontend shows links
+    // minted there under displayName (golden rule). Owner-only.
+    aliasHosts: isOwner
+      ? [...stoneHostsForDoc(doc)].filter((h) => h && h !== String(doc.domain || "").toLowerCase())
+      : [],
     mode: doc.isApexFlow === true ? "fallback" : "primary",
     status: doc.status,
     paymentStatus: doc.paymentStatus,
@@ -1485,7 +1486,7 @@ const actions = {
       out.push({
         domain: d.domain,
         id: d.domain,
-        displayName: d.domain,
+        displayName: effectiveDisplayLabel(d) || d.domain,
         mode: "claim",
         status: "pending_verification",
         paymentStatus: "unpaid",
@@ -2513,7 +2514,9 @@ const actions = {
     doc.pendingClaim = null;
     doc.isVerified = true;
     // displayName is preserved (first entry wins) so lists never flicker.
-    if (!doc.displayName) doc.displayName = doc.domain;
+    // Legacy docs without one get the effective label (apex for paired
+    // docs), never the www canonical.
+    if (!doc.displayName) doc.displayName = effectiveDisplayLabel(doc) || doc.domain;
     doc.dnsVerification = {
       cnameValid: true,
       txtVerified: true,
@@ -2811,6 +2814,25 @@ const actions = {
         }
       } catch { /* target + known hosts only */ }
     } catch { /* target-only sweep */ }
+    // Cloudflare SaaS hostnames of moved-away hosts (stone history) are kept
+    // on purpose while the setup lives (see migrateDomainSetup: "deleted only
+    // with the domain itself") — so they must go now, or they leak forever
+    // (SaaS quota/billing, and they keep routing traffic to a deleted setup).
+    // Only this doc's OWN stone hosts that no live doc occupies (sweepHosts)
+    // qualify. Parallel, capped, time-boxed, best effort.
+    if (cfConfig()) {
+      try {
+        const saasHosts = [...stoneHostsForDoc(doc)]
+          .filter((h) => h && h !== target && sweepHosts.has(h))
+          .slice(0, 8);
+        if (saasHosts.length) {
+          await Promise.race([
+            Promise.allSettled(saasHosts.map((h) => cfDeleteCustomHostname(h))),
+            new Promise((r) => setTimeout(r, 5000)),
+          ]);
+        }
+      } catch { /* best effort, never blocks the delete */ }
+    }
     const doomed = [];
     const seen = new Set();
     for (const l of linkDocs) {
@@ -2916,7 +2938,18 @@ const actions = {
     if (raw.length > 2048 || !validHttpUrl(raw)) {
       return fail(400, "invalid-argument", "That destination is not a valid http(s) URL.");
     }
-    if (isSelfRootTarget(doc.domain, raw)) {
+    // Loop guard: the doc's own root and — for a fallback pair — the redirect
+    // host's root too (apex.com 301s to www.apex.com, whose root would send
+    // the visitor straight back to apex.com, forever). The typed label is
+    // checked as well since it is what users naturally enter.
+    const loopHosts = [doc.domain];
+    if (doc.isApexFlow === true) {
+      const redirectHost = (typeof doc.apexSource === "string" && doc.apexSource) || apexForWww(doc.domain);
+      if (redirectHost) loopHosts.push(redirectHost);
+      const typedLabel = effectiveDisplayLabel(doc);
+      if (typedLabel) loopHosts.push(typedLabel);
+    }
+    if (loopHosts.some((h) => isSelfRootTarget(h, raw))) {
       return fail(400, "invalid-argument", "The destination cannot be this domain's own root (that would loop forever).");
     }
     // Root destinations get the same safety screening as short links: a
@@ -3785,7 +3818,12 @@ const actions = {
           // of stacking a second year for one payment.
           const seenPaidAt = doc.lastPaymentAt || null;
           const latest = await freshGet(s, `domain/${doc.domain}`, { type: "json" }).catch(() => null);
-          if (latest && (latest.lastPaymentAt || null) !== seenPaidAt && latest.paymentStatus === "paid" && coverageValid(latest)) {
+          // Deleted or moved while checking: never write the stale copy back
+          // (it would resurrect a ghost domain).
+          if (!latest) {
+            return fail(409, "aborted", "This domain changed while checking (moved or deleted) — reopen it from Manage and check again.");
+          }
+          if ((latest.lastPaymentAt || null) !== seenPaidAt && latest.paymentStatus === "paid" && coverageValid(latest)) {
             return ok({
               paid: true,
               alreadyCovered: true,
@@ -3795,6 +3833,10 @@ const actions = {
               coverageValid: true,
             });
           }
+          // Apply the payment on top of the FRESH doc so edits made meanwhile
+          // are not overwritten.
+          for (const k of Object.keys(doc)) delete doc[k];
+          Object.assign(doc, latest);
           const now = Date.now();
           doc.paymentStatus = "paid";
           const currentExp = coverageValid(doc) ? new Date(doc.coverageExpiresAt).getTime() : now;
@@ -3814,7 +3856,7 @@ const actions = {
           markIgnored(doc, c.address, doc.paidAddress);
           doc.paidAddress = c.address;
           doc.paidAmount = c.amount;
-          if (c.current && doc.quote) doc.quote.paidAt = new Date().toISOString();
+          if (c.current && doc.quote && doc.quote.address === c.address) doc.quote.paidAt = new Date().toISOString();
           if (cfConfig() && doc.isVerified) {
             try {
               const cf = await cfEnsureSaaS(doc.domain, doc.dnsVerification?.routingMethod || null);

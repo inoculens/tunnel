@@ -14,8 +14,10 @@
  * - All other mobile links → instant 302 (no interstitial friction).
  *
  * Unknown/expired codes → 302 to the branded /404 page (keeps ?c= and ?h=
- * for display, so the page shows the short domain actually visited —
- * s.inoculens.com or the user's custom domain — never tunnel.inoculens.com).
+ * for display). ?h= is the domain exactly as its owner typed it in "Connect
+ * Custom Domain" (doc.displayName) — e.g. apex.com for a fallback pair that
+ * serves from www.apex.com — or s.inoculens.com; never the background www
+ * canonical, never tunnel.inoculens.com.
  *
  * Wire-up: netlify/edge-functions/short-domain.js passes code and host via
  * X-Tunnel-Code / X-Tunnel-Host request headers (no query params, so nothing
@@ -23,7 +25,7 @@
  * Query-param fallback (?c=, ?h=) is permanent for SaaS Worker proxies,
  * direct function hits, and deploy-skew safety.
  */
-import { store, newClickId, truncateIp, clickClientIp, isIpLiteral, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard, buildAppTargets, shouldServeInterstitial, fallbackCanonicalFor, apexForWww, checkRate, isStrongConsistencyError } from "./lib/util.js";
+import { store, newClickId, truncateIp, clickClientIp, isIpLiteral, systemShortHost, coverageValid, cleanDomain, linkKey, clicksPrefix, freshGet, getWithRetry, shouldStoreClickDetail, writeCountShard, buildAppTargets, shouldServeInterstitial, fallbackCanonicalFor, apexForWww, checkRate, isStrongConsistencyError, domainDisplayLabel, domainStoneHosts } from "./lib/util.js";
 
 const HOME = process.env.HOME_URL || "https://tunnel.inoculens.com/";
 
@@ -47,6 +49,63 @@ async function strongGet(s, key, opts = {}) {
   } catch {
     return null;
   }
+}
+
+// Owning entry for a stone host. A setup that moved between recommended and
+// fallback (exit / convert / claim restore) keeps the old host's links where
+// they were minted (set in stone), while the entry doc itself now lives on the
+// counterpart host (www.H, or H with one "www." removed) and lists the old
+// host in its stone history. Returns that entry doc, or null.
+// Bounded: at most 2 strong reads. When sessionId is given it must match the
+// entry's session, so independent setups of other users never leak across.
+async function stoneOwnerFor(s, stoneHost, sessionId) {
+  const h = String(stoneHost || "").toLowerCase();
+  if (!h) return null;
+  const candidates = [];
+  try {
+    const a = apexForWww(h);
+    if (a && a.toLowerCase() !== h) candidates.push(a.toLowerCase());
+  } catch { /* ignore */ }
+  try {
+    const w = fallbackCanonicalFor(h);
+    if (w && w.toLowerCase() !== h && !candidates.includes(w.toLowerCase())) candidates.push(w.toLowerCase());
+  } catch { /* ignore */ }
+  for (const c of candidates.slice(0, 2)) {
+    const doc = await strongGet(s, `domain/${c}`, { type: "json" }).catch(() => null);
+    if (!doc) continue;
+    if (!domainStoneHosts(doc).has(h)) continue;
+    if (sessionId && doc.sessionId && doc.sessionId !== sessionId) continue;
+    return doc;
+  }
+  return null;
+}
+
+// Host to DISPLAY on the branded 404 (golden rule: show what the owner typed
+// in "Connect Custom Domain", never the background www canonical). A fallback
+// pair added as apex.com serves from www.apex.com (apex.com's A/AAAA 301 there
+// through the redirect edge), so the serving host is www.apex.com while the
+// owner added apex.com. Lookup order: the domain doc on the serving host, else
+// the entry that owns the serving host as a stone host. Unknown hosts and the
+// system host display as visited. Display-only: fails open to the serving host.
+async function notFoundDisplayHost(s, host) {
+  const h = String(host || "").toLowerCase();
+  if (!h || h === systemShortHost()) return h;
+  let doc = null;
+  try {
+    doc = await freshGet(s, `domain/${h}`, { type: "json" });
+  } catch {
+    doc = null;
+  }
+  if (!doc) {
+    try {
+      doc = await stoneOwnerFor(s, h, null);
+    } catch {
+      doc = null;
+    }
+  }
+  if (!doc) return h;
+  const label = cleanDomain(domainDisplayLabel(doc));
+  return label || h;
 }
 
 function escapeHtml(s) {
@@ -184,7 +243,15 @@ export async function handler(event) {
       if (target && /^https?:\/\//.test(target)) {
         try {
           const u = new URL(target);
-          if ((u.protocol === "http:" || u.protocol === "https:") && !u.username && !u.password && u.hostname) {
+          // Serve-time loop guard (covers targets saved before setApexTarget
+          // learned to refuse them): a target that is this host's own root —
+          // or, for a fallback pair, the redirect host's root, which 301s
+          // straight back here — would bounce forever. Land on HOME instead.
+          const th = u.hostname.toLowerCase();
+          const rootPath = !u.pathname || u.pathname === "/";
+          const loops = rootPath && (th === host ||
+            (doc.isApexFlow === true && fallbackCanonicalFor(th) === host));
+          if (!loops && (u.protocol === "http:" || u.protocol === "https:") && !u.username && !u.password && u.hostname) {
             return { statusCode: 302, headers: { Location: target, "Cache-Control": "no-store" } };
           }
         } catch { /* fall through to HOME */ }
@@ -210,11 +277,26 @@ export async function handler(event) {
   // writes gap as the app's session sync). Budget stays sub-second so
   // mistyped codes still 404 quickly.
   // Where to send unknown/expired codes: the branded 404 page, carrying the
-  // visited short domain (?h=) so it displays e.g. s.inoculens.com/abc — not
-  // tunnel.inoculens.com/abc, which is just where the page happens to live.
-  const notFoundDest =
-    `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}` +
-    `&h=${encodeURIComponent(host)}`;
+  // domain to display (?h=). Golden rule: the page shows the domain exactly
+  // as its owner typed it in "Connect Custom Domain" (doc.displayName) — e.g.
+  // apex.com/abc for a fallback pair that serves from www.apex.com — never the
+  // www canonical, and never tunnel.inoculens.com (where the page merely
+  // lives). Built lazily and memoized: only miss/expired paths pay the one
+  // extra display read; successful redirects never touch it.
+  let notFoundDestCache = null;
+  const notFoundLocation = async () => {
+    if (notFoundDestCache) return notFoundDestCache;
+    let shownHost = host;
+    try {
+      shownHost = (await notFoundDisplayHost(s, host)) || host;
+    } catch {
+      shownHost = host;
+    }
+    notFoundDestCache =
+      `${HOME.replace(/\/$/, "")}/404.html?c=${encodeURIComponent(code)}` +
+      `&h=${encodeURIComponent(shownHost)}`;
+    return notFoundDestCache;
+  };
   let link = await getWithRetry(s, linkKey(host, code), { type: "json" }, { attempts: 3, delayMs: 300 }).catch(() => null);
   // Freshness re-check for quarantine: the fast path above can serve a
   // seconds-stale copy missing a just-set quarantine flag. One strong read
@@ -309,7 +391,7 @@ export async function handler(event) {
         return { statusCode: 429, headers: { "Cache-Control": "no-store", "Retry-After": "60" }, body: "Too many attempts, wait a moment." };
       }
     } catch { /* fail open to the branded 404 below */ }
-    return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
+    return { statusCode: 302, headers: { Location: await notFoundLocation(), "Cache-Control": "no-store" } };
   }
 
   // Hard stop on lapsed coverage: links on custom domains whose payment
@@ -322,21 +404,27 @@ export async function handler(event) {
   // re-check it here (no extra read) so lapsed pairs hard-stop on both hosts.
   if (fallbackOwner) {
     if (!coverageValid(fallbackOwner)) {
-      return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
+      return { statusCode: 302, headers: { Location: await notFoundLocation(), "Cache-Control": "no-store" } };
     }
   } else if (link.domain && link.domain !== systemShortHost()) {
-    const doc = await strongGet(s, `domain/${link.domain}`, { type: "json" }).catch(() => null);
+    let doc = await strongGet(s, `domain/${link.domain}`, { type: "json" }).catch(() => null);
+    // Stone-host link: the setup moved between recommended and fallback
+    // (exit / convert / claim restore), so its doc now lives on the
+    // counterpart host while this link stays where it was minted. The owning
+    // entry (same session, lists this host in its stone history) gates
+    // coverage. Only true orphans (no owner anywhere) hard-stop.
+    if (!doc) doc = await stoneOwnerFor(s, link.domain, link.sessionId).catch(() => null);
     if (!doc) {
-      return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
+      return { statusCode: 302, headers: { Location: await notFoundLocation(), "Cache-Control": "no-store" } };
     }
     if (!coverageValid(doc)) {
-      return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
+      return { statusCode: 302, headers: { Location: await notFoundLocation(), "Cache-Control": "no-store" } };
     }
   } else if (!link.domain && host !== systemShortHost()) {
     // Legacy rows without a domain field are gated on the serving host.
     const doc = await strongGet(s, `domain/${host}`, { type: "json" }).catch(() => null);
     if (!doc || !coverageValid(doc)) {
-      return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
+      return { statusCode: 302, headers: { Location: await notFoundLocation(), "Cache-Control": "no-store" } };
     }
   }
 
@@ -347,12 +435,12 @@ export async function handler(event) {
   // link.clickCount stays as an approximate live badge.
   // Stats follow the link identity (its minted host), not the serving host:
   // a fallback-served pre-move link keeps one stats stream on its own key.
-  // The 404 display (?h=) above keeps the visited host; attribution below
-  // keeps the serving host (custom vs system path).
+  // The 404 display (?h=) above shows the owner-typed label (golden rule);
+  // attribution below keeps the serving host (custom vs system path).
   const linkHost = String(link.domain || host).toLowerCase() || host;
   try {
     if (link.quarantined) {
-      return { statusCode: 302, headers: { Location: notFoundDest, "Cache-Control": "no-store" } };
+      return { statusCode: 302, headers: { Location: await notFoundLocation(), "Cache-Control": "no-store" } };
     }
     // Attribution source is path-aware (edge stamp vs Cloudflare value —
     // see clickClientIp): the generic trustedRawIp demonstrably yields edge

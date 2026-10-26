@@ -96,9 +96,18 @@ export async function handler(event) {
         if (paidBy) {
           const seenPaidAt = d.lastPaymentAt || null;
           const latest = await freshGet(s, `domain/${d.domain}`, { type: "json" }).catch(() => null);
-          if (latest && (latest.lastPaymentAt || null) !== seenPaidAt && latest.paymentStatus === "paid" && coverageValid(latest)) {
+          // Deleted or moved (convert / exit / claim) while the chain was
+          // being checked: never write the stale copy back — that would
+          // resurrect a ghost domain. A moved setup carries its quotes along
+          // and is credited on its new host instead.
+          if (!latest) continue;
+          if ((latest.lastPaymentAt || null) !== seenPaidAt && latest.paymentStatus === "paid" && coverageValid(latest)) {
             continue;
           }
+          // Apply the payment on top of the FRESH doc so edits made meanwhile
+          // (APEX target, DNS badges, claims…) are not overwritten.
+          for (const k of Object.keys(d)) delete d[k];
+          Object.assign(d, latest);
           const now = Date.now();
           d.paymentStatus = "paid";
           // Coverage: a payment buys a year, stacking onto any time left so
@@ -124,7 +133,7 @@ export async function handler(event) {
           markIgnored(d, paidBy.address, d.paidAddress);
           d.paidAddress = paidBy.address;
           d.paidAmount = paidBy.amount;
-          if (paidBy.current && d.quote) d.quote.paidAt = new Date().toISOString();
+          if (paidBy.current && d.quote && d.quote.address === paidBy.address) d.quote.paidAt = new Date().toISOString();
           // Provision Cloudflare SaaS hostname so TLS issues immediately after payment.
           // Single SaaS policy (see cfEnsureSaaS): http first, txt only on the
           // CNAME signal — never revert an active hostname after the user paid.

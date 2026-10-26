@@ -352,6 +352,20 @@
               }
             }
           }
+          // Stone hosts (see apexDisplayFor): alias host -> entry label, only
+          // when no entry of this session lives on the alias host itself.
+          const ownHosts = new Set((userCustomDomains || [])
+            .map((d) => String((d && d.domain) || '').toLowerCase())
+            .filter(Boolean));
+          for (const d of (userCustomDomains || [])) {
+            if (!d || !Array.isArray(d.aliasHosts)) continue;
+            const disp = String(d.displayName || d.domain || '').toLowerCase();
+            for (const a0 of d.aliasHosts) {
+              const a = String(a0 || '').toLowerCase();
+              if (!a || ownHosts.has(a) || next[a]) continue;
+              if (disp && a.length <= 253 && disp.length <= 253 && !/\s/.test(a) && !/\s/.test(disp) && disp !== a) next[a] = disp;
+            }
+          }
         } catch (e) { return false; }
         let same = true;
         try {
@@ -494,14 +508,31 @@
       function apexDisplayFor(wwwHost) {
         const w = String(wwwHost || '').toLowerCase().replace(/\/$/, '');
         if (!w) return null;
+        let hit = null;
         try {
-          const hit = (userCustomDomains || []).find(d => d && String(d.domain || '').toLowerCase() === w);
+          hit = (userCustomDomains || []).find(d => d && String(d.domain || '').toLowerCase() === w) || null;
           if (hit) {
             const disp = String(hit.displayName || '').toLowerCase();
             if (disp && disp !== w) return disp;
             if (hit.isApexFlow === true && hit.apex) return String(hit.apex).toLowerCase();
           }
         } catch (e) {}
+        // Stone hosts (golden rule for the history): a setup that moved
+        // between recommended and fallback keeps its old links on the host
+        // they were minted on (e.g. www.apex.com after going back to the
+        // recommended DNS on apex.com). Those rows show the entry's typed
+        // label too. Consulted ONLY when no entry lives on this exact host,
+        // so an independent setup on that host always keeps its own label.
+        if (!hit) {
+          try {
+            const owner = (userCustomDomains || []).find(d => d && Array.isArray(d.aliasHosts)
+              && d.aliasHosts.some(a => String(a || '').toLowerCase() === w));
+            if (owner) {
+              const disp = String(owner.displayName || owner.domain || '').toLowerCase();
+              if (disp && disp !== w) return disp;
+            }
+          } catch (e) {}
+        }
         // Boot cache: live list hasn't arrived yet (first paint) — the
         // persisted map keeps apex labels stable with zero network wait.
         try {
@@ -1213,8 +1244,10 @@
       const APEX_REDIRECT_IPV4 = '65.21.184.101';
       const APEX_REDIRECT_IPV6 = '2a01:4f9:c012:a304::1';
       function wwwForApexInput(raw) {
+        // Uniform pairing rule, same as the backend fallbackCanonicalFor():
+        // X -> www.X for ANY X, including www.x.com -> www.www.x.com.
         const d = String(raw || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
-        if (!d || d.startsWith('www.')) return null;
+        if (!d || d.indexOf('.') === -1 || d.length + 4 > 253) return null;
         return `www.${d}`;
       }
 
@@ -3720,11 +3753,11 @@
           }
           const current = typeof info.apexTarget === 'string' ? info.apexTarget : '';
           if (input) { input.value = current; input.disabled = false; }
-          // Authoritative display correction from the doc flags (plain docs:
-          // identical to d, so no visible change outside apex flows).
+          // Authoritative display from the doc: exactly what the user typed
+          // (displayName). Never the redirect host (info.apex) — the two
+          // differ when a www entry was later paired with its apex.
           try {
-            if (info.isApexFlow === true && info.apex) window._apexDisplay = info.apex;
-            else window._apexDisplay = d;
+            window._apexDisplay = String(info.displayName || displayHost(d) || d);
             if (locked) locked.textContent = window._apexDisplay;
           } catch (e) {}
           if (curBox && current) {
@@ -6913,7 +6946,7 @@
         try {
           const confirmed = await showCustomModal({
             title: "⚠️ PURGE ALL LOGS?",
-            message: `This will permanently delete ALL recorded click data for the link<span class="modal-url-box">${escapeHTML(item.short)}</span> This action cannot be undone.`,
+            message: `This will permanently delete ALL recorded click data for the link<span class="modal-url-box">${escapeHTML(displayShort(item.short))}</span> This action cannot be undone.`,
             showCancel: true,
             danger: true
           });
@@ -7083,7 +7116,7 @@
             console.error('Edit-link popup elements missing');
             return;
           }
-          if (hostLocked) hostLocked.textContent = linkDomain + '/';
+          if (hostLocked) hostLocked.textContent = displayHost(linkDomain) + '/';
           destInput.value = item.original || '';
           slugInput.value = code;
           labelInput.value = item.label || '';
